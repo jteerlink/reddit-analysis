@@ -1,0 +1,187 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "reddit-api-collector"
+version = "1.0.0"
+description = "A comprehensive Reddit data collection library with rate limiting and persistence"
+readme = "README_reddit_module.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Inflation Forecasting Team", email = "team@example.com"}
+]
+maintainers = [
+    {name = "Inflation Forecasting Team", email = "team@example.com"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+keywords = ["reddit", "api", "data collection", "sentiment analysis", "nlp", "social media"]
+requires-python = ">=3.8"
+
+# Core dependencies (from requirements.txt)
+dependencies = [
+    "praw>=7.7.0",                  # Python Reddit API Wrapper
+    "pandas>=1.5.0",               # Data manipulation and analysis
+    "python-dotenv>=0.19.0",       # Environment variable management
+    "requests>=2.28.0",            # HTTP library
+    "nltk>=3.8",                   # Natural language processing
+    "textblob>=0.17.1",           # Sentiment analysis baseline
+    "vaderSentiment>=3.3.2",      # VADER sentiment analyzer
+    "tqdm>=4.64.0",               # Progress bars
+    "python-dateutil>=2.8.2",    # Date parsing utilities
+]
+
+[project.optional-dependencies]
+# Development and visualization
+dev = [
+    "jupyter>=1.0.0",             # Jupyter notebook support
+    "matplotlib>=3.5.0",          # Plotting and visualization
+    "seaborn>=0.11.0",           # Statistical data visualization
+    "plotly>=5.10.0",            # Interactive plotting
+]
+
+# Machine learning components
+ml = [
+    "scikit-learn>=1.1.0",       # Machine learning library
+    "transformers>=4.21.0",      # HuggingFace transformers (for RoBERTa)
+    "torch>=1.12.0",             # PyTorch (for deep learning models)
+]
+
+# Production deployment
+production = [
+    "mlflow>=2.0.0",             # ML experiment tracking
+    "evidently>=0.2.0",          # ML model monitoring
+    "streamlit>=1.12.0",         # Dashboard framework
+    "fastapi>=0.85.0",           # API framework
+    "uvicorn>=0.18.0",           # ASGI server
+]
+
+# All optional dependencies combined
+all = [
+    "reddit-api-collector[dev,ml,production]"
+]
+
+[project.urls]
+Homepage = "https://github.com/your-username/inflation-forcasting"
+Documentation = "https://github.com/your-username/inflation-forcasting#readme"
+Repository = "https://github.com/your-username/inflation-forcasting"
+"Bug Reports" = "https://github.com/your-username/inflation-forcasting/issues"
+Changelog = "https://github.com/your-username/inflation-forcasting/CHANGELOG.md"
+
+[project.scripts]
+reddit-collector = "reddit_api.cli:main"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/README_reddit_module.md",
+    "/LICENSE",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/reddit_api"]
+
+[tool.hatch.build.targets.wheel.sources]
+"src" = ""
+
+[tool.uv]
+# UV-specific configuration
+dev-dependencies = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=22.0.0",
+    "isort>=5.10.0",
+    "flake8>=5.0.0",
+    "mypy>=1.0.0",
+    "pre-commit>=2.20.0",
+]
+
+# UV workspace configuration - commented out for single package
+# [tool.uv.workspace]
+# members = ["src/reddit_api"]
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+line_length = 88
+known_first_party = ["reddit_api"]
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_column_numbers = true
+show_error_codes = true
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q --cov=reddit_api --cov-report=html --cov-report=term-missing"
+testpaths = [
+    "tests",
+    "src/reddit_api",
+]
+python_files = [
+    "test_*.py",
+    "*_test.py",
+]
+
+[tool.coverage.run]
+source = ["src/reddit_api"]
+omit = [
+    "*/tests/*",
+    "*/test_*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug:",
+    "if settings.DEBUG",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if 0:",
+    "if __name__ == .__main__.:",
+    "class .*\\bProtocol\\):",
+    "@(abc\\.)?abstractmethod",
+]

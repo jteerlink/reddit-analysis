@@ -205,3 +205,27 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Project-specific files
+*.db
+*.db-journal
+reddit_api.log
+reddit_prototype.db
+reddit_data_export_*.json
+
+# Data directories and files
+data/
+*.csv
+
+# Temporary and testing files
+*.tmp
+*.temp
+.DS_Store
+.vscode/
+*.swp
+*.swo
+
+# Legacy files (now cleaned up)
+requirements.txt.bak
+setup.py.bak
+setup/
