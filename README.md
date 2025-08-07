@@ -101,6 +101,7 @@ uv pip sync uv.lock
 ## 🎯 Key Features
 
 - **Rate-Limited Reddit API Client**: Respects 600 requests/10min limit
+- **Historical Data Collection**: Time frame-based collection with progress tracking
 - **Circuit Breaker Pattern**: Fault tolerance with automatic recovery
 - **SQLite Storage**: Optimized schema with analytics functions
 - **CLI Interface**: Easy data collection and management
@@ -117,8 +118,15 @@ uv run python -m reddit_api.cli test
 # Collect Reddit data
 uv run python -m reddit_api.cli collect --posts 10 --comments 5
 
-# Run example script
+# Collect historical data (last 30 days)
+uv run python -m reddit_api.cli historical --days 30
+
+# Collect data for specific date range
+python scripts/collect-historical.py --start-date "2024-01-01" --end-date "2024-01-31"
+
+# Run example scripts
 uv run python example_usage.py
+uv run python example_historical_collection.py
 
 # Start Jupyter notebook
 uv run jupyter notebook notebooks/reddit_api_prototype.ipynb
@@ -177,6 +185,7 @@ This module integrates seamlessly with:
 ## 📚 Documentation
 
 - **[Module Documentation](README_reddit_module.md)** - Detailed API reference
+- **[Historical Collection Guide](docs/historical-collection.md)** - Time frame-based data collection
 - **[UV Commands](scripts/uv-commands.md)** - Package management reference
 - **[PRD Document](docs/prd.md)** - Original requirements and architecture
 - **[Example Notebook](notebooks/reddit_api_prototype.ipynb)** - Interactive exploration

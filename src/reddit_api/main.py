@@ -39,12 +39,33 @@ def create_config_from_env() -> RedditConfig:
     Returns:
         RedditConfig object with values from environment
     """
+    # Parse subreddits from environment variable
+    target_subreddits = None
+    if os.getenv('TARGET_SUBREDDITS'):
+        target_subreddits = [sub.strip() for sub in os.getenv('TARGET_SUBREDDITS').split(',')]
+    
+    # Parse keywords from environment variable
+    target_keywords = None
+    if os.getenv('TARGET_KEYWORDS'):
+        target_keywords = [kw.strip() for kw in os.getenv('TARGET_KEYWORDS').split(',')]
+    
     return RedditConfig(
         client_id=os.getenv('REDDIT_CLIENT_ID', 'your_client_id'),
         client_secret=os.getenv('REDDIT_CLIENT_SECRET', 'your_client_secret'),
         user_agent=os.getenv('REDDIT_USER_AGENT', 'SentimentAnalyzer:v1.0 (by /u/your_username)'),
         username=os.getenv('REDDIT_USERNAME'),
-        password=os.getenv('REDDIT_PASSWORD')
+        password=os.getenv('REDDIT_PASSWORD'),
+        
+        # Target configuration from environment
+        target_subreddits=target_subreddits,
+        target_keywords=target_keywords,
+        
+        # Rate limiting configuration from environment
+        max_requests_per_window=int(os.getenv('MAX_REQUESTS_PER_WINDOW', '600')),
+        base_delay=float(os.getenv('BASE_DELAY', '1.0')),
+        max_delay=float(os.getenv('MAX_DELAY', '60.0')),
+        max_retries=int(os.getenv('MAX_RETRIES', '5')),
+        circuit_breaker_threshold=int(os.getenv('CIRCUIT_BREAKER_THRESHOLD', '5'))
     )
 
 

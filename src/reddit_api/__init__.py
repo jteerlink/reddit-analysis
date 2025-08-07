@@ -46,6 +46,11 @@ from .main import (
     collect_reddit_data,
     quick_test
 )
+from .historical import (
+    TimeFrame,
+    HistoricalRedditCollector,
+    collect_historical_data
+)
 
 __version__ = "1.0.0"
 __author__ = "Reddit API Data Collector"
@@ -68,5 +73,10 @@ __all__ = [
     "create_config_from_env",
     "test_reddit_connection", 
     "collect_reddit_data",
-    "quick_test"
+    "quick_test",
+    
+    # Historical collection
+    "TimeFrame",
+    "HistoricalRedditCollector",
+    "collect_historical_data"
 ]
