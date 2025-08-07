@@ -134,7 +134,7 @@ class HistoricalRedditCollector:
         """
         self.config = config
         self.storage = storage
-        self.collector = RedditDataCollector(config)
+        self.collector = RedditDataCollector(config, storage)
         self.progress = HistoricalCollectionProgress()
         
         # Enhanced rate limiting for historical collection
@@ -243,6 +243,17 @@ class HistoricalRedditCollector:
             duration = results['end_time'] - results['start_time']
             logger.info(f"Historical collection completed in {duration.total_seconds():.1f} seconds")
             logger.info(f"Total collected: {results['posts_collected']} posts, {results['comments_collected']} comments")
+            
+            # Run post-collection deduplication if collection was successful
+            if results['success']:
+                logger.info("Running post-collection database deduplication...")
+                try:
+                    dedup_stats = self.storage.deduplicate_database()
+                    results['deduplication_stats'] = dedup_stats
+                    logger.info(f"Deduplication completed: {dedup_stats['posts_removed_total']} posts, {dedup_stats['comments_removed_total']} comments removed")
+                except Exception as e:
+                    logger.warning(f"Deduplication failed: {e}")
+                    results['deduplication_error'] = str(e)
         
         return results
     
@@ -311,15 +322,23 @@ class HistoricalRedditCollector:
         limit: int,
         keywords: List[str]
     ) -> List[RedditPost]:
-        """Collect posts filtered by time frame."""
+        """Collect posts filtered by time frame with pre-filtering for efficiency."""
+        # Get existing post IDs for this timeframe to avoid duplicates
+        existing_ids = self.storage.get_existing_post_ids_in_timeframe(
+            subreddit, time_frame.start_date, time_frame.end_date
+        )
+        
+        logger.info(f"Historical pre-filtering: {len(existing_ids)} existing posts in timeframe")
+        
         # Reddit's search is limited for historical data, so we collect recent posts
         # and filter by timestamp. For true historical data, you'd need Reddit's
         # historical data API or pushshift.io (now discontinued)
         
         posts = self.collector.collect_subreddit_posts(
             subreddit_name=subreddit,
-            limit=limit * 2,  # Collect more to account for filtering
-            sort='new'  # Get newest first for better time filtering
+            limit=limit * 3,  # Collect more to account for timeframe and duplicate filtering
+            sort='new',  # Get newest first for better time filtering
+            use_pre_filtering=True  # Enable the new pre-filtering
         )
         
         # Filter posts by time frame and keywords

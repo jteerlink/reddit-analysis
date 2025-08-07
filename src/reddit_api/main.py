@@ -176,9 +176,9 @@ def collect_reddit_data(config: RedditConfig,
     """
     logger.info("Starting Reddit data collection...")
     
-    # Initialize components
-    collector = RedditDataCollector(config)
+    # Initialize components with storage reference for pre-filtering
     storage = RedditDataStorage(db_path)
+    collector = RedditDataCollector(config, storage)
     
     try:
         # Collect data
@@ -192,8 +192,21 @@ def collect_reddit_data(config: RedditConfig,
         comments_stored = storage.store_comments(results['comments'])
         storage.store_metrics(results['metrics'])
         
-        # Get summary
+        # Update collection metadata for efficiency tracking
+        collection_time = datetime.now()
+        for subreddit in config.target_subreddits:
+            # Count posts/comments collected per subreddit
+            subreddit_posts = sum(1 for p in results['posts'] if p.subreddit == subreddit)
+            subreddit_comments = sum(1 for c in results['comments'] if c.subreddit == subreddit)
+            storage.update_collection_metadata(subreddit, collection_time, subreddit_posts, subreddit_comments)
+        
+        # Run deduplication cleanup after data collection
+        logger.info("Running post-collection database deduplication...")
+        dedup_stats = storage.deduplicate_database()
+        
+        # Get updated summary and efficiency stats after deduplication
         summary = storage.get_data_summary()
+        efficiency_stats = storage.get_collection_efficiency_stats(days_back=7)
         
         return {
             'success': True,
@@ -203,6 +216,8 @@ def collect_reddit_data(config: RedditConfig,
             'comments_stored': comments_stored,
             'collection_time': results['collection_time'],
             'api_metrics': results['metrics'],
+            'deduplication_stats': dedup_stats,
+            'efficiency_stats': efficiency_stats,
             'database_summary': summary
         }
         
@@ -292,7 +307,29 @@ def main():
         print(f"  Posts stored: {results['posts_stored']}")
         print(f"  Comments stored: {results['comments_stored']}")
         
-        print("\\n📊 Database Summary:")
+        # Display deduplication results
+        if 'deduplication_stats' in results:
+            dedup = results['deduplication_stats']
+            print("\\n🧹 Deduplication Results:")
+            print(f"  Posts removed: {dedup['posts_removed_total']}")
+            print(f"    - By ID: {dedup['posts_removed_by_id']}")
+            print(f"    - By content: {dedup['posts_removed_by_content']}")
+            print(f"  Comments removed: {dedup['comments_removed_total']}")
+            print(f"    - By ID: {dedup['comments_removed_by_id']}")
+            print(f"    - By content: {dedup['comments_removed_by_content']}")
+            print(f"    - Orphaned: {dedup['orphaned_comments_removed']}")
+        
+        # Display efficiency statistics
+        if 'efficiency_stats' in results:
+            eff = results['efficiency_stats']
+            print("\\n⚡ Collection Efficiency (last 7 days):")
+            print(f"  Total collections: {eff['total_collections']}")
+            print(f"  Average posts per run: {eff['avg_posts_per_run']:.1f}")
+            print(f"  Average comments per run: {eff['avg_comments_per_run']:.1f}")
+            print(f"  Total posts collected: {eff['total_posts_collected']}")
+            print(f"  Total comments collected: {eff['total_comments_collected']}")
+        
+        print("\\n📊 Database Summary (after cleanup):")
         summary = results['database_summary']
         for key, value in summary.items():
             if 'size' in key:
