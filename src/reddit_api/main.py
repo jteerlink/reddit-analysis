@@ -161,74 +161,181 @@ def test_reddit_connection(config: RedditConfig) -> bool:
 def collect_reddit_data(config: RedditConfig, 
                        posts_per_subreddit: int = 5,
                        comments_per_post: int = 10,
-                       db_path: str = 'reddit_data.db') -> Dict:
+                       db_path: str = 'reddit_data.db',
+                       enable_batching: bool = True,
+                       enable_resume: bool = False) -> Dict:
     """
-    Collect Reddit data and store in database.
+    Collect Reddit data and store in database with optional mini-batch processing.
     
     Args:
         config: Reddit configuration
         posts_per_subreddit: Number of posts to collect per subreddit
         comments_per_post: Number of comments to collect per post
         db_path: Path to SQLite database
+        enable_batching: If True, store data after each subreddit (recommended for fault tolerance)
+        enable_resume: If True, skip subreddits that were recently collected successfully
         
     Returns:
         Dictionary with collection results and statistics
     """
-    logger.info("Starting Reddit data collection...")
+    collection_mode = "batched" if enable_batching else "traditional"
+    logger.info(f"Starting Reddit data collection in {collection_mode} mode...")
     
     # Initialize components with storage reference for pre-filtering
     storage = RedditDataStorage(db_path)
     collector = RedditDataCollector(config, storage)
     
     try:
-        # Collect data
-        results = collector.collect_all_data(
-            posts_per_subreddit=posts_per_subreddit,
-            comments_per_post=comments_per_post
-        )
-        
-        # Store data
-        posts_stored = storage.store_posts(results['posts'])
-        comments_stored = storage.store_comments(results['comments'])
-        storage.store_metrics(results['metrics'])
-        
-        # Update collection metadata for efficiency tracking
-        collection_time = datetime.now()
-        for subreddit in config.target_subreddits:
-            # Count posts/comments collected per subreddit
-            subreddit_posts = sum(1 for p in results['posts'] if p.subreddit == subreddit)
-            subreddit_comments = sum(1 for c in results['comments'] if c.subreddit == subreddit)
-            storage.update_collection_metadata(subreddit, collection_time, subreddit_posts, subreddit_comments)
-        
-        # Run deduplication cleanup after data collection
-        logger.info("Running post-collection database deduplication...")
-        dedup_stats = storage.deduplicate_database()
-        
-        # Get updated summary and efficiency stats after deduplication
-        summary = storage.get_data_summary()
-        efficiency_stats = storage.get_collection_efficiency_stats(days_back=7)
-        
-        return {
-            'success': True,
-            'posts_collected': len(results['posts']),
-            'comments_collected': len(results['comments']),
-            'posts_stored': posts_stored,
-            'comments_stored': comments_stored,
-            'collection_time': results['collection_time'],
-            'api_metrics': results['metrics'],
-            'deduplication_stats': dedup_stats,
-            'efficiency_stats': efficiency_stats,
-            'database_summary': summary
-        }
-        
+        if enable_batching:
+            return _collect_with_batching(collector, storage, config, 
+                                        posts_per_subreddit, comments_per_post, enable_resume)
+        else:
+            return _collect_traditional_way(collector, storage, config,
+                                          posts_per_subreddit, comments_per_post)
+                
     except Exception as e:
         logger.error(f"Data collection failed: {e}")
         return {
             'success': False,
             'error': str(e),
             'posts_collected': 0,
-            'comments_collected': 0
+            'comments_collected': 0,
+            'collection_mode': collection_mode
         }
+
+
+def _collect_with_batching(collector, storage, config, posts_per_subreddit, comments_per_post, enable_resume):
+    """
+    Handle batched collection with immediate storage and fault tolerance.
+    """
+    from datetime import datetime
+    
+    # Check for resume capability if enabled
+    target_subreddits = config.target_subreddits
+    if enable_resume:
+        resume_state = storage.get_collection_resume_state(config.target_subreddits, hours_back=24)
+        if resume_state['resume_available']:
+            target_subreddits = resume_state['pending_subreddits']
+            logger.info(f"📋 Resume mode enabled: Processing {len(target_subreddits)} pending subreddits")
+            logger.info(f"   Skipping {len(resume_state['completed_subreddits'])} recently completed subreddits")
+        else:
+            logger.info("📋 Resume mode enabled but no recent partial completion found")
+    
+    # Update config for potentially filtered subreddits
+    from .models import RedditConfig
+    working_config = RedditConfig(
+        client_id=config.client_id,
+        client_secret=config.client_secret,
+        user_agent=config.user_agent,
+        username=config.username,
+        password=config.password,
+        target_subreddits=target_subreddits,
+        target_keywords=config.target_keywords,
+        max_requests_per_window=config.max_requests_per_window,
+        base_delay=config.base_delay,
+        max_delay=config.max_delay,
+        max_retries=config.max_retries,
+        circuit_breaker_threshold=config.circuit_breaker_threshold
+    )
+    collector.config = working_config
+
+    # Progress tracking callback
+    def progress_callback(progress_info):
+        pct = progress_info['completed'] / progress_info['total'] * 100
+        logger.info(f"🔄 Progress: {progress_info['completed']}/{progress_info['total']} "
+                   f"({pct:.1f}%) - r/{progress_info['current_subreddit']} completed "
+                   f"({progress_info['posts_in_batch']}P, {progress_info['comments_in_batch']}C)")
+
+    # Storage callback for immediate batch storage
+    def storage_callback(batch_result):
+        return storage.store_batch(batch_result)
+
+    # Execute batched collection
+    collection_state = collector.collect_all_data_with_batching(
+        posts_per_subreddit=posts_per_subreddit,
+        comments_per_post=comments_per_post,
+        storage_callback=storage_callback,
+        progress_callback=progress_callback
+    )
+
+    # Store client metrics
+    storage.store_metrics(collector.client.get_metrics())
+
+    # Run deduplication cleanup after batched collection
+    logger.info("🧹 Running post-collection database deduplication...")
+    dedup_stats = storage.deduplicate_database()
+
+    # Get updated summary and efficiency stats after deduplication
+    summary = storage.get_data_summary()
+    efficiency_stats = storage.get_collection_efficiency_stats(days_back=7)
+    batch_history = storage.get_batch_collection_history(limit=5)
+
+    return {
+        'success': True,
+        'collection_mode': 'batched',
+        'enable_resume_was': enable_resume,
+        'completed_subreddits': collection_state['completed_subreddits'],
+        'failed_subreddits': collection_state['failed_subreddits'],
+        'total_posts_collected': collection_state['total_posts'],
+        'total_comments_collected': collection_state['total_comments'],
+        'success_rate': collection_state['success_rate'],
+        'start_time': collection_state['start_time'],
+        'end_time': collection_state['end_time'],
+        'batch_results': collection_state['batch_results'],
+        'api_metrics': collector.client.get_metrics(),
+        'deduplication_stats': dedup_stats,
+        'efficiency_stats': efficiency_stats,
+        'database_summary': summary,
+        'recent_batch_history': batch_history
+    }
+
+
+def _collect_traditional_way(collector, storage, config, posts_per_subreddit, comments_per_post):
+    """
+    Handle traditional collection (original behavior) for backward compatibility.
+    """
+    from datetime import datetime
+    
+    # Collect data using original method
+    results = collector.collect_all_data(
+        posts_per_subreddit=posts_per_subreddit,
+        comments_per_post=comments_per_post
+    )
+    
+    # Store data in single batch
+    posts_stored = storage.store_posts(results['posts'])
+    comments_stored = storage.store_comments(results['comments'])
+    storage.store_metrics(results['metrics'])
+    
+    # Update collection metadata for efficiency tracking
+    collection_time = datetime.now()
+    for subreddit in config.target_subreddits:
+        # Count posts/comments collected per subreddit
+        subreddit_posts = sum(1 for p in results['posts'] if p.subreddit == subreddit)
+        subreddit_comments = sum(1 for c in results['comments'] if c.subreddit == subreddit)
+        storage.update_collection_metadata(subreddit, collection_time, subreddit_posts, subreddit_comments)
+    
+    # Run deduplication cleanup after data collection
+    logger.info("🧹 Running post-collection database deduplication...")
+    dedup_stats = storage.deduplicate_database()
+    
+    # Get updated summary and efficiency stats after deduplication
+    summary = storage.get_data_summary()
+    efficiency_stats = storage.get_collection_efficiency_stats(days_back=7)
+    
+    return {
+        'success': True,
+        'collection_mode': 'traditional',
+        'posts_collected': len(results['posts']),
+        'comments_collected': len(results['comments']),
+        'posts_stored': posts_stored,
+        'comments_stored': comments_stored,
+        'collection_time': results['collection_time'],
+        'api_metrics': results['metrics'],
+        'deduplication_stats': dedup_stats,
+        'efficiency_stats': efficiency_stats,
+        'database_summary': summary
+    }
 
 
 def quick_test(config: RedditConfig, test_subreddit: str = 'test') -> bool:
@@ -291,21 +398,50 @@ def main():
         print("\\n🛑 Quick test failed. Check your configuration.")
         return
     
-    # Full data collection
-    print("\\n🚀 Starting full data collection...")
+    # Full data collection with batching enabled (recommended)
+    print("\\n🚀 Starting full data collection with mini-batch storage...")
+    print("   💡 Using batched mode for fault tolerance - data saved after each subreddit")
     results = collect_reddit_data(
         config=config,
         posts_per_subreddit=3,
         comments_per_post=5,
-        db_path='reddit_data.db'
+        db_path='reddit_data.db',
+        enable_batching=True,      # Enable fault-tolerant batch storage
+        enable_resume=False        # Set to True to resume interrupted collections
     )
     
     if results['success']:
         print("\\n📈 Collection Results:")
-        print(f"  Posts collected: {results['posts_collected']}")
-        print(f"  Comments collected: {results['comments_collected']}")
-        print(f"  Posts stored: {results['posts_stored']}")
-        print(f"  Comments stored: {results['comments_stored']}")
+        
+        # Handle different result formats based on collection mode
+        if results.get('collection_mode') == 'batched':
+            print(f"  Collection mode: ✨ Batched (fault-tolerant)")
+            print(f"  Completed subreddits: {len(results['completed_subreddits'])}")
+            if results['failed_subreddits']:
+                print(f"  Failed subreddits: {len(results['failed_subreddits'])}")
+                for failure in results['failed_subreddits']:
+                    print(f"    - r/{failure['subreddit']}: {failure['error_type']}")
+            print(f"  Success rate: {results['success_rate']:.1f}%")
+            print(f"  Total posts collected: {results['total_posts_collected']}")
+            print(f"  Total comments collected: {results['total_comments_collected']}")
+            
+            # Show batch performance details
+            if results.get('batch_results'):
+                print("\\n⚡ Batch Performance:")
+                total_time = 0
+                for batch in results['batch_results']:
+                    metrics = batch['batch_metrics']
+                    total_time += metrics.get('processing_time_seconds', 0)
+                    print(f"  r/{batch['subreddit']}: {metrics['posts_count']}P, "
+                          f"{metrics['comments_count']}C ({metrics.get('processing_time_seconds', 0):.2f}s)")
+                print(f"  Total processing time: {total_time:.2f}s")
+        else:
+            # Traditional mode display
+            print(f"  Collection mode: 📦 Traditional")
+            print(f"  Posts collected: {results.get('posts_collected', 0)}")
+            print(f"  Comments collected: {results.get('comments_collected', 0)}")
+            print(f"  Posts stored: {results.get('posts_stored', 0)}")
+            print(f"  Comments stored: {results.get('comments_stored', 0)}")
         
         # Display deduplication results
         if 'deduplication_stats' in results:

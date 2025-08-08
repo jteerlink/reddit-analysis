@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(uv:*)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(find:*)"
     ],
     "deny": []
   }

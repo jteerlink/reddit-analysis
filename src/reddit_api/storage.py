@@ -726,3 +726,390 @@ class RedditDataStorage:
                 'avg_comments_per_run': result[4] or 0,
                 'analysis_period_days': days_back
             }
+
+    def store_batch(self, batch_result: Dict) -> Dict:
+        """
+        Store a single subreddit batch with transaction safety and comprehensive error handling.
+        
+        This method provides atomic storage for batched collections, ensuring data consistency
+        and providing detailed storage statistics.
+
+        Args:
+            batch_result: Dictionary containing batch data from collector
+
+        Returns:
+            Dictionary with storage statistics and success information
+
+        Raises:
+            StorageError: If storage operation fails after rollback
+        """
+        subreddit = batch_result['subreddit']
+        posts = batch_result['posts']
+        comments = batch_result['comments']
+        collection_time_str = batch_result['collection_time']
+        
+        logger.info(f"Storing batch for r/{subreddit}: {len(posts)} posts, {len(comments)} comments")
+        
+        storage_start_time = datetime.now()
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            try:
+                # Begin explicit transaction for atomic storage
+                cursor.execute('BEGIN TRANSACTION')
+                
+                # Store posts with transaction cursor
+                posts_stored = 0
+                if posts:
+                    posts_stored = self._store_posts_transaction(cursor, posts)
+                
+                # Store comments with transaction cursor
+                comments_stored = 0
+                if comments:
+                    comments_stored = self._store_comments_transaction(cursor, comments)
+                
+                # Update batch metadata
+                collection_time = datetime.fromisoformat(collection_time_str)
+                storage_time = datetime.now()
+                processing_time = (storage_time - storage_start_time).total_seconds()
+                
+                self._update_batch_metadata(cursor, subreddit, collection_time, 
+                                          posts_stored, comments_stored, processing_time)
+                
+                # Commit transaction
+                cursor.execute('COMMIT')
+                
+                total_storage_time = (datetime.now() - storage_start_time).total_seconds()
+                
+                logger.info(f"✅ Batch stored successfully for r/{subreddit} "
+                           f"(posts: {posts_stored}, comments: {comments_stored}, "
+                           f"time: {total_storage_time:.2f}s)")
+                
+                return {
+                    'success': True,
+                    'subreddit': subreddit,
+                    'posts_stored': posts_stored,
+                    'comments_stored': comments_stored,
+                    'collection_time': collection_time_str,
+                    'storage_time': storage_time.isoformat(),
+                    'processing_time_seconds': total_storage_time,
+                    'transaction_id': f"{subreddit}_{collection_time.strftime('%Y%m%d_%H%M%S')}"
+                }
+                
+            except Exception as e:
+                # Rollback transaction on any error
+                cursor.execute('ROLLBACK')
+                error_msg = f"Batch storage failed for r/{subreddit}: {e}"
+                logger.error(error_msg)
+                
+                # Create custom StorageError for better error handling
+                from .exceptions import StorageError
+                raise StorageError(error_msg) from e
+
+    def _store_posts_transaction(self, cursor, posts: List[RedditPost]) -> int:
+        """
+        Store posts within an existing transaction.
+        
+        Args:
+            cursor: Database cursor within active transaction
+            posts: List of RedditPost objects to store
+
+        Returns:
+            Number of posts successfully stored
+        """
+        if not posts:
+            return 0
+
+        stored_count = 0
+        for post in posts:
+            try:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO posts
+                    (id, title, content, upvotes, timestamp, subreddit, author,
+                     author_karma, url, num_comments, content_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    post.id, post.title, post.content, post.upvotes,
+                    post.timestamp, post.subreddit, post.author,
+                    post.author_karma, post.url, post.num_comments, post.content_type
+                ))
+                stored_count += 1
+            except Exception as e:
+                logger.error(f"Error storing post {post.id} in transaction: {e}")
+                # Don't raise here - let transaction-level error handling manage it
+                
+        return stored_count
+
+    def _store_comments_transaction(self, cursor, comments: List[RedditComment]) -> int:
+        """
+        Store comments within an existing transaction.
+        
+        Args:
+            cursor: Database cursor within active transaction  
+            comments: List of RedditComment objects to store
+
+        Returns:
+            Number of comments successfully stored
+        """
+        if not comments:
+            return 0
+
+        stored_count = 0
+        for comment in comments:
+            try:
+                cursor.execute('''
+                    INSERT OR REPLACE INTO comments
+                    (id, parent_id, content, upvotes, timestamp, subreddit,
+                     author, author_karma, post_id, content_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    comment.id, comment.parent_id, comment.content, comment.upvotes,
+                    comment.timestamp, comment.subreddit, comment.author,
+                    comment.author_karma, comment.post_id, comment.content_type
+                ))
+                stored_count += 1
+            except Exception as e:
+                logger.error(f"Error storing comment {comment.id} in transaction: {e}")
+                # Don't raise here - let transaction-level error handling manage it
+                
+        return stored_count
+
+    def _update_batch_metadata(self, cursor, subreddit: str, collection_time: datetime, 
+                             posts_stored: int, comments_stored: int, processing_time: float):
+        """
+        Update batch collection metadata within transaction.
+        
+        Args:
+            cursor: Database cursor within active transaction
+            subreddit: Subreddit name
+            collection_time: When the collection occurred
+            posts_stored: Number of posts stored
+            comments_stored: Number of comments stored
+            processing_time: Storage processing time in seconds
+        """
+        # Create batch_collections table if it doesn't exist
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS batch_collections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subreddit TEXT NOT NULL,
+                collection_timestamp DATETIME NOT NULL,
+                posts_collected INTEGER DEFAULT 0,
+                comments_collected INTEGER DEFAULT 0,
+                processing_time_seconds REAL DEFAULT 0,
+                batch_status TEXT DEFAULT 'completed',
+                storage_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(subreddit, collection_timestamp)
+            )
+        ''')
+        
+        # Create index for efficient queries
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_batch_collections_subreddit 
+            ON batch_collections(subreddit)
+        ''')
+        cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_batch_collections_timestamp 
+            ON batch_collections(collection_timestamp)
+        ''')
+        
+        # Insert batch metadata
+        cursor.execute('''
+            INSERT OR REPLACE INTO batch_collections 
+            (subreddit, collection_timestamp, posts_collected, comments_collected, 
+             processing_time_seconds, batch_status)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (subreddit, collection_time, posts_stored, comments_stored, 
+              processing_time, 'completed'))
+
+    def get_collection_resume_state(self, subreddit_list: List[str], hours_back: int = 24) -> Dict:
+        """
+        Check which subreddits have been recently collected for resume functionality.
+        
+        This method helps implement resume capability by identifying which subreddits
+        were successfully collected recently, allowing interrupted collections to continue
+        from where they left off.
+
+        Args:
+            subreddit_list: List of subreddits to check completion status for
+            hours_back: How many hours back to consider as "recent" (default 24)
+            
+        Returns:
+            Dictionary with completed and pending subreddits information
+        """
+        if not subreddit_list:
+            return {
+                'completed_subreddits': [],
+                'pending_subreddits': [],
+                'last_collection_times': {},
+                'resume_available': False
+            }
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # Check for recent batch collections
+            cutoff_time = datetime.now() - timedelta(hours=hours_back)
+            
+            # Get last successful collection time for each subreddit
+            placeholders = ','.join('?' for _ in subreddit_list)
+            cursor.execute(f'''
+                SELECT subreddit, MAX(collection_timestamp) as last_collection
+                FROM batch_collections 
+                WHERE subreddit IN ({placeholders}) 
+                  AND batch_status = 'completed'
+                  AND collection_timestamp > ?
+                GROUP BY subreddit
+            ''', subreddit_list + [cutoff_time])
+            
+            completed_recently = {row[0]: row[1] for row in cursor.fetchall()}
+            
+            # Determine pending subreddits
+            completed_subreddits = list(completed_recently.keys())
+            pending_subreddits = [s for s in subreddit_list if s not in completed_recently]
+            
+            # Get detailed stats for completed subreddits
+            completion_stats = {}
+            if completed_subreddits:
+                placeholders = ','.join('?' for _ in completed_subreddits)
+                cursor.execute(f'''
+                    SELECT subreddit, posts_collected, comments_collected, 
+                           collection_timestamp, processing_time_seconds
+                    FROM batch_collections 
+                    WHERE subreddit IN ({placeholders}) 
+                      AND batch_status = 'completed'
+                      AND collection_timestamp > ?
+                    ORDER BY collection_timestamp DESC
+                ''', completed_subreddits + [cutoff_time])
+                
+                for row in cursor.fetchall():
+                    subreddit = row[0]
+                    if subreddit not in completion_stats:  # Keep most recent
+                        completion_stats[subreddit] = {
+                            'posts_collected': row[1],
+                            'comments_collected': row[2],
+                            'collection_timestamp': row[3],
+                            'processing_time_seconds': row[4]
+                        }
+
+            logger.info(f"Resume state: {len(completed_subreddits)} completed, "
+                       f"{len(pending_subreddits)} pending from last {hours_back}h")
+
+            return {
+                'completed_subreddits': completed_subreddits,
+                'pending_subreddits': pending_subreddits,
+                'last_collection_times': completed_recently,
+                'completion_stats': completion_stats,
+                'resume_available': len(pending_subreddits) > 0,
+                'total_subreddits': len(subreddit_list),
+                'completion_rate': len(completed_subreddits) / len(subreddit_list) * 100 if subreddit_list else 0,
+                'hours_back': hours_back
+            }
+
+    def get_batch_collection_history(self, subreddit: str = None, limit: int = 10) -> List[Dict]:
+        """
+        Get recent batch collection history for monitoring and debugging.
+        
+        Args:
+            subreddit: Filter by specific subreddit (None for all)
+            limit: Maximum number of records to return
+            
+        Returns:
+            List of batch collection records with details
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            query = '''
+                SELECT subreddit, collection_timestamp, posts_collected, 
+                       comments_collected, processing_time_seconds, batch_status,
+                       storage_timestamp
+                FROM batch_collections
+            '''
+            params = []
+            
+            if subreddit:
+                query += ' WHERE subreddit = ?'
+                params.append(subreddit)
+            
+            query += ' ORDER BY collection_timestamp DESC LIMIT ?'
+            params.append(limit)
+            
+            cursor.execute(query, params)
+            
+            history = []
+            for row in cursor.fetchall():
+                history.append({
+                    'subreddit': row[0],
+                    'collection_timestamp': row[1],
+                    'posts_collected': row[2],
+                    'comments_collected': row[3],
+                    'processing_time_seconds': row[4],
+                    'batch_status': row[5],
+                    'storage_timestamp': row[6]
+                })
+            
+            return history
+
+    def get_failed_subreddits(self, hours_back: int = 24) -> List[Dict]:
+        """
+        Get list of subreddits that failed in recent collection attempts.
+        
+        Args:
+            hours_back: How many hours back to check for failures
+            
+        Returns:
+            List of failed subreddit information for retry logic
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            cutoff_time = datetime.now() - timedelta(hours=hours_back)
+            
+            cursor.execute('''
+                SELECT subreddit, collection_timestamp, batch_status,
+                       posts_collected, comments_collected
+                FROM batch_collections
+                WHERE batch_status != 'completed' 
+                  AND collection_timestamp > ?
+                ORDER BY collection_timestamp DESC
+            ''', (cutoff_time,))
+            
+            failed_subreddits = []
+            for row in cursor.fetchall():
+                failed_subreddits.append({
+                    'subreddit': row[0],
+                    'collection_timestamp': row[1],
+                    'batch_status': row[2],
+                    'posts_collected': row[3],
+                    'comments_collected': row[4]
+                })
+            
+            return failed_subreddits
+
+    def cleanup_batch_metadata(self, days_to_keep: int = 30) -> int:
+        """
+        Clean up old batch collection metadata.
+        
+        Args:
+            days_to_keep: Number of days of metadata to retain
+            
+        Returns:
+            Number of records cleaned up
+        """
+        cutoff_date = datetime.now() - timedelta(days=days_to_keep)
+        
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                DELETE FROM batch_collections 
+                WHERE collection_timestamp < ?
+            ''', (cutoff_date,))
+            
+            deleted_count = cursor.rowcount
+            conn.commit()
+            
+            logger.info(f"Cleaned up {deleted_count} batch metadata records older than {days_to_keep} days")
+            return deleted_count
