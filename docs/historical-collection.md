@@ -24,7 +24,7 @@ uv run python -m reddit_api.cli historical --days 30
 uv run python -m reddit_api.cli historical --start-date "2024-01-01" --end-date "2024-01-31"
 
 # Custom parameters
-uv run python -m reddit_api.cli historical --days 14 --posts 50 --comments 5 --chunk-days 3
+uv run python -m reddit_api.cli historical --days 2 --posts 150 --comments 50 --chunk-days 3
 ```
 
 ### Using the Dedicated Script
