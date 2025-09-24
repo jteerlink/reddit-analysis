@@ -207,7 +207,7 @@ marimo/_lsp/
 __marimo__/
 
 # Project-specific files
-*.db
+
 *.db-journal
 reddit_api.log
 reddit_prototype.db
