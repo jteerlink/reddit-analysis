@@ -3,7 +3,9 @@
     "allow": [
       "Bash(uv:*)",
       "Bash(chmod:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(mkdir:*)",
+      "Bash(launchctl load:*)"
     ],
     "deny": []
   }

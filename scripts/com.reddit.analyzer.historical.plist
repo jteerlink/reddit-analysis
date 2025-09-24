@@ -13,12 +13,12 @@
     
     <key>StartCalendarInterval</key>
     <array>
-        <!-- Run every 2 days at 2:00 AM -->
+        <!-- Run every 2 days at 1:00 AM CST (6:00 AM UTC) -->
         <dict>
             <key>Weekday</key>
             <integer>0</integer> <!-- Sunday -->
             <key>Hour</key>
-            <integer>2</integer>
+            <integer>1</integer>
             <key>Minute</key>
             <integer>0</integer>
         </dict>
@@ -26,7 +26,7 @@
             <key>Weekday</key>
             <integer>2</integer> <!-- Tuesday -->
             <key>Hour</key>
-            <integer>2</integer>
+            <integer>1</integer>
             <key>Minute</key>
             <integer>0</integer>
         </dict>
@@ -34,7 +34,7 @@
             <key>Weekday</key>
             <integer>4</integer> <!-- Thursday -->
             <key>Hour</key>
-            <integer>2</integer>
+            <integer>1</integer>
             <key>Minute</key>
             <integer>0</integer>
         </dict>
@@ -42,7 +42,7 @@
             <key>Weekday</key>
             <integer>6</integer> <!-- Saturday -->
             <key>Hour</key>
-            <integer>2</integer>
+            <integer>1</integer>
             <key>Minute</key>
             <integer>0</integer>
         </dict>

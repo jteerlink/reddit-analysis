@@ -116,13 +116,13 @@ class HistoricalCollectionScheduler:
     
     def schedule_job(self):
         """Schedule the job to run every 2 days."""
-        # Schedule to run every 2 days at 2:00 AM
-        schedule.every(2).days.at("02:00").do(self.run_collection)
+        # Schedule to run every 2 days at 1:00 AM CST
+        schedule.every(2).days.at("01:00").do(self.run_collection)
         
-        # Also schedule a backup run at 2:00 PM in case the morning run fails
-        schedule.every(2).days.at("14:00").do(self._backup_run)
+        # Also schedule a backup run at 1:00 PM in case the morning run fails
+        schedule.every(2).days.at("13:00").do(self._backup_run)
         
-        self.logger.info("Scheduled historical collection every 2 days at 2:00 AM and 2:00 PM")
+        self.logger.info("Scheduled historical collection every 2 days at 1:00 AM and 1:00 PM CST")
     
     def _backup_run(self):
         """Backup run that only executes if the main run hasn't succeeded today."""
