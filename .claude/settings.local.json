@@ -5,12 +5,13 @@
       "Bash(chmod:*)",
       "Bash(find:*)",
       "Bash(mkdir:*)",
-      "Bash(launchctl load:*)"
+      "Bash(launchctl load:*)",
+      "Bash(git push:*)"
     ],
     "deny": []
   },
+  "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "claude-flow"
-  ],
-  "enableAllProjectMcpServers": true
+  ]
 }
