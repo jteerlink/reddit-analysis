@@ -1,0 +1,1414 @@
+[
+  {
+    "category": "setup",
+    "description": "Create project root directory",
+    "steps": [
+      "Create reddit-analyzer directory",
+      "Initialize git repository",
+      "Verify directory structure created"
+    ],
+    "passes": true
+  },
+  {
+    "category": "setup",
+    "description": "Set up Python packaging configuration",
+    "steps": [
+      "Create pyproject.toml file",
+      "Add project metadata (name, version, description)",
+      "Define core dependencies (praw, pandas, python-dotenv)",
+      "Add optional dependencies groups (dev, ml, production)",
+      "Configure build system (hatchling)"
+    ],
+    "passes": true
+  },
+  {
+    "category": "setup",
+    "description": "Create directory structure",
+    "steps": [
+      "Create src/reddit_api/ directory",
+      "Create tests/ directory",
+      "Create data/ directory",
+      "Create docs/ directory",
+      "Create scripts/ directory",
+      "Create notebooks/ directory",
+      "Create plan/ directory"
+    ],
+    "passes": true
+  },
+  {
+    "category": "setup",
+    "description": "Configure git ignore rules",
+    "steps": [
+      "Create .gitignore file",
+      "Add Python byte-compiled files patterns",
+      "Add environment files (.env, .venv)",
+      "Add database files (*.db, *.db-journal)",
+      "Add IDE-specific files (.vscode/, .DS_Store)",
+      "Add log files (*.log)",
+      "Add data files (data/, *.csv)"
+    ],
+    "passes": true
+  },
+  {
+    "category": "setup",
+    "description": "Create project documentation",
+    "steps": [
+      "Create README.md with project overview",
+      "Add Quick Start section with installation commands",
+      "Add Project Structure section",
+      "Add Usage Examples section",
+      "Create README_reddit_module.md for detailed API docs"
+    ],
+    "passes": true
+  },
+  {
+    "category": "authentication",
+    "description": "Create environment configuration template",
+    "steps": [
+      "Create .env.example file",
+      "Add REDDIT_CLIENT_ID placeholder",
+      "Add REDDIT_CLIENT_SECRET placeholder",
+      "Add REDDIT_USER_AGENT placeholder",
+      "Add optional USERNAME/PASSWORD fields",
+      "Add DATABASE_PATH configuration",
+      "Add rate limiting configuration variables"
+    ],
+    "passes": true
+  },
+  {
+    "category": "authentication",
+    "description": "Document Reddit API credential setup",
+    "steps": [
+      "Add step-by-step comments in .env.example",
+      "Document URL to Reddit app preferences",
+      "Explain how to create a 'script' type app",
+      "Document where to find client ID and secret",
+      "Add example values format"
+    ],
+    "passes": true
+  },
+  {
+    "category": "authentication",
+    "description": "Implement credential loading",
+    "steps": [
+      "Add python-dotenv to dependencies",
+      "Create config loading function in __init__.py",
+      "Load environment variables using load_dotenv()",
+      "Validate required credentials are present",
+      "Raise clear error if credentials missing"
+    ],
+    "passes": true
+  },
+  {
+    "category": "authentication",
+    "description": "Create custom exception classes",
+    "steps": [
+      "Create exceptions.py module",
+      "Define AuthenticationError exception class",
+      "Define RateLimitError exception class",
+      "Define APIError exception class",
+      "Add helpful error messages to each exception type"
+    ],
+    "passes": true
+  },
+  {
+    "category": "data-models",
+    "description": "Define data models for posts and comments",
+    "steps": [
+      "Create models.py module",
+      "Define RedditPost dataclass with fields (id, title, author, score, text, created_utc, subreddit)",
+      "Define RedditComment dataclass with fields (id, post_id, author, text, score, created_utc)",
+      "Add type hints to all model fields",
+      "Add __str__ methods for debugging"
+    ],
+    "passes": true
+  },
+  {
+    "category": "data-fetching",
+    "description": "Create rate-limited Reddit client",
+    "steps": [
+      "Create client.py module",
+      "Import praw library",
+      "Create RedditClient class",
+      "Add __init__ method to load credentials",
+      "Create praw.Reddit instance with credentials",
+      "Test basic connection to Reddit API"
+    ],
+    "passes": true
+  },
+  {
+    "category": "data-fetching",
+    "description": "Implement rate limiting logic",
+    "steps": [
+      "Add request counter to RedditClient",
+      "Add time window tracking (10 minutes)",
+      "Implement 600 requests per 10 minutes limit",
+      "Add sleep delay between requests (1 second base)",
+      "Log rate limit status",
+      "Reset counter after time window expires"
+    ],
+    "passes": true
+  },
+  {
+    "category": "data-fetching",
+    "description": "Implement circuit breaker pattern",
+    "steps": [
+      "Add failure counter to RedditClient",
+      "Define failure threshold (5 consecutive failures)",
+      "Implement circuit breaker states (closed, open, half-open)",
+      "Add exponential backoff on failures",
+      "Reset circuit breaker on successful request",
+      "Log circuit breaker state changes"
+    ],
+    "passes": true
+  },
+  {
+    "category": "data-fetching",
+    "description": "Create data collection module",
+    "steps": [
+      "Create collector.py module",
+      "Create RedditCollector class",
+      "Add method to fetch posts from subreddit",
+      "Add method to fetch comments for a post",
+      "Convert PRAW objects to RedditPost/RedditComment models",
+      "Add progress tracking with tqdm"
+    ],
+    "passes": true
+  },
+  {
+    "category": "data-fetching",
+    "description": "Implement subreddit post fetching",
+    "steps": [
+      "Create fetch_posts() method with subreddit and limit parameters",
+      "Use praw subreddit.hot() to get posts",
+      "Extract post attributes (title, author, score, selftext, created_utc)",
+      "Handle deleted/removed posts gracefully",
+      "Return list of RedditPost objects",
+      "Add error handling for invalid subreddit names"
+    ],
+    "passes": true
+  },
+  {
+    "category": "data-fetching",
+    "description": "Implement comment fetching",
+    "steps": [
+      "Create fetch_comments() method with post_id and limit parameters",
+      "Use praw submission.comments to get comment forest",
+      "Flatten comment tree (handle nested comments)",
+      "Extract comment attributes (author, body, score, created_utc)",
+      "Handle deleted/removed comments",
+      "Return list of RedditComment objects"
+    ],
+    "passes": true
+  },
+  {
+    "category": "data-fetching",
+    "description": "Implement historical data collection",
+    "steps": [
+      "Create historical.py module",
+      "Add date range parameter support",
+      "Use praw subreddit search with time filters",
+      "Implement chunked collection (day-by-day or week-by-week)",
+      "Add progress tracking for historical collection",
+      "Handle API limitations for old posts"
+    ],
+    "passes": true
+  },
+  {
+    "category": "data-storage",
+    "description": "Design SQLite database schema",
+    "steps": [
+      "Create storage.py module",
+      "Define posts table schema (id, subreddit, title, author, score, text, created_utc)",
+      "Define comments table schema (id, post_id, author, text, score, created_utc)",
+      "Add indexes on frequently queried fields (subreddit, created_utc, score)",
+      "Add foreign key constraint (comments.post_id -> posts.id)"
+    ],
+    "passes": true
+  },
+  {
+    "category": "data-storage",
+    "description": "Implement database connection manager",
+    "steps": [
+      "Import sqlite3 library",
+      "Create RedditDatabase class",
+      "Add __init__ method with database path parameter",
+      "Implement context manager (__enter__, __exit__)",
+      "Add connection pooling/reuse logic",
+      "Add proper connection cleanup"
+    ],
+    "passes": true
+  },
+  {
+    "category": "data-storage",
+    "description": "Implement database initialization",
+    "steps": [
+      "Create initialize_database() method",
+      "Check if tables already exist",
+      "Create posts table with schema",
+      "Create comments table with schema",
+      "Create indexes for performance",
+      "Add database version tracking"
+    ],
+    "passes": true
+  },
+  {
+    "category": "data-storage",
+    "description": "Implement post insertion logic",
+    "steps": [
+      "Create insert_post() method",
+      "Accept RedditPost object as parameter",
+      "Extract fields into INSERT statement",
+      "Handle duplicate posts (UPSERT or ignore)",
+      "Add batch insertion method for multiple posts",
+      "Return success/failure status"
+    ],
+    "passes": true
+  },
+  {
+    "category": "data-storage",
+    "description": "Implement comment insertion logic",
+    "steps": [
+      "Create insert_comment() method",
+      "Accept RedditComment object as parameter",
+      "Extract fields into INSERT statement",
+      "Handle duplicate comments",
+      "Add batch insertion method for multiple comments",
+      "Verify foreign key constraints"
+    ],
+    "passes": true
+  },
+  {
+    "category": "data-storage",
+    "description": "Add error handling for database operations",
+    "steps": [
+      "Wrap database operations in try-except blocks",
+      "Handle sqlite3.IntegrityError (duplicates, constraints)",
+      "Handle sqlite3.OperationalError (locked database)",
+      "Add retry logic for locked database",
+      "Log all database errors with context",
+      "Rollback transaction on errors"
+    ],
+    "passes": true
+  },
+  {
+    "category": "analysis",
+    "description": "Implement query methods for top posts",
+    "steps": [
+      "Create get_top_posts() method",
+      "Add limit parameter (default 10)",
+      "Add subreddit filter parameter (optional)",
+      "Add date range filter parameters (optional)",
+      "Order by score DESC",
+      "Return list of post dictionaries"
+    ],
+    "passes": true
+  },
+  {
+    "category": "analysis",
+    "description": "Implement author activity analysis",
+    "steps": [
+      "Create get_most_active_authors() method",
+      "Count posts per author using GROUP BY",
+      "Add limit parameter for top N authors",
+      "Include post count and average score",
+      "Order by post count DESC",
+      "Return list of author statistics"
+    ],
+    "passes": true
+  },
+  {
+    "category": "analysis",
+    "description": "Implement time distribution analysis",
+    "steps": [
+      "Create get_posting_time_distribution() method",
+      "Extract hour from created_utc timestamp",
+      "Group posts by hour of day",
+      "Count posts per hour",
+      "Calculate average score per hour",
+      "Return distribution data suitable for plotting"
+    ],
+    "passes": true
+  },
+  {
+    "category": "analysis",
+    "description": "Implement summary statistics",
+    "steps": [
+      "Create get_summary_statistics() method",
+      "Calculate total post count",
+      "Calculate average post score",
+      "Calculate median post score",
+      "Calculate total unique authors",
+      "Calculate posts per day average",
+      "Return dictionary with all statistics"
+    ],
+    "passes": true
+  },
+  {
+    "category": "cli",
+    "description": "Set up CLI framework",
+    "steps": [
+      "Create cli.py module",
+      "Import argparse library",
+      "Create main() function as entry point",
+      "Create ArgumentParser instance",
+      "Add --version flag",
+      "Add --verbose flag for logging"
+    ],
+    "passes": true
+  },
+  {
+    "category": "cli",
+    "description": "Implement 'test' command",
+    "steps": [
+      "Create test subcommand parser",
+      "Add help text for test command",
+      "Implement test_connection() function",
+      "Load credentials from environment",
+      "Create Reddit client instance",
+      "Fetch a single test post",
+      "Print success/failure message"
+    ],
+    "passes": true
+  },
+  {
+    "category": "cli",
+    "description": "Implement 'collect' command",
+    "steps": [
+      "Create collect subcommand parser",
+      "Add --subreddit argument (required)",
+      "Add --posts argument (default 100)",
+      "Add --comments argument (default 10 per post)",
+      "Implement collect_data() function",
+      "Call RedditCollector methods",
+      "Save results to database",
+      "Print collection summary"
+    ],
+    "passes": true
+  },
+  {
+    "category": "cli",
+    "description": "Implement 'historical' command",
+    "steps": [
+      "Create historical subcommand parser",
+      "Add --days argument for lookback period",
+      "Add --start-date and --end-date arguments",
+      "Add --subreddit argument",
+      "Implement historical_collection() function",
+      "Use historical collector module",
+      "Show progress bar during collection",
+      "Print completion statistics"
+    ],
+    "passes": true
+  },
+  {
+    "category": "cli",
+    "description": "Add help text and examples",
+    "steps": [
+      "Add description to main parser",
+      "Add usage examples in help text",
+      "Add examples to each subcommand",
+      "Document all arguments with clear descriptions",
+      "Add epilog with additional tips"
+    ],
+    "passes": true
+  },
+  {
+    "category": "cli",
+    "description": "Configure entry point",
+    "steps": [
+      "Add [project.scripts] section to pyproject.toml",
+      "Define 'reddit-collector' entry point",
+      "Point to reddit_api.cli:main",
+      "Test CLI can be invoked after installation",
+      "Verify help text displays correctly"
+    ],
+    "passes": true
+  },
+  {
+    "category": "testing",
+    "description": "Set up pytest framework",
+    "steps": [
+      "Add pytest to dev dependencies",
+      "Add pytest-cov for coverage reports",
+      "Create [tool.pytest.ini_options] in pyproject.toml",
+      "Configure test paths",
+      "Configure coverage settings",
+      "Add coverage report format options"
+    ],
+    "passes": true
+  },
+  {
+    "category": "testing",
+    "description": "Create test fixtures",
+    "steps": [
+      "Create conftest.py for shared fixtures",
+      "Create mock Reddit post data",
+      "Create mock Reddit comment data",
+      "Create temporary database fixture",
+      "Create mock Reddit client fixture",
+      "Add fixture cleanup logic"
+    ],
+    "passes": true
+  },
+  {
+    "category": "testing",
+    "description": "Write data fetching tests",
+    "steps": [
+      "Create test_collector.py",
+      "Test fetch_posts() with mock data",
+      "Test fetch_comments() with mock data",
+      "Test rate limiting behavior",
+      "Test circuit breaker triggers on failures",
+      "Test error handling for invalid subreddits"
+    ],
+    "passes": true
+  },
+  {
+    "category": "testing",
+    "description": "Write database storage tests",
+    "steps": [
+      "Create test_storage.py",
+      "Test database initialization",
+      "Test insert_post() with valid data",
+      "Test insert_comment() with valid data",
+      "Test duplicate handling",
+      "Test foreign key constraints",
+      "Test transaction rollback on errors"
+    ],
+    "passes": true
+  },
+  {
+    "category": "testing",
+    "description": "Write analysis tests",
+    "steps": [
+      "Create test_analysis.py",
+      "Test get_top_posts() returns correct ordering",
+      "Test get_most_active_authors() grouping",
+      "Test time distribution calculations",
+      "Test summary statistics accuracy",
+      "Test filtering by date ranges"
+    ],
+    "passes": true
+  },
+  {
+    "category": "testing",
+    "description": "Create batch collection integration test",
+    "steps": [
+      "Create test_batch_collection.py",
+      "Set up test database and client",
+      "Test full collection workflow",
+      "Verify data persisted correctly",
+      "Test progress tracking",
+      "Verify statistics are accurate"
+    ],
+    "passes": true
+  },
+  {
+    "category": "documentation",
+    "description": "Write installation guide",
+    "steps": [
+      "Add Installation section to README",
+      "Document UV installation (recommended)",
+      "Document pip installation (alternative)",
+      "Add Python version requirements",
+      "Include virtual environment setup steps",
+      "Add troubleshooting section"
+    ],
+    "passes": true
+  },
+  {
+    "category": "documentation",
+    "description": "Document Reddit API setup",
+    "steps": [
+      "Create detailed credential setup section",
+      "Add screenshots or step numbers for Reddit app creation",
+      "Explain script vs web app distinction",
+      "Document .env file creation from template",
+      "Add example .env values",
+      "Link to Reddit API documentation"
+    ],
+    "passes": true
+  },
+  {
+    "category": "documentation",
+    "description": "Create usage examples",
+    "steps": [
+      "Add Quick Start section with minimal example",
+      "Add CLI usage examples for each command",
+      "Create example_usage.py script",
+      "Create example_historical_collection.py script",
+      "Add Python API usage examples",
+      "Document common workflows"
+    ],
+    "passes": true
+  },
+  {
+    "category": "documentation",
+    "description": "Write API reference documentation",
+    "steps": [
+      "Create README_reddit_module.md",
+      "Document RedditClient class and methods",
+      "Document RedditCollector class and methods",
+      "Document RedditDatabase class and methods",
+      "Document all data models",
+      "Add parameter descriptions and return types"
+    ],
+    "passes": true
+  },
+  {
+    "category": "documentation",
+    "description": "Add inline code documentation",
+    "steps": [
+      "Add docstrings to all classes",
+      "Add docstrings to all public methods",
+      "Document complex algorithms with comments",
+      "Add type hints to all functions",
+      "Document exceptions that can be raised",
+      "Add usage examples in docstrings"
+    ],
+    "passes": true
+  },
+  {
+    "category": "documentation",
+    "description": "Create development documentation",
+    "steps": [
+      "Create scripts/dev-setup.sh for automated setup",
+      "Document development workflow (testing, linting, formatting)",
+      "Create scripts/uv-commands.md with package management reference",
+      "Document contribution guidelines",
+      "Add code style guide (Black, isort)",
+      "Document how to run tests with coverage"
+    ],
+    "passes": true
+  },
+  {
+    "category": "ml-setup",
+    "description": "Create ML module directory structure",
+    "steps": [
+      "Create src/ml/ directory",
+      "Create src/ml/preprocessing.py module",
+      "Create src/ml/sentiment.py module",
+      "Create src/ml/topics.py module",
+      "Create src/ml/timeseries.py module",
+      "Create src/ml/__init__.py"
+    ],
+    "passes": false
+  },
+  {
+    "category": "ml-setup",
+    "description": "Add ML dependencies to project",
+    "steps": [
+      "Add transformers to dependencies (DistilBERT)",
+      "Add torch to dependencies (PyTorch)",
+      "Add sentence-transformers to dependencies (embeddings)",
+      "Add bertopic to dependencies (topic modeling)",
+      "Add prophet to dependencies (time series forecasting)",
+      "Add evidently to dependencies (drift detection)",
+      "Update pyproject.toml with ML dependency group"
+    ],
+    "passes": false
+  },
+  {
+    "category": "ml-setup",
+    "description": "Set up MLflow for experiment tracking",
+    "steps": [
+      "Add mlflow to dependencies",
+      "Create mlruns/ directory for local tracking",
+      "Initialize MLflow tracking URI in code",
+      "Create helper function for logging experiments",
+      "Add model registry configuration",
+      "Document MLflow usage in README"
+    ],
+    "passes": false
+  },
+  {
+    "category": "ml-setup",
+    "description": "Create model storage directories",
+    "steps": [
+      "Create models/ directory",
+      "Create models/sentiment/ subdirectory",
+      "Create models/topics/ subdirectory",
+      "Create models/timeseries/ subdirectory",
+      "Create cache/embeddings/ directory",
+      "Update .gitignore to exclude large model files"
+    ],
+    "passes": false
+  },
+  {
+    "category": "preprocessing",
+    "description": "Implement text cleaning functions",
+    "steps": [
+      "Create clean_text() function in preprocessing.py",
+      "Remove URLs using regex",
+      "Remove special characters and excessive whitespace",
+      "Handle Reddit markdown formatting (quotes, bold)",
+      "Expand common contractions",
+      "Add unit tests for text cleaning"
+    ],
+    "passes": false
+  },
+  {
+    "category": "preprocessing",
+    "description": "Implement tokenization and normalization",
+    "steps": [
+      "Add spaCy to dependencies",
+      "Download spaCy English model (en_core_web_sm)",
+      "Create normalize_text() function",
+      "Implement lowercase conversion",
+      "Add lemmatization using spaCy",
+      "Make stop word removal optional (configurable)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "preprocessing",
+    "description": "Implement embedding generation with caching",
+    "steps": [
+      "Load sentence-transformers model (all-MiniLM-L6-v2)",
+      "Create generate_embeddings() function",
+      "Implement batch processing for efficiency",
+      "Add embedding cache using pickle/joblib",
+      "Check cache before generating new embeddings",
+      "Add progress bar for large batches"
+    ],
+    "passes": false
+  },
+  {
+    "category": "preprocessing",
+    "description": "Create preprocessing pipeline orchestrator",
+    "steps": [
+      "Create PreprocessingPipeline class",
+      "Add method to fetch unprocessed posts from database",
+      "Chain cleaning → normalization → embedding steps",
+      "Store preprocessed data back to database",
+      "Add logging for preprocessing progress",
+      "Handle errors gracefully (skip problematic posts)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "preprocessing",
+    "description": "Extend database schema for preprocessed data",
+    "steps": [
+      "Add preprocessed_posts table to schema",
+      "Add columns: post_id (FK), cleaned_text, embedding (BLOB)",
+      "Create indexes on post_id for fast lookups",
+      "Implement insert_preprocessed_post() method",
+      "Add query method to check if post already preprocessed",
+      "Update database initialization script"
+    ],
+    "passes": false
+  },
+  {
+    "category": "labeling",
+    "description": "Implement VADER sentiment baseline",
+    "steps": [
+      "Add vaderSentiment to dependencies",
+      "Create WeakLabelGenerator class in preprocessing.py",
+      "Implement VADER scoring for each post/comment",
+      "Extract compound sentiment score (-1 to +1)",
+      "Apply threshold filtering (|score| > 0.5 for high confidence)",
+      "Return weak labels: Positive, Neutral, Negative"
+    ],
+    "passes": false
+  },
+  {
+    "category": "labeling",
+    "description": "Add financial sentiment lexicon",
+    "steps": [
+      "Research and download FinBERT lexicon or similar",
+      "Create keyword dictionaries (positive/negative economic terms)",
+      "Implement lexicon-based scoring function",
+      "Combine lexicon score with VADER score",
+      "Weight lexicon higher for finance/economic subreddits",
+      "Add unit tests for lexicon matching"
+    ],
+    "passes": false
+  },
+  {
+    "category": "labeling",
+    "description": "Implement heuristic-based labeling",
+    "steps": [
+      "Create heuristic rules: high upvotes + positive language",
+      "Add rule: downvoted + negative language",
+      "Implement confidence scoring for heuristics",
+      "Combine VADER + lexicon + heuristics into final weak label",
+      "Filter for high-confidence labels only (confidence > 0.7)",
+      "Generate training dataset of 50k labeled posts"
+    ],
+    "passes": false
+  },
+  {
+    "category": "labeling",
+    "description": "Extend database schema for labels",
+    "steps": [
+      "Add weak_labels table to schema",
+      "Add columns: post_id (FK), vader_score, lexicon_score, heuristic_score, final_label, confidence",
+      "Create indexes on confidence and final_label",
+      "Implement insert_weak_label() method",
+      "Add query method to fetch high-confidence labeled data",
+      "Update database initialization script"
+    ],
+    "passes": false
+  },
+  {
+    "category": "sentiment-model",
+    "description": "Create sentiment model training script",
+    "steps": [
+      "Create train_sentiment.py in scripts/",
+      "Load weakly labeled dataset from database",
+      "Split into train/validation sets (80/20)",
+      "Implement stratified sampling (balanced classes)",
+      "Add argument parsing for hyperparameters",
+      "Set up MLflow experiment tracking"
+    ],
+    "passes": false
+  },
+  {
+    "category": "sentiment-model",
+    "description": "Implement DistilBERT fine-tuning",
+    "steps": [
+      "Load distilbert-base-uncased from HuggingFace",
+      "Create SentimentClassifier class wrapping DistilBERT",
+      "Add classification head (Linear 768 → 3 classes)",
+      "Implement training loop with PyTorch",
+      "Add dropout (0.1) for regularization",
+      "Use AdamW optimizer with learning rate 2e-5"
+    ],
+    "passes": false
+  },
+  {
+    "category": "sentiment-model",
+    "description": "Add training enhancements",
+    "steps": [
+      "Implement learning rate warmup (first 10% of steps)",
+      "Add class weighting to handle imbalanced data",
+      "Implement early stopping (patience=3 epochs)",
+      "Add gradient clipping to prevent explosions",
+      "Log training loss and validation metrics to MLflow",
+      "Save best model checkpoint based on validation F1"
+    ],
+    "passes": false
+  },
+  {
+    "category": "sentiment-model",
+    "description": "Implement model evaluation",
+    "steps": [
+      "Create evaluate_sentiment.py in scripts/",
+      "Calculate F1-score (macro and per-class)",
+      "Generate confusion matrix visualization",
+      "Calculate ROC-AUC for multi-class",
+      "Compare predictions with VADER baseline (correlation)",
+      "Log all metrics to MLflow"
+    ],
+    "passes": false
+  },
+  {
+    "category": "sentiment-model",
+    "description": "Create batch inference script",
+    "steps": [
+      "Create batch_sentiment.py in scripts/",
+      "Load trained sentiment model from models/",
+      "Fetch unprocessed posts from database",
+      "Run inference in batches (batch_size=32)",
+      "Extract predictions and confidence scores",
+      "Store results in predictions table"
+    ],
+    "passes": false
+  },
+  {
+    "category": "sentiment-model",
+    "description": "Extend database schema for predictions",
+    "steps": [
+      "Add sentiment_predictions table to schema",
+      "Add columns: post_id (FK), predicted_label, confidence, positive_prob, neutral_prob, negative_prob, model_version",
+      "Create indexes on predicted_label and confidence",
+      "Implement insert_sentiment_prediction() method",
+      "Add query method to fetch predictions by date range",
+      "Update database initialization script"
+    ],
+    "passes": false
+  },
+  {
+    "category": "topic-modeling",
+    "description": "Set up BERTopic configuration",
+    "steps": [
+      "Create topics.py module in src/ml/",
+      "Initialize BERTopic with sentence-transformers",
+      "Configure UMAP for dimensionality reduction",
+      "Configure HDBSCAN for clustering (min_topic_size=30)",
+      "Set max topics limit (50-100)",
+      "Add diversity parameter (0.5) for balanced topics"
+    ],
+    "passes": false
+  },
+  {
+    "category": "topic-modeling",
+    "description": "Implement topic model training",
+    "steps": [
+      "Create train_topics.py in scripts/",
+      "Load preprocessed posts from database (90 days historical)",
+      "Extract embeddings from cache",
+      "Fit BERTopic model on embeddings",
+      "Generate topic labels using c-TF-IDF",
+      "Save trained model to models/topics/"
+    ],
+    "passes": false
+  },
+  {
+    "category": "topic-modeling",
+    "description": "Implement topic assignment for new data",
+    "steps": [
+      "Create assign_topics() function",
+      "Load trained BERTopic model",
+      "Transform new posts using model.transform()",
+      "Extract topic assignments and probabilities",
+      "Handle outliers (topic = -1) gracefully",
+      "Store topic assignments in database"
+    ],
+    "passes": false
+  },
+  {
+    "category": "topic-modeling",
+    "description": "Add temporal topic tracking",
+    "steps": [
+      "Implement topics_over_time() method",
+      "Group posts by time period (daily/weekly)",
+      "Calculate topic prevalence per time period",
+      "Detect emerging topics (new clusters)",
+      "Detect declining topics (shrinking clusters)",
+      "Store temporal topic data in database"
+    ],
+    "passes": false
+  },
+  {
+    "category": "topic-modeling",
+    "description": "Implement topic labeling and visualization",
+    "steps": [
+      "Extract top-N keywords per topic",
+      "Generate human-readable topic names",
+      "Create word clouds for each topic",
+      "Find representative documents for topics",
+      "Calculate topic coherence scores",
+      "Log topic visualizations to MLflow"
+    ],
+    "passes": false
+  },
+  {
+    "category": "topic-modeling",
+    "description": "Extend database schema for topics",
+    "steps": [
+      "Add topics table to schema (topic_id, keywords, label, coherence_score)",
+      "Add topic_assignments table (post_id, topic_id, probability)",
+      "Add temporal_topics table (topic_id, date, prevalence)",
+      "Create indexes for efficient querying",
+      "Implement insert methods for all topic tables",
+      "Update database initialization script"
+    ],
+    "passes": false
+  },
+  {
+    "category": "timeseries",
+    "description": "Implement sentiment aggregation",
+    "steps": [
+      "Create timeseries.py module in src/ml/",
+      "Create aggregate_sentiment() function",
+      "Calculate daily average sentiment by subreddit",
+      "Add upvote weighting (importance-weighted average)",
+      "Calculate 7-day and 30-day moving averages",
+      "Calculate sentiment volatility (standard deviation)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "timeseries",
+    "description": "Implement trend detection",
+    "steps": [
+      "Add ruptures library for change point detection",
+      "Implement PELT algorithm for change points",
+      "Identify significant sentiment shifts",
+      "Add threshold-based alerting (e.g., >20% change)",
+      "Compare current sentiment to historical baseline",
+      "Return change points with timestamps and magnitudes"
+    ],
+    "passes": false
+  },
+  {
+    "category": "timeseries",
+    "description": "Set up Prophet forecasting",
+    "steps": [
+      "Create setup_prophet_model() function",
+      "Configure daily and weekly seasonality",
+      "Set changepoint_prior_scale (0.05 for flexibility)",
+      "Load historical sentiment data (90 days minimum)",
+      "Fit Prophet model on historical data",
+      "Save model to models/timeseries/"
+    ],
+    "passes": false
+  },
+  {
+    "category": "timeseries",
+    "description": "Implement forecast generation",
+    "steps": [
+      "Create generate_forecast() function",
+      "Load trained Prophet model",
+      "Generate 7-14 day forecasts",
+      "Extract prediction intervals (confidence bands)",
+      "Compare forecasts to actuals for validation",
+      "Store forecasts in database"
+    ],
+    "passes": false
+  },
+  {
+    "category": "timeseries",
+    "description": "Implement topic-specific trend analysis",
+    "steps": [
+      "Create analyze_topic_trends() function",
+      "Track sentiment for each topic over time",
+      "Identify topics with strongest sentiment changes",
+      "Correlate topic volume with sentiment shifts",
+      "Generate topic-specific forecasts (optional)",
+      "Create visualizations for topic trends"
+    ],
+    "passes": false
+  },
+  {
+    "category": "timeseries",
+    "description": "Extend database schema for time series",
+    "steps": [
+      "Add daily_sentiment table (date, subreddit, avg_sentiment, volatility)",
+      "Add moving_averages table (date, ma_7day, ma_30day)",
+      "Add change_points table (date, magnitude, direction)",
+      "Add forecasts table (date, predicted_sentiment, lower_bound, upper_bound)",
+      "Create indexes on date columns",
+      "Update database initialization script"
+    ],
+    "passes": false
+  },
+  {
+    "category": "dashboard-setup",
+    "description": "Create Streamlit app structure",
+    "steps": [
+      "Create app.py as main dashboard entry point",
+      "Create src/dashboard/ directory",
+      "Add streamlit to dependencies",
+      "Add plotly to dependencies for interactive charts",
+      "Configure streamlit settings (page title, icon, layout)",
+      "Create sidebar navigation for tabs"
+    ],
+    "passes": false
+  },
+  {
+    "category": "dashboard-setup",
+    "description": "Create dashboard utility functions",
+    "steps": [
+      "Create src/dashboard/utils.py",
+      "Implement database connection helper",
+      "Create data loading functions (cached with @st.cache_data)",
+      "Add date range selector component",
+      "Create color scheme constants",
+      "Add helper for formatting metrics"
+    ],
+    "passes": false
+  },
+  {
+    "category": "dashboard-overview",
+    "description": "Build Overview tab",
+    "steps": [
+      "Create src/dashboard/overview.py",
+      "Add key metrics cards (total posts, sentiment distribution)",
+      "Create sentiment gauge visualization (plotly indicator)",
+      "Display top 5 trending topics with sentiment",
+      "Show recent anomalies or notable shifts",
+      "Display last collection timestamp"
+    ],
+    "passes": false
+  },
+  {
+    "category": "dashboard-sentiment",
+    "description": "Build Sentiment Analysis tab",
+    "steps": [
+      "Create src/dashboard/sentiment.py",
+      "Add date range selector for filtering",
+      "Create time series plot with plotly (sentiment over time)",
+      "Add moving average overlays (7-day, 30-day)",
+      "Implement subreddit comparison (multi-line chart)",
+      "Add sentiment distribution histogram",
+      "Mark change points on timeline",
+      "Show Prophet forecast with confidence bands"
+    ],
+    "passes": false
+  },
+  {
+    "category": "dashboard-topics",
+    "description": "Build Topic Explorer tab",
+    "steps": [
+      "Create src/dashboard/topics.py",
+      "Display topic list with keywords and document counts",
+      "Create topic-over-time heatmap",
+      "Implement click-to-drill-down (show posts for selected topic)",
+      "Generate word clouds for each topic",
+      "Show topic sentiment breakdown (pie chart)",
+      "Highlight emerging topics (new in last 7 days)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "dashboard-deepdive",
+    "description": "Build Deep Dive tab",
+    "steps": [
+      "Create src/dashboard/deepdive.py",
+      "Add search functionality (keyword/subreddit/date filters)",
+      "Create individual post viewer with predictions",
+      "Add confidence score slider for filtering",
+      "Implement data export buttons (CSV/JSON)",
+      "Show topic-specific sentiment trends",
+      "Add subreddit-specific analysis charts"
+    ],
+    "passes": false
+  },
+  {
+    "category": "dashboard-performance",
+    "description": "Build Model Performance tab",
+    "steps": [
+      "Create src/dashboard/performance.py",
+      "Display drift detection metrics",
+      "Show model confidence distribution histogram",
+      "Display prediction examples (high/low confidence)",
+      "Create VADER vs. model agreement scatter plot",
+      "Show recent model retraining history",
+      "Integrate MLflow metrics (link to experiment tracking)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "dashboard-quality",
+    "description": "Build Data Quality tab",
+    "steps": [
+      "Create src/dashboard/quality.py",
+      "Show collection statistics (posts per day)",
+      "Create posts-per-day bar chart",
+      "Display API usage metrics",
+      "Show data quality warnings (if any)",
+      "Display database size and growth trend",
+      "Add last successful collection status"
+    ],
+    "passes": false
+  },
+  {
+    "category": "automation",
+    "description": "Create daily batch processing script",
+    "steps": [
+      "Create scripts/daily_pipeline.sh",
+      "Add data collection step (existing script)",
+      "Add preprocessing step (new)",
+      "Add sentiment inference step",
+      "Add topic modeling update step",
+      "Add time series analysis step",
+      "Add drift detection step",
+      "Add logging for each step with timestamps"
+    ],
+    "passes": false
+  },
+  {
+    "category": "automation",
+    "description": "Configure cron jobs",
+    "steps": [
+      "Create cron configuration file (crontab.txt)",
+      "Schedule data collection (2 AM daily)",
+      "Schedule preprocessing (2:30 AM daily)",
+      "Schedule sentiment inference (3 AM daily)",
+      "Schedule topic modeling (3:30 AM daily)",
+      "Schedule time series analysis (4 AM daily)",
+      "Schedule drift detection (4:30 AM daily)",
+      "Schedule notification generation (5 AM daily)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "automation",
+    "description": "Implement error handling and retry logic",
+    "steps": [
+      "Add try-catch blocks to all pipeline scripts",
+      "Implement exponential backoff for retries",
+      "Log all errors with full context (stack trace, inputs)",
+      "Send error notifications on critical failures",
+      "Implement graceful degradation (skip failed steps, continue)",
+      "Add pipeline health check endpoint"
+    ],
+    "passes": false
+  },
+  {
+    "category": "notifications",
+    "description": "Create notification system",
+    "steps": [
+      "Create scripts/notify.py",
+      "Add email notification support (smtplib)",
+      "Add Slack webhook support (requests)",
+      "Create daily summary email template",
+      "Add alert templates (sentiment spikes, drift warnings)",
+      "Implement notification filtering (avoid spam)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "notifications",
+    "description": "Implement email notifications",
+    "steps": [
+      "Configure SMTP settings in .env",
+      "Create email template for daily summary",
+      "Add key metrics (sentiment, top topics, changes)",
+      "Attach charts as inline images (optional)",
+      "Implement HTML email formatting",
+      "Test email delivery"
+    ],
+    "passes": false
+  },
+  {
+    "category": "notifications",
+    "description": "Implement Slack notifications",
+    "steps": [
+      "Configure Slack webhook URL in .env",
+      "Create Slack message formatter (blocks/attachments)",
+      "Add alert messages for critical events",
+      "Implement severity levels (info, warning, critical)",
+      "Add emoji indicators for quick scanning",
+      "Test Slack message delivery"
+    ],
+    "passes": false
+  },
+  {
+    "category": "drift-detection",
+    "description": "Implement input drift detection",
+    "steps": [
+      "Create scripts/detect_drift.py",
+      "Calculate vocabulary similarity (current vs. baseline)",
+      "Compute topic distribution changes (Jensen-Shannon divergence)",
+      "Analyze post length distribution (KS test)",
+      "Track embedding similarity over time (cosine similarity)",
+      "Set thresholds for drift alerts"
+    ],
+    "passes": false
+  },
+  {
+    "category": "drift-detection",
+    "description": "Implement output drift detection",
+    "steps": [
+      "Compare sentiment distribution (current vs. baseline)",
+      "Track prediction confidence over time (average confidence)",
+      "Measure VADER vs. model agreement (correlation)",
+      "Detect accuracy drops on validation set",
+      "Set thresholds for performance degradation alerts"
+    ],
+    "passes": false
+  },
+  {
+    "category": "drift-detection",
+    "description": "Set up Evidently for drift reports",
+    "steps": [
+      "Add evidently to dependencies",
+      "Create drift report configuration",
+      "Generate HTML drift dashboards",
+      "Save reports to reports/ directory",
+      "Schedule weekly drift analysis",
+      "Email drift reports to stakeholders"
+    ],
+    "passes": false
+  },
+  {
+    "category": "drift-detection",
+    "description": "Implement automated retraining triggers",
+    "steps": [
+      "Define retraining conditions (F1 drop >10%, confidence <0.75)",
+      "Create retrain_if_needed() function",
+      "Implement automatic model retraining workflow",
+      "Archive old model before retraining",
+      "Log retraining events to MLflow",
+      "Send notification when retraining triggered"
+    ],
+    "passes": false
+  },
+  {
+    "category": "drift-detection",
+    "description": "Extend database schema for drift metrics",
+    "steps": [
+      "Add drift_metrics table (date, metric_name, value, threshold, status)",
+      "Add model_retraining_log table (date, reason, old_version, new_version, performance_change)",
+      "Create indexes on date columns",
+      "Implement insert methods for drift data",
+      "Add query methods for drift history",
+      "Update database initialization script"
+    ],
+    "passes": false
+  },
+  {
+    "category": "model-management",
+    "description": "Implement model versioning system",
+    "steps": [
+      "Create models/versions.json to track model metadata",
+      "Add version number to model filenames",
+      "Store model metadata (training date, performance, dataset size)",
+      "Implement load_model() with version parameter",
+      "Create list_model_versions() function",
+      "Tag production models in MLflow registry"
+    ],
+    "passes": false
+  },
+  {
+    "category": "model-management",
+    "description": "Implement model rollback procedure",
+    "steps": [
+      "Create rollback_model() function",
+      "Load previous model version from models/ directory",
+      "Update current production model pointer",
+      "Log rollback event to MLflow",
+      "Send notification about rollback",
+      "Document rollback procedure in README"
+    ],
+    "passes": false
+  },
+  {
+    "category": "testing-ml",
+    "description": "Write preprocessing tests",
+    "steps": [
+      "Create tests/test_preprocessing.py",
+      "Test text cleaning (URLs, special chars)",
+      "Test tokenization and normalization",
+      "Test embedding generation (shape, values)",
+      "Test caching mechanism",
+      "Mock external dependencies (spaCy, transformers)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "testing-ml",
+    "description": "Write sentiment model tests",
+    "steps": [
+      "Create tests/test_sentiment.py",
+      "Test model loading and initialization",
+      "Test inference on sample data",
+      "Test batch inference performance",
+      "Verify output shapes and ranges",
+      "Test error handling for invalid inputs"
+    ],
+    "passes": false
+  },
+  {
+    "category": "testing-ml",
+    "description": "Write topic modeling tests",
+    "steps": [
+      "Create tests/test_topics.py",
+      "Test BERTopic model initialization",
+      "Test topic assignment",
+      "Test temporal topic tracking",
+      "Verify topic coherence calculations",
+      "Test handling of outliers (topic -1)"
+    ],
+    "passes": false
+  },
+  {
+    "category": "testing-ml",
+    "description": "Write time series tests",
+    "steps": [
+      "Create tests/test_timeseries.py",
+      "Test sentiment aggregation calculations",
+      "Test moving average computations",
+      "Test change point detection",
+      "Test Prophet model fitting and forecasting",
+      "Verify forecast output format"
+    ],
+    "passes": false
+  },
+  {
+    "category": "testing-ml",
+    "description": "Write integration tests for ML pipeline",
+    "steps": [
+      "Create tests/test_ml_pipeline.py",
+      "Test end-to-end preprocessing → sentiment → topics",
+      "Test data flow through all components",
+      "Verify database updates at each stage",
+      "Test pipeline error recovery",
+      "Measure pipeline execution time"
+    ],
+    "passes": false
+  },
+  {
+    "category": "documentation-ml",
+    "description": "Document ML pipeline architecture",
+    "steps": [
+      "Create docs/ml-architecture.md",
+      "Diagram data flow through all components",
+      "Document model specifications (architecture, hyperparameters)",
+      "Explain weak supervision approach",
+      "Document preprocessing steps in detail",
+      "Add performance benchmarks"
+    ],
+    "passes": false
+  },
+  {
+    "category": "documentation-ml",
+    "description": "Create model training guide",
+    "steps": [
+      "Create docs/model-training.md",
+      "Document how to train sentiment model",
+      "Document how to train topic model",
+      "Explain hyperparameter tuning process",
+      "Add troubleshooting common training issues",
+      "Document model evaluation procedures"
+    ],
+    "passes": false
+  },
+  {
+    "category": "documentation-ml",
+    "description": "Create deployment and automation guide",
+    "steps": [
+      "Create docs/deployment-guide.md",
+      "Document cron job setup",
+      "Explain notification configuration",
+      "Document MLflow setup for experiment tracking",
+      "Add monitoring and alerting setup",
+      "Document production deployment checklist"
+    ],
+    "passes": false
+  },
+  {
+    "category": "documentation-ml",
+    "description": "Create Jupyter analysis notebooks",
+    "steps": [
+      "Create notebooks/01_data_exploration.ipynb",
+      "Create notebooks/02_sentiment_training.ipynb",
+      "Create notebooks/03_topic_analysis.ipynb",
+      "Create notebooks/04_time_series.ipynb",
+      "Create notebooks/05_drift_analysis.ipynb",
+      "Add narrative explanations and visualizations to each"
+    ],
+    "passes": false
+  },
+  {
+    "category": "optimization",
+    "description": "Optimize batch processing performance",
+    "steps": [
+      "Profile pipeline bottlenecks (cProfile)",
+      "Optimize database queries (add indexes where needed)",
+      "Implement parallel processing for independent tasks",
+      "Optimize embedding generation (batch larger)",
+      "Add GPU support for model inference (if available)",
+      "Measure and document performance improvements"
+    ],
+    "passes": false
+  },
+  {
+    "category": "optimization",
+    "description": "Optimize dashboard performance",
+    "steps": [
+      "Add Streamlit caching (@st.cache_data) to all data loaders",
+      "Optimize database queries (limit rows, use indexes)",
+      "Implement lazy loading for large visualizations",
+      "Add loading indicators for slow operations",
+      "Minimize redundant data fetching",
+      "Test dashboard responsiveness with large datasets"
+    ],
+    "passes": false
+  }
+]
