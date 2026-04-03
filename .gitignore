@@ -230,3 +230,4 @@ data/
 requirements.txt.bak
 setup.py.bak
 setup/
+settings.local.json
