@@ -6,7 +6,19 @@
       "Bash(find:*)",
       "Bash(mkdir:*)",
       "Bash(launchctl load:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(git -C /Users/jaredteerlink/repos/reddit-analyzer/.claude/worktrees/elastic-lewin status --short)",
+      "Bash(python3 -c \":*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(python3 -m reddit_collector historical --help)",
+      "Bash(ls pyproject.toml requirements*.txt setup.py)",
+      "Bash(.venv/bin/reddit-collector historical:*)",
+      "Bash(OUTPUT_FILE=\"/private/tmp/claude-501/-Users-jaredteerlink-repos-reddit-analyzer--claude-worktrees-elastic-lewin/b47e2508-9e96-4496-9912-390de64ae0d6/tasks/bddjftzem.output\")",
+      "Read(//Users/jaredteerlink/repos/reddit-analyzer/**)",
+      "Bash(OUTPUT_FILE=\"/private/tmp/claude-501/-Users-jaredteerlink-repos-reddit-analyzer--claude-worktrees-elastic-lewin/b47e2508-9e96-4496-9912-390de64ae0d6/tasks/bddjftzem.output\" grep \"Collecting.*new posts from\" \"$OUTPUT_FILE\")",
+      "Bash(OUTPUT_FILE=\"/private/tmp/claude-501/-Users-jaredteerlink-repos-reddit-analyzer--claude-worktrees-elastic-lewin/b47e2508-9e96-4496-9912-390de64ae0d6/tasks/bddjftzem.output\" grep -E \"Collected [0-9]+ posts from r/|Chunk [0-9]+ complete\" \"$OUTPUT_FILE\")",
+      "Bash(OUTPUT_FILE=\"/private/tmp/claude-501/-Users-jaredteerlink-repos-reddit-analyzer--claude-worktrees-elastic-lewin/b47e2508-9e96-4496-9912-390de64ae0d6/tasks/bddjftzem.output\" grep -E \"Successfully collected [0-9]+ posts from r/|ERROR - Failed to collect posts from r/\" \"$OUTPUT_FILE\")"
     ],
     "deny": []
   },
