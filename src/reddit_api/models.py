@@ -40,7 +40,10 @@ class RedditConfig:
     def __post_init__(self):
         """Initialize default values after creation"""
         if self.target_subreddits is None:
-            self.target_subreddits = ['technology', 'politics', 'investing', 'MachineLearning']
+            self.target_subreddits = [
+                'technology', 'politics', 'investing', 'MachineLearning',
+                'LocalLLaMA', 'ClaudeAI', 'Singularity', 'ArtificialIntelligence',
+            ]
         if self.target_keywords is None:
             self.target_keywords = ['AI', 'interest rates', 'EVs', 'recession', 'inflation']
 
