@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 import praw
 
+from .exceptions import RedditAPIError
 from .models import RedditConfig
 
 logger = logging.getLogger(__name__)
@@ -152,14 +153,14 @@ class RateLimitedRedditClient:
             Exception: If all retry attempts fail or circuit breaker is open
         """
         if not self._check_circuit_breaker():
-            raise Exception("Circuit breaker is OPEN")
+            raise RedditAPIError("Circuit breaker is OPEN")
         
         for attempt in range(self.config.max_retries):
             try:
                 # Wait for rate limit
-                if not self._check_rate_limit():
+                while not self._check_rate_limit():
                     logger.warning("Rate limit reached, waiting...")
-                    time.sleep(1)  # Simple rate limiting
+                    time.sleep(1)
                 
                 # Make the request
                 result = request_func(*args, **kwargs)

@@ -40,6 +40,14 @@ class RedditDataCollector:
         self.collected_posts = []
         self.collected_comments = []
 
+    def _get_author_karma(self, author) -> int:
+        if not author:
+            return 0
+        try:
+            return author.comment_karma + author.link_karma
+        except AttributeError:
+            return 0
+
     def _extract_post_data(self, submission) -> RedditPost:
         """
         Extract data from a Reddit submission.
@@ -59,7 +67,7 @@ class RedditDataCollector:
                 timestamp=datetime.fromtimestamp(submission.created_utc),
                 subreddit=submission.subreddit.display_name,
                 author=str(submission.author) if submission.author else "[deleted]",
-                author_karma=submission.author.comment_karma + submission.author.link_karma if submission.author else 0,
+                author_karma=self._get_author_karma(submission.author),
                 url=submission.url,
                 num_comments=submission.num_comments
             )
@@ -88,7 +96,7 @@ class RedditDataCollector:
                     timestamp=datetime.fromtimestamp(comment.created_utc),
                     subreddit=comment.subreddit.display_name,
                     author=str(comment.author) if comment.author else "[deleted]",
-                    author_karma=comment.author.comment_karma + comment.author.link_karma if comment.author else 0,
+                    author_karma=self._get_author_karma(comment.author),
                     post_id=post_id
                 )
         except Exception as e:
@@ -142,15 +150,15 @@ class RedditDataCollector:
             fetch_limit = limit * 2 if use_pre_filtering and existing_post_ids else limit
 
             if sort == 'hot':
-                return subreddit.hot(limit=fetch_limit)
+                return list(subreddit.hot(limit=fetch_limit))
             elif sort == 'new':
-                return subreddit.new(limit=fetch_limit)
+                return list(subreddit.new(limit=fetch_limit))
             elif sort == 'top':
-                return subreddit.top(time_filter=time_filter, limit=fetch_limit)
+                return list(subreddit.top(time_filter=time_filter, limit=fetch_limit))
             elif sort == 'rising':
-                return subreddit.rising(limit=fetch_limit)
+                return list(subreddit.rising(limit=fetch_limit))
             else:
-                return subreddit.hot(limit=fetch_limit)
+                return list(subreddit.hot(limit=fetch_limit))
 
         try:
             submissions = self.client.make_request(_get_subreddit_posts)
@@ -292,10 +300,10 @@ class RedditDataCollector:
                         all_comments.extend(comments)
 
                         # Small delay between post comment collections
-                        time.sleep(0.5)
+                        time.sleep(self.config.base_delay * 0.5)
 
                 # Small delay between subreddits
-                time.sleep(0.5)
+                time.sleep(self.config.base_delay * 0.5)
 
             except Exception as e:
                 logger.error(f"Error collecting data from r/{subreddit}: {e}")
@@ -395,7 +403,7 @@ class RedditDataCollector:
                     progress_callback(progress_info)
 
                 # Small delay between subreddits to respect rate limits
-                time.sleep(0.5)
+                time.sleep(self.config.base_delay * 0.5)
 
             except Exception as e:
                 logger.error(f"❌ Failed to collect from r/{subreddit}: {e}")
@@ -451,7 +459,7 @@ class RedditDataCollector:
                         post_comments = self.collect_post_comments(post.id, limit=comments_limit)
                         batch_comments.extend(post_comments)
                         # Small delay between comment collections
-                        time.sleep(0.5)
+                        time.sleep(self.config.base_delay * 0.5)
                     except Exception as comment_error:
                         logger.warning(f"Failed to collect comments for post {post.id}: {comment_error}")
                         continue

@@ -42,7 +42,7 @@ class RedditConfig:
         if self.target_subreddits is None:
             self.target_subreddits = ['ChatGPT', 'OpenAI', 'ClaudeAI', 'AnthropicAI', 'LocalLLaMA', 'MachineLearning', 'artificial', 'ArtificialIntelligence', 'DeepLearning', 'AGI', 'Singularity', 'StableDiffusion', 'AItools', 'aiNews', 'huggingface', 'AIStartups', 'DeepMind', 'nvidia', 'AIArt', 'technology', 'LLMDevs', 'PromptEngineering', 'Gemini', 'datascience', 'learnmachinelearning']
         if self.target_keywords is None:
-            self.target_keywords = ['AI', 'interest rates', 'EVs', 'recession', 'inflation']
+            self.target_keywords = ['AI', 'LLM', 'machine learning', 'artificial intelligence', 'ChatGPT', 'Claude', 'GPT', 'neural network']
 
 
 @dataclass

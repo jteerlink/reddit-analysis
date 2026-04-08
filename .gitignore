@@ -235,3 +235,5 @@ settings.local.json
 .claude-flow
 .swarm
 *.db*
+*/1mempalace.yaml
+entities.json
