@@ -231,3 +231,7 @@ requirements.txt.bak
 setup.py.bak
 setup/
 settings.local.json
+.claude
+.claude-flow
+.swarm
+*.db*
