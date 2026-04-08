@@ -20,29 +20,26 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Information Analysis",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 keywords = ["reddit", "api", "data collection", "sentiment analysis", "nlp", "social media"]
-requires-python = ">=3.8"
+requires-python = ">=3.11"
 
 # Core dependencies (from requirements.txt)
 dependencies = [
-    "praw>=7.7.0",                  # Python Reddit API Wrapper
-    "pandas>=1.5.0",               # Data manipulation and analysis
-    "python-dotenv>=0.19.0",       # Environment variable management
-    "requests>=2.28.0",            # HTTP library
-    "nltk>=3.8",                   # Natural language processing
-    "textblob>=0.17.1",           # Sentiment analysis baseline
-    "vaderSentiment>=3.3.2",      # VADER sentiment analyzer
-    "tqdm>=4.64.0",               # Progress bars
-    "python-dateutil>=2.8.2",    # Date parsing utilities
+    "praw>=7.7.0", # Python Reddit API Wrapper
+    "pandas>=1.5.0", # Data manipulation and analysis
+    "python-dotenv>=0.19.0", # Environment variable management
+    "requests>=2.28.0", # HTTP library
+    "nltk>=3.8", # Natural language processing
+    "textblob>=0.17.1", # Sentiment analysis baseline
+    "vaderSentiment>=3.3.2", # VADER sentiment analyzer
+    "tqdm>=4.64.0", # Progress bars
+    "python-dateutil>=2.8.2", # Date parsing utilities
+    "mempalace>=3.0.0",
 ]
 
 [project.optional-dependencies]
