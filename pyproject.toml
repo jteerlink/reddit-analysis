@@ -53,9 +53,13 @@ dev = [
 
 # Machine learning components
 ml = [
-    "scikit-learn>=1.1.0",       # Machine learning library
-    "transformers>=4.21.0",      # HuggingFace transformers (for RoBERTa)
-    "torch>=1.12.0",             # PyTorch (for deep learning models)
+    "scikit-learn>=1.1.0",           # Machine learning library
+    "transformers>=4.21.0",          # HuggingFace transformers (for RoBERTa)
+    "torch>=1.12.0",                 # PyTorch (MPS-accelerated on Apple Silicon)
+    "sentence-transformers>=2.2.0",  # Sentence embeddings (all-MiniLM-L6-v2)
+    "spacy>=3.5.0",                  # NLP pipeline (lemmatization via en_core_web_sm)
+    "umap-learn>=0.5.0",             # Dimensionality reduction for EDA/BERTopic
+    "numpy>=1.23.0",                 # Array operations and embedding cache
 ]
 
 # Production deployment
