@@ -1,6 +1,0 @@
-wing: src
-rooms:
-- name: reddit_api
-  description: Files from reddit_api/
-- name: general
-  description: Files that don't fit other rooms

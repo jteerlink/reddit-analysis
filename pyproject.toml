@@ -39,7 +39,6 @@ dependencies = [
     "vaderSentiment>=3.3.2", # VADER sentiment analyzer
     "tqdm>=4.64.0", # Progress bars
     "python-dateutil>=2.8.2", # Date parsing utilities
-    "mempalace>=3.0.0",
 ]
 
 [project.optional-dependencies]
@@ -59,6 +58,8 @@ ml = [
     "sentence-transformers>=2.2.0",  # Sentence embeddings (all-MiniLM-L6-v2)
     "spacy>=3.5.0",                  # NLP pipeline (lemmatization via en_core_web_sm)
     "umap-learn>=0.5.0",             # Dimensionality reduction for EDA/BERTopic
+    "bertopic>=0.15.0",              # Topic modeling
+    "hdbscan>=0.8.33",               # Density-based clustering for BERTopic
     "numpy>=1.23.0",                 # Array operations and embedding cache
 ]
 

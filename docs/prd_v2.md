@@ -1,7 +1,7 @@
 # Reddit Analyzer — Product Requirements Document
 
 **Version:** 2.0
-**Status:** Phase 1 complete. Phase 2 (ML + Dashboard) not yet started.
+**Status:** Phase 1 complete. Phase 2 Weeks 1–2 complete. Week 3 (Topic Modeling) in progress.
 **Last Updated:** April 2026
 
 ---
@@ -169,20 +169,20 @@ reddit-analyzer/
 ## 6. Implementation Plan
 
 ### Week 1 — Preprocessing & Weak Labels
-- [ ] `src/ml/preprocessing.py` — text cleaner + embedding generator
-- [ ] VADER weak labeling script → generate labeled training CSV
-- [ ] EDA notebook on current 227MB database
-- [ ] Configure MLflow locally
+- [x] `src/ml/preprocessing.py` — text cleaner + embedding generator
+- [x] VADER weak labeling script → generate labeled training CSV
+- [x] EDA notebook on current 227MB database
+- [x] Configure MLflow locally
 
 **Gate:** Labeled dataset ≥ 30k examples, embedding cache working.
 
 ---
 
 ### Week 2 — Sentiment Model
-- [ ] `src/ml/sentiment.py` — DistilBERT fine-tuning pipeline
-- [ ] Train on weak labels; evaluate on 500 manual validation examples
-- [ ] `scripts/batch_inference.py` — process all existing DB records
-- [ ] Log run to MLflow
+- [x] `src/ml/sentiment.py` — DistilBERT fine-tuning pipeline
+- [x] Train on weak labels; evaluate on 500 manual validation examples
+- [x] `scripts/batch_inference.py` — process all existing DB records
+- [x] Log run to MLflow
 
 **Gate:** Validation F1 ≥ 0.70.
 

@@ -137,3 +137,129 @@ def upsert_sentiment(conn: sqlite3.Connection, rows: List[Tuple]) -> None:
         rows,
     )
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Week 3 — Topic Modeling helpers
+# ---------------------------------------------------------------------------
+
+
+def ensure_topics_tables(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS topics (
+            topic_id        INTEGER PRIMARY KEY,
+            keywords        TEXT NOT NULL,
+            doc_count       INTEGER NOT NULL DEFAULT 0,
+            coherence_score REAL,
+            created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_topics_coherence ON topics(coherence_score)"
+    )
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS topic_assignments (
+            id          TEXT PRIMARY KEY,
+            topic_id    INTEGER NOT NULL,
+            probability REAL,
+            assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (id) REFERENCES preprocessed(id)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_topic_assignments_topic ON topic_assignments(topic_id)"
+    )
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS topic_over_time (
+            topic_id      INTEGER NOT NULL,
+            week_start    TEXT NOT NULL,
+            doc_count     INTEGER NOT NULL DEFAULT 0,
+            avg_sentiment REAL,
+            PRIMARY KEY (topic_id, week_start)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tot_week ON topic_over_time(week_start)"
+    )
+    conn.commit()
+
+
+def iter_preprocessed_for_topics(
+    conn: sqlite3.Connection, days: int = 90, batch_size: int = 1000
+) -> Generator[List[sqlite3.Row], None, None]:
+    """
+    Yield batches of preprocessed records within the rolling window.
+
+    JOINs back to posts/comments to retrieve the original Reddit timestamp
+    (needed for weekly temporal bucketing).
+    """
+    query = """
+        SELECT
+            p.id,
+            p.content_type,
+            p.clean_text,
+            p.embedding_key,
+            COALESCE(posts.timestamp, comments.timestamp) AS source_timestamp
+        FROM preprocessed p
+        LEFT JOIN posts ON p.id = posts.id AND p.content_type = 'post'
+        LEFT JOIN comments ON p.id = comments.id AND p.content_type = 'comment'
+        WHERE p.is_filtered = 0
+          AND p.clean_text IS NOT NULL
+          AND p.clean_text != ''
+          AND p.embedding_key IS NOT NULL
+          AND p.processed_at >= datetime('now', ?)
+    """
+    cursor = conn.execute(query, (f"-{days} days",))
+    while True:
+        rows = cursor.fetchmany(batch_size)
+        if not rows:
+            break
+        yield rows
+
+
+def upsert_topics(conn: sqlite3.Connection, rows: List[Tuple]) -> None:
+    """
+    Batch-insert rows into `topics`.
+
+    Each tuple: (topic_id, keywords_json, doc_count, coherence_score)
+    """
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO topics (topic_id, keywords, doc_count, coherence_score)
+        VALUES (?, ?, ?, ?)
+        """,
+        rows,
+    )
+    conn.commit()
+
+
+def upsert_topic_assignments(conn: sqlite3.Connection, rows: List[Tuple]) -> None:
+    """
+    Batch-insert rows into `topic_assignments`.
+
+    Each tuple: (id, topic_id, probability)
+    """
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO topic_assignments (id, topic_id, probability)
+        VALUES (?, ?, ?)
+        """,
+        rows,
+    )
+    conn.commit()
+
+
+def upsert_topic_over_time(conn: sqlite3.Connection, rows: List[Tuple]) -> None:
+    """
+    Batch-insert rows into `topic_over_time`.
+
+    Each tuple: (topic_id, week_start, doc_count, avg_sentiment)
+    """
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO topic_over_time (topic_id, week_start, doc_count, avg_sentiment)
+        VALUES (?, ?, ?, ?)
+        """,
+        rows,
+    )
+    conn.commit()
