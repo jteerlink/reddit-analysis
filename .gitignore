@@ -236,3 +236,4 @@ settings.local.json
 .swarm
 *.db*
 entities.json
+graphify-out
