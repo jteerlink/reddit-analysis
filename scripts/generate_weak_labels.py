@@ -42,6 +42,18 @@ def main():
         default=None,
         help="Max records to process (default: all)",
     )
+    parser.add_argument(
+        "--include-neutral",
+        action="store_true",
+        default=False,
+        help="Include neutral examples (|compound| < --neutral-threshold) for 3-class labeling",
+    )
+    parser.add_argument(
+        "--neutral-threshold",
+        type=float,
+        default=0.1,
+        help="VADER compound threshold for neutral label (default 0.1)",
+    )
     args = parser.parse_args()
 
     mlflow_run = None
@@ -77,61 +89,81 @@ def main():
 
     cursor = conn.execute(query)
 
+    # Collect labeled rows; neutral candidates held separately for balancing
+    positive_rows = []
+    negative_rows = []
+    neutral_candidates = []
     total_scored = 0
-    kept = 0
-    positive = 0
-    negative = 0
+
+    for row in cursor:
+        total_scored += 1
+        scores = analyzer.polarity_scores(row["clean_text"])
+        compound = scores["compound"]
+        rec = (row["id"], row["content_type"], row["subreddit"] or "", row["clean_text"], round(compound, 4))
+
+        if compound > args.threshold:
+            positive_rows.append(rec)
+        elif compound < -args.threshold:
+            negative_rows.append(rec)
+        elif args.include_neutral and abs(compound) < args.neutral_threshold:
+            neutral_candidates.append(rec)
+
+        if total_scored % 10000 == 0:
+            logger.info("Scored %d records so far", total_scored)
+
+    conn.close()
+
+    # Balance neutral sample to minority class size
+    if args.include_neutral and neutral_candidates:
+        import random
+        minority = min(len(positive_rows), len(negative_rows))
+        sample_size = min(len(neutral_candidates), minority)
+        random.seed(42)
+        neutral_rows = random.sample(neutral_candidates, sample_size)
+    else:
+        neutral_rows = []
 
     with open(output_path, "w", newline="", encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
         writer.writerow(["id", "content_type", "subreddit", "clean_text", "vader_compound", "label"])
+        for rec in positive_rows:
+            writer.writerow([*rec, "positive"])
+        for rec in negative_rows:
+            writer.writerow([*rec, "negative"])
+        for rec in neutral_rows:
+            writer.writerow([*rec, "neutral"])
 
-        for row in cursor:
-            total_scored += 1
-            scores = analyzer.polarity_scores(row["clean_text"])
-            compound = scores["compound"]
-
-            if abs(compound) <= args.threshold:
-                continue
-
-            label = "positive" if compound > 0 else "negative"
-            writer.writerow([
-                row["id"],
-                row["content_type"],
-                row["subreddit"] or "",
-                row["clean_text"],
-                round(compound, 4),
-                label,
-            ])
-            kept += 1
-            if label == "positive":
-                positive += 1
-            else:
-                negative += 1
-
-            if total_scored % 10000 == 0:
-                logger.info("Scored %d records, kept %d so far", total_scored, kept)
-
-    conn.close()
+    kept = len(positive_rows) + len(negative_rows) + len(neutral_rows)
+    positive = len(positive_rows)
+    negative = len(negative_rows)
+    neutral = len(neutral_rows)
 
     gate_ok = kept >= 30000
     print(f"\n{'='*50}")
     print(f"Total scored:    {total_scored:,}")
-    print(f"Kept (|score| > {args.threshold}): {kept:,}")
+    print(f"Kept:            {kept:,}")
     print(f"  Positive:      {positive:,} ({positive/kept*100:.1f}%)" if kept else "  Positive: 0")
     print(f"  Negative:      {negative:,} ({negative/kept*100:.1f}%)" if kept else "  Negative: 0")
+    if args.include_neutral:
+        print(f"  Neutral:       {neutral:,} ({neutral/kept*100:.1f}%)" if kept else "  Neutral: 0")
     print(f"Output:          {output_path}")
     print(f"\nGate (≥30k):     {'PASS ✓' if gate_ok else 'FAIL ✗ — collect more data or lower threshold'}")
     print(f"{'='*50}\n")
 
     if mlflow_run is not None:
         import mlflow
-        mlflow.log_params({"threshold": args.threshold, "db": args.db})
+        mlflow.log_params({
+            "threshold": args.threshold,
+            "include_neutral": args.include_neutral,
+            "neutral_threshold": args.neutral_threshold,
+            "db": args.db,
+        })
         mlflow.log_metrics({
             "total_scored": total_scored,
             "kept_count": kept,
             "positive_count": positive,
             "negative_count": negative,
+            "neutral_count": neutral,
         })
         mlflow.end_run()
 

@@ -82,3 +82,58 @@ def upsert_preprocessed(conn: sqlite3.Connection, rows: List[Tuple]) -> None:
         rows,
     )
     conn.commit()
+
+
+def ensure_sentiment_table(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sentiment_predictions (
+            id            TEXT PRIMARY KEY,
+            content_type  TEXT,
+            label         TEXT,
+            confidence    REAL,
+            logits        TEXT,
+            model_version TEXT,
+            predicted_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sentiment_label ON sentiment_predictions(label)"
+    )
+    conn.commit()
+
+
+def iter_unscored_records(
+    conn: sqlite3.Connection, batch_size: int = 1000
+) -> Generator[List[sqlite3.Row], None, None]:
+    """Yield batches of preprocessed records not yet in sentiment_predictions."""
+    query = """
+        SELECT id, content_type, clean_text
+        FROM preprocessed
+        WHERE is_filtered = 0
+          AND clean_text IS NOT NULL
+          AND clean_text != ''
+          AND id NOT IN (SELECT id FROM sentiment_predictions)
+    """
+    cursor = conn.execute(query)
+    while True:
+        rows = cursor.fetchmany(batch_size)
+        if not rows:
+            break
+        yield rows
+
+
+def upsert_sentiment(conn: sqlite3.Connection, rows: List[Tuple]) -> None:
+    """
+    Batch-insert rows into `sentiment_predictions`.
+
+    Each tuple: (id, content_type, label, confidence, logits_json, model_version)
+    """
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO sentiment_predictions
+            (id, content_type, label, confidence, logits, model_version)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+    conn.commit()
