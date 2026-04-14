@@ -48,6 +48,7 @@ dev = [
     "matplotlib>=3.5.0",          # Plotting and visualization
     "seaborn>=0.11.0",           # Statistical data visualization
     "plotly>=5.10.0",            # Interactive plotting
+    "wordcloud>=1.9.0",          # Word cloud generation for Topic Explorer
 ]
 
 # Machine learning components
