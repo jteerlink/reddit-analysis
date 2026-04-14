@@ -263,3 +263,147 @@ def upsert_topic_over_time(conn: sqlite3.Connection, rows: List[Tuple]) -> None:
         rows,
     )
     conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Week 4 — Time Series helpers
+# ---------------------------------------------------------------------------
+
+
+def ensure_timeseries_tables(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sentiment_daily (
+            subreddit   TEXT NOT NULL,
+            date        TEXT NOT NULL,
+            mean_score  REAL,
+            pos_count   INTEGER NOT NULL DEFAULT 0,
+            neu_count   INTEGER NOT NULL DEFAULT 0,
+            neg_count   INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (subreddit, date)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sd_date ON sentiment_daily(date)"
+    )
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sentiment_moving_avg (
+            subreddit  TEXT NOT NULL,
+            date       TEXT NOT NULL,
+            rolling_7d REAL,
+            rolling_30d REAL,
+            PRIMARY KEY (subreddit, date)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS change_points (
+            subreddit TEXT NOT NULL,
+            date      TEXT NOT NULL,
+            magnitude REAL,
+            PRIMARY KEY (subreddit, date)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sentiment_forecast (
+            subreddit   TEXT NOT NULL,
+            date        TEXT NOT NULL,
+            yhat        REAL,
+            yhat_lower  REAL,
+            yhat_upper  REAL,
+            PRIMARY KEY (subreddit, date)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS topic_sentiment_trends (
+            topic_id       INTEGER NOT NULL,
+            date           TEXT NOT NULL,
+            mean_sentiment REAL,
+            rolling_7d     REAL,
+            PRIMARY KEY (topic_id, date)
+        )
+    """)
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tst_date ON topic_sentiment_trends(date)"
+    )
+    conn.commit()
+
+
+def upsert_sentiment_daily(conn: sqlite3.Connection, rows: List[Tuple]) -> None:
+    """
+    Batch-insert rows into `sentiment_daily`.
+
+    Each tuple: (subreddit, date, mean_score, pos_count, neu_count, neg_count)
+    """
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO sentiment_daily
+            (subreddit, date, mean_score, pos_count, neu_count, neg_count)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+    conn.commit()
+
+
+def upsert_sentiment_moving_avg(conn: sqlite3.Connection, rows: List[Tuple]) -> None:
+    """
+    Batch-insert rows into `sentiment_moving_avg`.
+
+    Each tuple: (subreddit, date, rolling_7d, rolling_30d)
+    """
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO sentiment_moving_avg (subreddit, date, rolling_7d, rolling_30d)
+        VALUES (?, ?, ?, ?)
+        """,
+        rows,
+    )
+    conn.commit()
+
+
+def upsert_change_points(conn: sqlite3.Connection, rows: List[Tuple]) -> None:
+    """
+    Batch-insert rows into `change_points`.
+
+    Each tuple: (subreddit, date, magnitude)
+    """
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO change_points (subreddit, date, magnitude)
+        VALUES (?, ?, ?)
+        """,
+        rows,
+    )
+    conn.commit()
+
+
+def upsert_sentiment_forecast(conn: sqlite3.Connection, rows: List[Tuple]) -> None:
+    """
+    Batch-insert rows into `sentiment_forecast`.
+
+    Each tuple: (subreddit, date, yhat, yhat_lower, yhat_upper)
+    """
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO sentiment_forecast (subreddit, date, yhat, yhat_lower, yhat_upper)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+    conn.commit()
+
+
+def upsert_topic_sentiment_trends(conn: sqlite3.Connection, rows: List[Tuple]) -> None:
+    """
+    Batch-insert rows into `topic_sentiment_trends`.
+
+    Each tuple: (topic_id, date, mean_sentiment, rolling_7d)
+    """
+    conn.executemany(
+        """
+        INSERT OR REPLACE INTO topic_sentiment_trends
+            (topic_id, date, mean_sentiment, rolling_7d)
+        VALUES (?, ?, ?, ?)
+        """,
+        rows,
+    )
+    conn.commit()

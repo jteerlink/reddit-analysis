@@ -61,6 +61,8 @@ ml = [
     "bertopic>=0.15.0",              # Topic modeling
     "hdbscan>=0.8.33",               # Density-based clustering for BERTopic
     "numpy>=1.23.0",                 # Array operations and embedding cache
+    "ruptures>=1.1.7",               # Change point detection (PELT algorithm)
+    "prophet>=1.1.0",                # Time series forecasting with confidence intervals
 ]
 
 # Production deployment

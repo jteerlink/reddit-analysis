@@ -1,7 +1,7 @@
 # Reddit Analyzer — Product Requirements Document
 
 **Version:** 2.0
-**Status:** Phase 1 complete. Phase 2 Weeks 1–2 complete. Week 3 (Topic Modeling) in progress.
+**Status:** Phase 1 complete. Phase 2 Weeks 1–3 complete. Week 4 (Time Series & Forecasting) in progress.
 **Last Updated:** April 2026
 
 ---
@@ -189,10 +189,10 @@ reddit-analyzer/
 ---
 
 ### Week 3 — Topic Modeling
-- [ ] `src/ml/topics.py` — BERTopic with sentence-transformers
-- [ ] Train on 90-day historical slice
-- [ ] Temporal topic tracking (weekly slices)
-- [ ] Export topic keywords and assignments to SQLite
+- [x] `src/ml/topics.py` — BERTopic with sentence-transformers
+- [x] Train on 90-day historical slice
+- [x] Temporal topic tracking (weekly slices)
+- [x] Export topic keywords and assignments to SQLite
 
 **Gate:** ≥ 20 coherent topics; topic coherence score ≥ 0.50.
 
