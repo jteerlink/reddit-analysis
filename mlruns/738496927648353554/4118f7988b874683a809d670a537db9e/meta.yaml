@@ -1,0 +1,14 @@
+artifact_uri: /Users/jaredteerlink/repos/reddit-analyzer/mlruns/738496927648353554/4118f7988b874683a809d670a537db9e/artifacts
+end_time: 1776136638202
+entry_point_name: ''
+experiment_id: '738496927648353554'
+lifecycle_stage: active
+run_id: 4118f7988b874683a809d670a537db9e
+run_name: week1-preprocessing
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1776136268600
+status: 3
+tags: []
+user_id: jaredteerlink

@@ -1,0 +1,14 @@
+artifact_uri: /Users/jaredteerlink/repos/reddit-analyzer/mlruns/738496927648353554/ff7ae3648ba142f19407149da2acb835/artifacts
+end_time: 1776211556512
+entry_point_name: ''
+experiment_id: '738496927648353554'
+lifecycle_stage: active
+run_id: ff7ae3648ba142f19407149da2acb835
+run_name: week1-weak-labels
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1776211512442
+status: 3
+tags: []
+user_id: jaredteerlink

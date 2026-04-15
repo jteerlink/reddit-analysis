@@ -88,8 +88,8 @@ print(f'Preprocessed (kept): {n:,}')
 # Confirm embedding cache
 python -c "
 import numpy as np, json
-arr = np.load('models/embeddings.npy')
-idx = json.load(open('models/embedding_index.json'))
+arr = np.load('models/embeddings_cache.npy')
+idx = json.load(open('models/embeddings_index.json'))
 print(f'Embeddings shape: {arr.shape}  |  Index entries: {len(idx)}')
 "
 
@@ -120,6 +120,7 @@ mlflow ui --port 5001
 ```bash
 python - <<'EOF'
 from src.ml.sentiment import train
+import re
 
 result = train(
     weak_labels_path="data/weak_labels.csv",
