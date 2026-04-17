@@ -237,3 +237,13 @@ settings.local.json
 *.db*
 entities.json
 graphify-out
+# Pipeline CLI runtime files
+.pipeline_status/
+.pipeline_logs/
+mlruns/
+
+# ML model artifacts (large binaries)
+models/
+*.safetensors
+*.pt
+*.bin

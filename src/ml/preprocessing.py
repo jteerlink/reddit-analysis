@@ -249,9 +249,9 @@ def run_preprocessing(
                 batch_embeddings = embedder.embed_batch(texts_to_embed, batch_size=embed_batch_size)
                 all_embeddings.append(batch_embeddings)
                 for idx in row_indices:
-                    key = str(next_key)
-                    db_rows[idx][7] = key  # embedding_key
-                    index[db_rows[idx][0]] = next_key  # id → row_index
+                    key = db_rows[idx][0]  # use reddit id as embedding_key
+                    db_rows[idx][7] = key
+                    index[key] = next_key  # id → row_index
                     next_key += 1
 
             upsert_preprocessed(conn, [tuple(r) for r in db_rows])

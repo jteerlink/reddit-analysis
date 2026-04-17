@@ -93,9 +93,12 @@ class EmbeddingCache:
         """Extract rows for the given keys using numpy fancy indexing."""
         embeddings, index = self.load()
         row_indices = []
+        n_embeddings = len(embeddings)
         for key in embedding_keys:
             if key in index:
                 row_indices.append(index[key])
+            elif key.lstrip("-").isdigit() and 0 <= int(key) < n_embeddings:
+                row_indices.append(int(key))
             else:
                 logger.warning("Embedding key not in cache, skipping: %s", key)
         if not row_indices:

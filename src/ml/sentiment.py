@@ -137,6 +137,15 @@ def train(
     output_dir = Path(model_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    if mlflow_tracking:
+        try:
+            import mlflow
+            mlflow.set_tracking_uri(str(Path(model_dir).parent.parent / "mlruns"))
+            mlflow.set_experiment("reddit-analyzer-phase2")
+        except ImportError:
+            logger.warning("mlflow not installed; skipping experiment tracking")
+            mlflow_tracking = False
+
     training_args_kwargs = dict(
         output_dir=str(output_dir),
         num_train_epochs=epochs,
@@ -145,18 +154,16 @@ def train(
         learning_rate=lr,
         weight_decay=0.01,
         warmup_steps=100,
-        evaluation_strategy="epoch",
+        eval_strategy="epoch",
         save_strategy="epoch",
         load_best_model_at_end=True,
         metric_for_best_model="f1",
         greater_is_better=True,
         logging_steps=50,
-        report_to="none",
+        run_name="week2-sentiment-train",
+        report_to="mlflow" if mlflow_tracking else "none",
         fp16=False,
     )
-
-    if device == "mps":
-        training_args_kwargs["use_mps_device"] = True
 
     training_args = TrainingArguments(**training_args_kwargs)
 
@@ -190,27 +197,14 @@ def train(
     if mlflow_tracking:
         try:
             import mlflow
-            mlflow.set_tracking_uri("mlruns")
-            mlflow.set_experiment("reddit-analyzer-phase2")
-            with mlflow.start_run(run_name="week2-sentiment-train"):
-                mlflow.log_params({
-                    "model_name": "distilbert-base-uncased",
-                    "device": device,
-                    "epochs": epochs,
-                    "lr": lr,
-                    "batch_size": batch_size,
-                    "max_length": max_length,
-                    "val_split": val_split,
-                    "train_size": summary["train_size"],
-                    "val_size": summary["val_size"],
-                })
-                mlflow.log_metrics({
-                    "val_f1_macro": summary["val_f1"],
-                    "val_f1_positive": summary["val_f1_positive"],
-                    "val_f1_negative": summary["val_f1_negative"],
-                    "val_f1_neutral": summary["val_f1_neutral"],
-                    "val_loss": summary["val_loss"],
-                })
+            last_run = mlflow.last_active_run()
+            if last_run is not None:
+                with mlflow.start_run(run_id=last_run.info.run_id):
+                    mlflow.log_metrics({
+                        "val_f1_positive": summary["val_f1_positive"],
+                        "val_f1_negative": summary["val_f1_negative"],
+                        "val_f1_neutral": summary["val_f1_neutral"],
+                    })
         except ImportError:
             logger.warning("mlflow not installed; skipping experiment tracking")
 
