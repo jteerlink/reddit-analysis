@@ -247,3 +247,7 @@ models/
 *.safetensors
 *.pt
 *.bin
+.agents
+.claude
+.fuse*
+.codex
