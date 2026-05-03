@@ -10,10 +10,10 @@ interface Props {
 
 export function MetricCard({ label, value, sub, accent }: Props) {
   return (
-    <Card className="flex-1 min-w-0">
-      <CardContent className="pt-4">
-        <p className="text-xs text-muted-foreground uppercase tracking-wide">{label}</p>
-        <p className={cn("text-2xl font-semibold mt-1", accent && "text-amber-400")}>{value}</p>
+    <Card className="min-w-[150px] flex-1 border-border/80 bg-card/78">
+      <CardContent className="pt-3">
+        <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">{label}</p>
+        <p className={cn("mt-1 font-mono text-2xl font-semibold", accent ? "text-signal-green" : "text-foreground")}>{value}</p>
         {sub && <p className="text-xs text-muted-foreground mt-0.5">{sub}</p>}
       </CardContent>
     </Card>

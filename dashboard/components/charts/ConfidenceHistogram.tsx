@@ -24,7 +24,7 @@ export function ConfidenceHistogram({ data }: Props) {
         <YAxis tick={{ fontSize: 10 }} width={40} />
         <Tooltip contentStyle={{ background: "#141619", border: "1px solid #2d2f33", fontSize: 12 }} />
         <ReferenceLine x="0.75" stroke="#F59E0B" strokeDasharray="4 2" label={{ value: "0.75", fill: "#F59E0B", fontSize: 10 }} />
-        <Bar dataKey="count" fill="#60A5FA" name="Count" />
+        <Bar dataKey="count" fill="#60A5FA" name="Count" isAnimationActive={false} />
       </BarChart>
     </ResponsiveContainer>
   );

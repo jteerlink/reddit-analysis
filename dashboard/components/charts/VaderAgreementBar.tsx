@@ -24,7 +24,7 @@ export function VaderAgreementBar({ data }: Props) {
           formatter={(v) => typeof v === "number" ? `${Math.round(v * 100)}%` : v}
           contentStyle={{ background: "#141619", border: "1px solid #2d2f33", fontSize: 12 }}
         />
-        <Bar dataKey="agreement_rate" name="Agreement">
+        <Bar dataKey="agreement_rate" name="Agreement" isAnimationActive={false}>
           {sorted.map((entry) => (
             <Cell key={entry.subreddit} fill={rateColor(entry.agreement_rate)} />
           ))}

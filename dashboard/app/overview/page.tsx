@@ -2,12 +2,13 @@
 
 import useSWR from "swr";
 import { useFilterStore } from "@/lib/store";
-import { SectionHeader } from "@/components/layout/SectionHeader";
 import { MetricCard } from "@/components/shared/MetricCard";
 import { ChartCard } from "@/components/shared/ChartCard";
-import { VolumeBarChart } from "@/components/charts/VolumeBarChart";
-import { SentimentDonut } from "@/components/charts/SentimentDonut";
-import { Skeleton } from "@/components/ui/skeleton";
+import { ActivityFeedStrip } from "@/components/overview/ActivityFeedStrip";
+import { CommandBar } from "@/components/overview/CommandBar";
+import { PipelineHealthCard } from "@/components/overview/PipelineHealthCard";
+import { SignalStreamChart } from "@/components/overview/SignalStreamChart";
+import { TopicExplorerPanel } from "@/components/overview/TopicExplorerPanel";
 import type { CollectionSummary, SentimentSummary, VolumeDaily } from "@/lib/types";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
@@ -18,7 +19,7 @@ function buildQuery(subreddits: string[]) {
 }
 
 export default function OverviewPage() {
-  const { subreddits } = useFilterStore();
+  const { subreddits, dateRange } = useFilterStore();
   const q = buildQuery(subreddits);
 
   const { data: summary } = useSWR<CollectionSummary>(`/api/summary${q}`, fetcher);
@@ -35,59 +36,58 @@ export default function OverviewPage() {
   const total = posCount + negCount + neuCount;
   const sentimentMix = total
     ? `${Math.round((posCount / total) * 100)}% pos`
-    : "—";
+    : "-";
 
   return (
-    <div className="space-y-6">
-      <SectionHeader eyebrow="Overview" title="Collection summary" subtitle="Aggregated stats across selected subreddits and date range." />
+    <div className="mx-auto flex max-w-[1680px] flex-col gap-4">
+      <CommandBar selectedSubreddits={subreddits} dateRange={dateRange} />
 
-      <div className="flex gap-4 flex-wrap">
-        <MetricCard label="Total posts" value={totalPosts} />
-        <MetricCard label="Total comments" value={totalComments} />
-        <MetricCard label="Last ML run" value={lastML} />
-        <MetricCard label="Sentiment mix" value={sentimentMix} accent />
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <MetricCard label="Total posts" value={totalPosts} sub="indexed signals" />
+        <MetricCard label="Total comments" value={totalComments} sub="conversation mass" />
+        <MetricCard label="Last ML run" value={lastML} sub="model refresh" />
+        <MetricCard label="Sentiment mix" value={sentimentMix} sub="active window" accent />
       </div>
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <ChartCard title="Daily volume" subtitle="Posts + comments per subreddit">
-          {volumeData ? (
-            <VolumeBarChart data={volumeData} />
-          ) : (
-            <Skeleton className="h-52 w-full" />
-          )}
-        </ChartCard>
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(380px,0.75fr)]">
+        <SignalStreamChart volumeData={volumeData} sentimentData={sentimentData} />
 
-        <ChartCard title="Sentiment distribution">
-          {sentimentData ? (
-            <SentimentDonut data={sentimentData} />
-          ) : (
-            <Skeleton className="h-52 w-full" />
-          )}
-        </ChartCard>
+        <div className="grid gap-4">
+          <PipelineHealthCard />
+          <TopicExplorerPanel topics={summary?.trending_topics} />
+        </div>
       </div>
 
-      {summary?.trending_topics?.length ? (
+      <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
+        <ActivityFeedStrip />
+
         <ChartCard title="Trending topics" subtitle="Top topics by doc count in the most recent week">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="text-left text-muted-foreground border-b border-border">
-                <th className="pb-2 font-medium">Topic</th>
-                <th className="pb-2 font-medium">Keywords</th>
-                <th className="pb-2 font-medium text-right">Docs</th>
-              </tr>
-            </thead>
-            <tbody>
-              {summary.trending_topics.map((t) => (
-                <tr key={t.topic_id} className="border-b border-border/50 last:border-0">
-                  <td className="py-2 text-muted-foreground">#{t.topic_id}</td>
-                  <td className="py-2">{t.keywords}</td>
-                  <td className="py-2 text-right tabular-nums">{t.doc_count}</td>
+          {summary?.trending_topics?.length ? (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border text-left text-muted-foreground">
+                  <th className="pb-2 font-medium">Topic</th>
+                  <th className="pb-2 font-medium">Keywords</th>
+                  <th className="pb-2 text-right font-medium">Docs</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {summary.trending_topics.slice(0, 5).map((t) => (
+                  <tr key={t.topic_id} className="border-b border-border/50 last:border-0">
+                    <td className="py-2 font-mono text-muted-foreground">#{t.topic_id}</td>
+                    <td className="max-w-[220px] truncate py-2">{t.keywords}</td>
+                    <td className="py-2 text-right font-mono text-xs text-signal-green">{t.doc_count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="flex h-24 items-center justify-center text-sm text-muted-foreground">
+              Waiting for topic signals
+            </div>
+          )}
         </ChartCard>
-      ) : null}
+      </div>
     </div>
   );
 }

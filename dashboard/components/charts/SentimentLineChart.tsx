@@ -38,15 +38,15 @@ export function SentimentLineChart({ data, changePoints, maMode }: Props) {
           <ReferenceLine key={`${cp.subreddit}-${cp.date}`} x={cp.date} stroke={cp.magnitude > 0 ? "#34D399" : "#F87171"} strokeDasharray="4 2" />
         ))}
         {subreddits.map((s, i) => (
-          <Line key={s} dataKey={`${s}_score`} name={s} stroke={SUB_COLORS[i % SUB_COLORS.length]} dot={false} strokeWidth={1.5} />
+          <Line key={s} dataKey={`${s}_score`} name={s} stroke={SUB_COLORS[i % SUB_COLORS.length]} dot={false} strokeWidth={1.5} isAnimationActive={false} />
         ))}
         {(maMode === "7d" || maMode === "both") &&
           subreddits.map((s, i) => (
-            <Line key={`${s}_7d`} dataKey={`${s}_7d`} name={`${s} 7d`} stroke={SUB_COLORS[i % SUB_COLORS.length]} dot={false} strokeDasharray="4 2" strokeWidth={1} />
+            <Line key={`${s}_7d`} dataKey={`${s}_7d`} name={`${s} 7d`} stroke={SUB_COLORS[i % SUB_COLORS.length]} dot={false} strokeDasharray="4 2" strokeWidth={1} isAnimationActive={false} />
           ))}
         {(maMode === "30d" || maMode === "both") &&
           subreddits.map((s, i) => (
-            <Line key={`${s}_30d`} dataKey={`${s}_30d`} name={`${s} 30d`} stroke={SUB_COLORS[i % SUB_COLORS.length]} dot={false} strokeDasharray="8 4" strokeWidth={1} />
+            <Line key={`${s}_30d`} dataKey={`${s}_30d`} name={`${s} 30d`} stroke={SUB_COLORS[i % SUB_COLORS.length]} dot={false} strokeDasharray="8 4" strokeWidth={1} isAnimationActive={false} />
           ))}
       </LineChart>
     </ResponsiveContainer>

@@ -26,7 +26,7 @@ export function VolumeBarChart({ data }: Props) {
         <Tooltip contentStyle={{ background: "#141619", border: "1px solid #2d2f33", fontSize: 12 }} />
         <Legend wrapperStyle={{ fontSize: 11 }} />
         {subreddits.map((s, i) => (
-          <Bar key={s} dataKey={s} stackId="a" fill={COLORS[i % COLORS.length]} />
+          <Bar key={s} dataKey={s} stackId="a" fill={COLORS[i % COLORS.length]} isAnimationActive={false} />
         ))}
       </BarChart>
     </ResponsiveContainer>

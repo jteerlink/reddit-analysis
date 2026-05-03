@@ -24,7 +24,15 @@ export function SentimentDonut({ data }: Props) {
   return (
     <ResponsiveContainer width="100%" height={200}>
       <PieChart>
-        <Pie data={entries} dataKey="value" nameKey="name" innerRadius={55} outerRadius={80} paddingAngle={2}>
+        <Pie
+          data={entries}
+          dataKey="value"
+          nameKey="name"
+          innerRadius={55}
+          outerRadius={80}
+          paddingAngle={2}
+          isAnimationActive={false}
+        >
           {entries.map((e) => (
             <Cell key={e.name} fill={COLORS[e.name] ?? "#6B7280"} />
           ))}

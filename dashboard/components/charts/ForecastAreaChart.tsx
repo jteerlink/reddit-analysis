@@ -1,5 +1,6 @@
 "use client";
 
+import { Fragment } from "react";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts";
 import type { Forecast } from "@/lib/types";
 
@@ -27,24 +28,24 @@ export function ForecastAreaChart({ data }: Props) {
         <Tooltip contentStyle={{ background: "#141619", border: "1px solid #2d2f33", fontSize: 12 }} />
         <Legend wrapperStyle={{ fontSize: 11 }} />
         {subreddits.map((s, i) => (
-          <>
+          <Fragment key={s}>
             <Area
-              key={`${s}_ci`}
               dataKey={`${s}_ci`}
               name={`${s} 95% CI`}
               fill={SUB_COLORS[i % SUB_COLORS.length]}
               fillOpacity={0.15}
               stroke="none"
+              isAnimationActive={false}
             />
             <Area
-              key={`${s}_yhat`}
               dataKey={`${s}_yhat`}
               name={`${s} forecast`}
               stroke={SUB_COLORS[i % SUB_COLORS.length]}
               fill="none"
               strokeWidth={1.5}
+              isAnimationActive={false}
             />
-          </>
+          </Fragment>
         ))}
       </AreaChart>
     </ResponsiveContainer>

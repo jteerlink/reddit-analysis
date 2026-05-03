@@ -9,10 +9,10 @@ interface Props {
 
 export function ChartCard({ title, subtitle, children, action }: Props) {
   return (
-    <Card>
+    <Card className="border-border/80 bg-card/78">
       <CardHeader className="flex-row items-start justify-between">
         <div>
-          <CardTitle>{title}</CardTitle>
+          <CardTitle className="text-sm">{title}</CardTitle>
           {subtitle && <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>}
         </div>
         {action}

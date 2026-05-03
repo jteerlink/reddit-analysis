@@ -14,7 +14,7 @@ export function TopicBarChart({ data }: Props) {
         <XAxis dataKey="week_start" tick={{ fontSize: 10 }} tickFormatter={(v) => v.slice(5)} />
         <YAxis tick={{ fontSize: 10 }} width={40} />
         <Tooltip contentStyle={{ background: "#141619", border: "1px solid #2d2f33", fontSize: 12 }} />
-        <Bar dataKey="doc_count" fill="#F59E0B" name="Docs" />
+        <Bar dataKey="doc_count" fill="#F59E0B" name="Docs" isAnimationActive={false} />
       </BarChart>
     </ResponsiveContainer>
   );
