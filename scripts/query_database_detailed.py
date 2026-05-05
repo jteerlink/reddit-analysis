@@ -1,145 +1,93 @@
 #!/usr/bin/env python3
-"""
-Detailed script to query the historical Reddit data database with comprehensive statistics.
+"""Detailed database statistics for SQLite fallback or Neon."""
 
-Usage:
-    python scripts/query_database_detailed.py
-"""
-
-import sqlite3
 import sys
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from src.db.connection import connection, get_backend, is_postgres, sqlite_path
 
 
-def query_detailed_database_stats(db_path: str = "historical_reddit_data.db") -> dict:
-    """
-    Query the database for detailed statistics.
-    
-    Args:
-        db_path: Path to the SQLite database file
-        
-    Returns:
-        Dictionary containing detailed statistics
-    """
-    if not Path(db_path).exists():
-        raise FileNotFoundError(f"Database file not found: {db_path}")
-    
-    try:
-        with sqlite3.connect(db_path) as conn:
-            cursor = conn.cursor()
-            
-            # Basic counts
-            cursor.execute('SELECT COUNT(*) FROM posts')
-            post_count = cursor.fetchone()[0]
-            
-            cursor.execute('SELECT COUNT(*) FROM comments')
-            comment_count = cursor.fetchone()[0]
-            
-            # Subreddit statistics
-            cursor.execute('''
-                SELECT subreddit, COUNT(*) as post_count, AVG(upvotes) as avg_upvotes
-                FROM posts 
-                GROUP BY subreddit 
-                ORDER BY post_count DESC
-            ''')
-            subreddit_stats = cursor.fetchall()
-            
-            # Time-based statistics
-            cursor.execute('SELECT MIN(timestamp), MAX(timestamp) FROM posts')
-            time_range = cursor.fetchone()
-            earliest_post = time_range[0] if time_range[0] else None
-            latest_post = time_range[1] if time_range[1] else None
-            
-            # Recent activity (last 7 days)
-            cursor.execute('''
-                SELECT COUNT(*) FROM posts 
-                WHERE timestamp > datetime('now', '-7 days')
-            ''')
-            recent_posts = cursor.fetchone()[0]
-            
-            cursor.execute('''
-                SELECT COUNT(*) FROM comments 
-                WHERE timestamp > datetime('now', '-7 days')
-            ''')
-            recent_comments = cursor.fetchone()[0]
-            
-            # Database size
-            db_size_mb = Path(db_path).stat().st_size / (1024 * 1024)
-            
-            return {
-                'post_count': post_count,
-                'comment_count': comment_count,
-                'subreddit_stats': subreddit_stats,
-                'earliest_post': earliest_post,
-                'latest_post': latest_post,
-                'recent_posts': recent_posts,
-                'recent_comments': recent_comments,
-                'database_size_mb': round(db_size_mb, 2)
-            }
-            
-    except sqlite3.Error as e:
-        print(f"Database error: {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+def query_detailed_database_stats() -> dict:
+    if get_backend() == "sqlite" and not sqlite_path().exists():
+        raise FileNotFoundError(f"Database file not found: {sqlite_path()}")
+
+    recent_clause = (
+        "timestamp > NOW() - INTERVAL '7 days'"
+        if is_postgres()
+        else "timestamp > datetime('now', '-7 days')"
+    )
+    with connection(readonly=True) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM posts")
+        post_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM comments")
+        comment_count = cursor.fetchone()[0]
+        cursor.execute("""
+            SELECT subreddit, COUNT(*) AS post_count, AVG(upvotes) AS avg_upvotes
+            FROM posts
+            GROUP BY subreddit
+            ORDER BY post_count DESC
+        """)
+        subreddit_stats = cursor.fetchall()
+        cursor.execute("SELECT MIN(timestamp), MAX(timestamp) FROM posts")
+        earliest_post, latest_post = cursor.fetchone()
+        cursor.execute(f"SELECT COUNT(*) FROM posts WHERE {recent_clause}")
+        recent_posts = cursor.fetchone()[0]
+        cursor.execute(f"SELECT COUNT(*) FROM comments WHERE {recent_clause}")
+        recent_comments = cursor.fetchone()[0]
+
+    db_size_mb = sqlite_path().stat().st_size / (1024 * 1024) if get_backend() == "sqlite" else 0
+    return {
+        "post_count": post_count,
+        "comment_count": comment_count,
+        "subreddit_stats": subreddit_stats,
+        "earliest_post": earliest_post,
+        "latest_post": latest_post,
+        "recent_posts": recent_posts,
+        "recent_comments": recent_comments,
+        "database_size_mb": round(db_size_mb, 2),
+    }
 
 
 def format_timestamp(timestamp_str):
-    """Format timestamp for display."""
     if not timestamp_str:
         return "N/A"
     try:
-        dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
-        return dt.strftime('%Y-%m-%d %H:%M:%S')
-    except:
-        return timestamp_str
+        dt = datetime.fromisoformat(str(timestamp_str).replace("Z", "+00:00"))
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return str(timestamp_str)
 
 
 def main():
-    """Main function to run the detailed database query."""
-    print("🔍 Detailed Historical Reddit Data Database Analysis")
+    print("Detailed Historical Reddit Data Database Analysis")
     print("=" * 60)
-    
     try:
         stats = query_detailed_database_stats()
-        
-        # Basic statistics
-        print(f"\n📊 Basic Statistics:")
+        print(f"\nBasic Statistics:")
+        print(f"   Backend: {get_backend()}")
         print(f"   Posts: {stats['post_count']:,}")
         print(f"   Comments: {stats['comment_count']:,}")
         print(f"   Total Items: {stats['post_count'] + stats['comment_count']:,}")
-        print(f"   Database Size: {stats['database_size_mb']} MB")
-        
-        # Time range
-        print(f"\n📅 Data Time Range:")
+        if get_backend() == "sqlite":
+            print(f"   Database Size: {stats['database_size_mb']} MB")
+        print(f"\nData Time Range:")
         print(f"   Earliest Post: {format_timestamp(stats['earliest_post'])}")
         print(f"   Latest Post: {format_timestamp(stats['latest_post'])}")
-        
-        # Recent activity
-        print(f"\n🕒 Recent Activity (Last 7 Days):")
+        print(f"\nRecent Activity (Last 7 Days):")
         print(f"   New Posts: {stats['recent_posts']}")
         print(f"   New Comments: {stats['recent_comments']}")
-        
-        # Subreddit breakdown
-        print(f"\n📈 Subreddit Breakdown:")
+        print(f"\nSubreddit Breakdown:")
         print(f"   {'Subreddit':<20} {'Posts':<8} {'Avg Upvotes':<12}")
         print(f"   {'-' * 20} {'-' * 8} {'-' * 12}")
-        
-        for subreddit, post_count, avg_upvotes in stats['subreddit_stats']:
+        for subreddit, post_count, avg_upvotes in stats["subreddit_stats"]:
             avg_upvotes_str = f"{avg_upvotes:.1f}" if avg_upvotes else "N/A"
             print(f"   {subreddit:<20} {post_count:<8} {avg_upvotes_str:<12}")
-        
-        # Summary
-        print(f"\n💡 Summary:")
-        print(f"   • Database contains {stats['post_count']:,} posts and {stats['comment_count']:,} comments")
-        print(f"   • Data spans {len(stats['subreddit_stats'])} different subreddits")
-        print(f"   • Recent activity shows {stats['recent_posts']} new posts and {stats['recent_comments']} new comments")
-        
-    except FileNotFoundError as e:
-        print(f"❌ Error: {e}")
-        print("Make sure the database file exists in the current directory.")
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}")
         sys.exit(1)
 
 

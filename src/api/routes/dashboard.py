@@ -10,14 +10,28 @@ router = APIRouter()
 
 
 @router.get("/summary")
-def summary():
-    data = db.get_collection_summary()
+def summary(
+    subreddits: List[str] = Query(default=[]),
+    start: Optional[str] = Query(default=None),
+    end: Optional[str] = Query(default=None),
+):
+    data = (
+        db.get_collection_summary(tuple(subreddits), start, end)
+        if subreddits or start or end
+        else db.get_collection_summary()
+    )
     data["trending_topics"] = db.get_trending_topics(n=3)
     return data
 
 
 @router.get("/sentiment/summary")
-def sentiment_summary():
+def sentiment_summary(
+    subreddits: List[str] = Query(default=[]),
+    start: Optional[str] = Query(default=None),
+    end: Optional[str] = Query(default=None),
+):
+    if subreddits or start or end:
+        return db.get_sentiment_summary(tuple(subreddits), start, end)
     return db.get_sentiment_summary()
 
 
@@ -25,7 +39,11 @@ def sentiment_summary():
 def sentiment_daily(
     subreddits: List[str] = Query(default=[]),
     days: int = Query(default=90, ge=1, le=365),
+    start: Optional[str] = Query(default=None),
+    end: Optional[str] = Query(default=None),
 ):
+    if start or end:
+        return db.get_sentiment_daily(tuple(subreddits), days, start, end)
     return db.get_sentiment_daily(tuple(subreddits), days)
 
 
@@ -43,7 +61,11 @@ def forecast(subreddits: List[str] = Query(default=[])):
 def volume_daily(
     subreddits: List[str] = Query(default=[]),
     days: int = Query(default=30, ge=1, le=365),
+    start: Optional[str] = Query(default=None),
+    end: Optional[str] = Query(default=None),
 ):
+    if start or end:
+        return db.get_daily_volume(tuple(subreddits), days, start, end)
     return db.get_daily_volume(tuple(subreddits), days)
 
 
@@ -60,6 +82,15 @@ def emerging_topics(days: int = Query(default=7, ge=1, le=90)):
 @router.get("/topics/heatmap")
 def topic_heatmap(n: int = Query(default=30, ge=1, le=100)):
     return db.get_topic_heatmap(n)
+
+
+@router.get("/topics/graph")
+def topic_graph(
+    n: int = Query(default=50, ge=1, le=100),
+    min_similarity: float = Query(default=0.15, ge=0, le=1),
+    subreddits: List[str] = Query(default=[]),
+):
+    return db.get_topic_graph(n=n, min_similarity=min_similarity, subreddits=tuple(subreddits))
 
 
 @router.get("/topics/{topic_id}/over-time")

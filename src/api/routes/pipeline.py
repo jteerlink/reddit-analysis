@@ -2,7 +2,6 @@
 
 import asyncio
 import os
-import sqlite3
 import sys
 from asyncio import Queue
 from pathlib import Path
@@ -10,6 +9,8 @@ from typing import AsyncGenerator, List
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
+
+from src.db.connection import connection, database_reachable, execute, get_backend
 
 router = APIRouter()
 
@@ -28,11 +29,9 @@ STEPS = [
 
 
 def _db_count(query: str) -> int:
-    abs_db = Path(DB_PATH) if Path(DB_PATH).is_absolute() else PROJECT_ROOT / DB_PATH
     try:
-        conn = sqlite3.connect(str(abs_db))
-        row = conn.execute(query).fetchone()
-        conn.close()
+        with connection(readonly=True) as conn:
+            row = execute(conn, query).fetchone()
         return int(row[0]) if row else 0
     except Exception:
         return 0
@@ -41,6 +40,8 @@ def _db_count(query: str) -> int:
 def _step_done(step_num: int) -> bool:
     abs_db = Path(DB_PATH) if Path(DB_PATH).is_absolute() else PROJECT_ROOT / DB_PATH
     if step_num == 1:
+        if get_backend() == "postgres":
+            return database_reachable(readonly=True)
         return abs_db.exists()
     if step_num == 2:
         return (PROJECT_ROOT / "models" / "embeddings_cache.npy").exists()

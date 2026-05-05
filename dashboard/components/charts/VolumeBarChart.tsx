@@ -1,13 +1,12 @@
 "use client";
 
-import { BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { BarChart, Bar, CartesianGrid, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { CHART_AXIS_PROPS, CHART_COLORS, CHART_GRID_PROPS, CHART_LEGEND_PROPS, CHART_SERIES_COLORS, CHART_TOOLTIP_PROPS } from "@/components/charts/chartTooltip";
 import type { VolumeDaily } from "@/lib/types";
 
 interface Props {
   data: VolumeDaily[];
 }
-
-const COLORS = ["#F59E0B", "#34D399", "#60A5FA", "#F87171", "#A78BFA", "#FB923C"];
 
 export function VolumeBarChart({ data }: Props) {
   const subreddits = [...new Set(data.map((d) => d.subreddit))];
@@ -19,16 +18,19 @@ export function VolumeBarChart({ data }: Props) {
   const chartData = Object.values(byDate).sort((a, b) => (a.date > b.date ? 1 : -1));
 
   return (
-    <ResponsiveContainer width="100%" height={220}>
-      <BarChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
-        <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(v) => v.slice(5)} />
-        <YAxis tick={{ fontSize: 10 }} width={40} />
-        <Tooltip contentStyle={{ background: "#141619", border: "1px solid #2d2f33", fontSize: 12 }} />
-        <Legend wrapperStyle={{ fontSize: 11 }} />
+    <div className="signal-chart-frame">
+      <ResponsiveContainer width="100%" height={220}>
+      <BarChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+        <CartesianGrid {...CHART_GRID_PROPS} />
+        <XAxis dataKey="date" {...CHART_AXIS_PROPS} tickFormatter={(v) => v.slice(5)} />
+        <YAxis {...CHART_AXIS_PROPS} width={40} />
+        <Tooltip {...CHART_TOOLTIP_PROPS} />
+        <Legend {...CHART_LEGEND_PROPS} />
         {subreddits.map((s, i) => (
-          <Bar key={s} dataKey={s} stackId="a" fill={COLORS[i % COLORS.length]} isAnimationActive={false} />
+          <Bar key={s} dataKey={s} stackId="a" fill={CHART_SERIES_COLORS[i % CHART_SERIES_COLORS.length]} radius={[3, 3, 0, 0]} isAnimationActive={false} activeBar={{ stroke: CHART_COLORS.cursor, strokeWidth: 1 }} />
         ))}
       </BarChart>
-    </ResponsiveContainer>
+      </ResponsiveContainer>
+    </div>
   );
 }

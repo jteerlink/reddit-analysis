@@ -1,31 +1,34 @@
 #!/usr/bin/env python3
-import sqlite3
-from datetime import datetime
+import sys
+from pathlib import Path
 
-db_path = "historical_reddit_data.db"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-with sqlite3.connect(db_path) as conn:
+from src.db.connection import connection, is_postgres
+
+
+month_expr = "TO_CHAR(timestamp, 'YYYY-MM')" if is_postgres() else "strftime('%Y-%m', timestamp)"
+
+with connection(readonly=True) as conn:
     cursor = conn.cursor()
-    
-    # Posts per year/month
-    cursor.execute('''
-        SELECT strftime('%Y-%m', timestamp) as month, COUNT(*) as count 
-        FROM posts 
-        GROUP BY month 
+    cursor.execute(f"""
+        SELECT {month_expr} AS month, COUNT(*) AS count
+        FROM posts
+        GROUP BY month
         ORDER BY month
-    ''')
-    
+    """)
+
     print("Posts per month:")
     for month, count in cursor.fetchall():
         print(f"{month}: {count}")
-    
+
     print("\nComments per month:")
-    cursor.execute('''
-        SELECT strftime('%Y-%m', timestamp) as month, COUNT(*) as count 
-        FROM comments 
-        GROUP BY month 
+    cursor.execute(f"""
+        SELECT {month_expr} AS month, COUNT(*) AS count
+        FROM comments
+        GROUP BY month
         ORDER BY month
-    ''')
-    
+    """)
+
     for month, count in cursor.fetchall():
         print(f"{month}: {count}")

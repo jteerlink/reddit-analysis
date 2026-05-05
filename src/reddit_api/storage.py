@@ -14,9 +14,114 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
+from src.db.connection import get_write_connection, is_postgres_connection
+
 from .models import RedditPost, RedditComment
 
 logger = logging.getLogger(__name__)
+
+try:
+    import psycopg2
+    from psycopg2.extras import DictCursor
+except ImportError:  # pragma: no cover
+    psycopg2 = None
+    DictCursor = None
+
+
+class _CompatCursor:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    @property
+    def rowcount(self):
+        return self._cursor.rowcount
+
+    def execute(self, sql, params=None):
+        sql = self._translate(sql)
+        self._cursor.execute(sql, tuple(params or ()))
+        return self
+
+    def fetchone(self):
+        return self._cursor.fetchone()
+
+    def fetchall(self):
+        return self._cursor.fetchall()
+
+    def _translate(self, sql: str) -> str:
+        normalized = " ".join(sql.strip().split()).upper()
+        translated = sql.replace("?", "%s")
+        translated = translated.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
+        translated = translated.replace("DATETIME DEFAULT CURRENT_TIMESTAMP", "TIMESTAMPTZ DEFAULT NOW()")
+        translated = translated.replace("DATETIME", "TIMESTAMPTZ")
+        translated = translated.replace("REAL DEFAULT 0", "DOUBLE PRECISION DEFAULT 0")
+        translated = translated.replace("REAL", "DOUBLE PRECISION")
+        if normalized.startswith("INSERT OR REPLACE INTO POSTS"):
+            translated = translated.replace("INSERT OR REPLACE INTO posts", "INSERT INTO posts")
+            translated += """
+                ON CONFLICT (id) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    content = EXCLUDED.content,
+                    upvotes = EXCLUDED.upvotes,
+                    timestamp = EXCLUDED.timestamp,
+                    subreddit = EXCLUDED.subreddit,
+                    author = EXCLUDED.author,
+                    author_karma = EXCLUDED.author_karma,
+                    url = EXCLUDED.url,
+                    num_comments = EXCLUDED.num_comments,
+                    content_type = EXCLUDED.content_type
+            """
+        elif normalized.startswith("INSERT OR REPLACE INTO COMMENTS"):
+            translated = translated.replace("INSERT OR REPLACE INTO comments", "INSERT INTO comments")
+            translated += """
+                ON CONFLICT (id) DO UPDATE SET
+                    parent_id = EXCLUDED.parent_id,
+                    content = EXCLUDED.content,
+                    upvotes = EXCLUDED.upvotes,
+                    timestamp = EXCLUDED.timestamp,
+                    subreddit = EXCLUDED.subreddit,
+                    author = EXCLUDED.author,
+                    author_karma = EXCLUDED.author_karma,
+                    post_id = EXCLUDED.post_id,
+                    content_type = EXCLUDED.content_type
+            """
+        elif normalized.startswith("INSERT OR REPLACE INTO BATCH_COLLECTIONS"):
+            translated = translated.replace("INSERT OR REPLACE INTO batch_collections", "INSERT INTO batch_collections")
+            translated += """
+                ON CONFLICT (subreddit, collection_timestamp) DO UPDATE SET
+                    posts_collected = EXCLUDED.posts_collected,
+                    comments_collected = EXCLUDED.comments_collected,
+                    processing_time_seconds = EXCLUDED.processing_time_seconds,
+                    batch_status = EXCLUDED.batch_status,
+                    storage_timestamp = NOW()
+            """
+        return translated
+
+
+class _CompatConnection:
+    def __init__(self, conn):
+        self._conn = conn
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+
+    def cursor(self):
+        return _CompatCursor(self._conn.cursor())
+
+    def execute(self, sql, params=None):
+        return self.cursor().execute(sql, params)
+
+    def commit(self):
+        self._conn.commit()
+
+    def close(self):
+        self._conn.close()
+
+    @property
+    def raw(self):
+        return self._conn
 
 
 class RedditDataStorage:
@@ -41,9 +146,32 @@ class RedditDataStorage:
         self.db_path = db_path
         self.init_database()
 
+    def _connect(self):
+        if self.db_path.startswith(("postgres://", "postgresql://")):
+            if psycopg2 is None:
+                raise RuntimeError("psycopg2-binary is required for PostgreSQL")
+            return _CompatConnection(psycopg2.connect(self.db_path, cursor_factory=DictCursor))
+        if os.environ.get("DATABASE_URL"):
+            return _CompatConnection(get_write_connection())
+        return sqlite3.connect(self.db_path)
+
+    def _read_sql(self, query: str, params=None) -> pd.DataFrame:
+        with self._connect() as conn:
+            raw_conn = conn.raw if isinstance(conn, _CompatConnection) else conn
+            sql = query.replace("?", "%s") if is_postgres_connection(raw_conn) else query
+            return pd.read_sql_query(sql, raw_conn, params=params)
+
+    def _database_size_mb(self) -> float:
+        if os.environ.get("DATABASE_URL") or self.db_path.startswith(("postgres://", "postgresql://")):
+            return 0.0
+        return os.path.getsize(self.db_path) / 1024 / 1024 if os.path.exists(self.db_path) else 0.0
+
+    def _using_postgres(self) -> bool:
+        return bool(os.environ.get("DATABASE_URL") or self.db_path.startswith(("postgres://", "postgresql://")))
+
     def init_database(self):
         """Initialize SQLite database with required tables and indexes"""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
 
             # Posts table
@@ -117,7 +245,7 @@ class RedditDataStorage:
         if not posts:
             return 0
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             stored_count = 0
 
@@ -155,7 +283,7 @@ class RedditDataStorage:
         if not comments:
             return 0
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             stored_count = 0
 
@@ -187,7 +315,7 @@ class RedditDataStorage:
         Args:
             metrics: Dictionary containing API metrics
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT INTO api_metrics
@@ -208,7 +336,7 @@ class RedditDataStorage:
         Returns:
             Dictionary containing data summary
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
 
             # Posts summary
@@ -229,8 +357,7 @@ class RedditDataStorage:
             cursor.execute('SELECT MIN(timestamp) FROM posts')
             earliest_post = cursor.fetchone()[0]
 
-            # Database size
-            db_size_mb = os.path.getsize(self.db_path) / 1024 / 1024 if os.path.exists(self.db_path) else 0
+            db_size_mb = self._database_size_mb()
 
             return {
                 'total_posts': total_posts,
@@ -276,7 +403,7 @@ class RedditDataStorage:
         query += ' ORDER BY timestamp DESC LIMIT ?'
         params.append(limit)
 
-        return pd.read_sql_query(query, sqlite3.connect(self.db_path), params=params)
+        return self._read_sql(query, params=params)
 
     def query_comments(self, post_id: str = None, limit: int = 100) -> pd.DataFrame:
         """
@@ -299,7 +426,7 @@ class RedditDataStorage:
         query += ' ORDER BY timestamp DESC LIMIT ?'
         params.append(limit)
 
-        return pd.read_sql_query(query, sqlite3.connect(self.db_path), params=params)
+        return self._read_sql(query, params=params)
 
     def export_to_json(self, filename: str = None) -> str:
         """
@@ -314,11 +441,11 @@ class RedditDataStorage:
         if not filename:
             filename = f"reddit_data_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
 
-        with sqlite3.connect(self.db_path) as conn:
-            # Get all data
-            posts_df = pd.read_sql_query('SELECT * FROM posts', conn)
-            comments_df = pd.read_sql_query('SELECT * FROM comments', conn)
-            metrics_df = pd.read_sql_query('SELECT * FROM api_metrics', conn)
+        with self._connect() as conn:
+            raw_conn = conn.raw if isinstance(conn, _CompatConnection) else conn
+            posts_df = pd.read_sql_query('SELECT * FROM posts', raw_conn)
+            comments_df = pd.read_sql_query('SELECT * FROM comments', raw_conn)
+            metrics_df = pd.read_sql_query('SELECT * FROM api_metrics', raw_conn)
 
             export_data = {
                 'posts': posts_df.to_dict('records'),
@@ -352,7 +479,7 @@ class RedditDataStorage:
             GROUP BY subreddit
             ORDER BY post_count DESC
         '''
-        return pd.read_sql_query(query, sqlite3.connect(self.db_path))
+        return self._read_sql(query)
 
     def cleanup_old_data(self, days_to_keep: int = 30) -> int:
         """
@@ -366,7 +493,7 @@ class RedditDataStorage:
         """
         cutoff_date = datetime.now() - timedelta(days=days_to_keep)
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
 
             # Delete old posts
@@ -396,8 +523,19 @@ class RedditDataStorage:
             Dictionary with counts of duplicates removed
         """
         logger.info("Starting database deduplication...")
+        if self._using_postgres():
+            logger.info("Skipping rowid-based deduplication on PostgreSQL")
+            return {
+                'posts_removed_total': 0,
+                'posts_removed_by_id': 0,
+                'posts_removed_by_content': 0,
+                'comments_removed_total': 0,
+                'comments_removed_by_id': 0,
+                'comments_removed_by_content': 0,
+                'orphaned_comments_removed': 0
+            }
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
 
             # Track removal counts
@@ -491,7 +629,15 @@ class RedditDataStorage:
         Returns:
             Dictionary with duplicate counts before cleanup
         """
-        with sqlite3.connect(self.db_path) as conn:
+        if self._using_postgres():
+            return {
+                'duplicate_posts_by_id': 0,
+                'duplicate_posts_by_content': 0,
+                'duplicate_comments_by_id': 0,
+                'duplicate_comments_by_content': 0,
+                'orphaned_comments': 0
+            }
+        with self._connect() as conn:
             cursor = conn.cursor()
 
             # Count duplicate posts by ID
@@ -549,7 +695,7 @@ class RedditDataStorage:
         Returns:
             Set of post IDs that already exist in database
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             cutoff_date = datetime.now() - timedelta(days=days_back)
@@ -579,7 +725,7 @@ class RedditDataStorage:
         Returns:
             Set of post IDs that already exist in the timeframe
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             cursor.execute('''
@@ -600,7 +746,7 @@ class RedditDataStorage:
         Returns:
             Set of comment IDs that already exist in database
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             if post_ids:
@@ -630,7 +776,7 @@ class RedditDataStorage:
         Returns:
             Datetime of most recent post, or None if no posts exist
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             cursor.execute('''
@@ -652,7 +798,7 @@ class RedditDataStorage:
             posts_collected: Number of posts collected
             comments_collected: Number of comments collected
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             # Create metadata table if it doesn't exist
@@ -687,7 +833,7 @@ class RedditDataStorage:
         Returns:
             Dictionary with efficiency metrics
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             cutoff_date = datetime.now() - timedelta(days=days_back)
@@ -752,7 +898,7 @@ class RedditDataStorage:
         
         storage_start_time = datetime.now()
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             try:
@@ -946,7 +1092,7 @@ class RedditDataStorage:
                 'resume_available': False
             }
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             # Check for recent batch collections
@@ -1018,7 +1164,7 @@ class RedditDataStorage:
         Returns:
             List of batch collection records with details
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             query = '''
@@ -1062,7 +1208,7 @@ class RedditDataStorage:
         Returns:
             List of failed subreddit information for retry logic
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             cutoff_time = datetime.now() - timedelta(hours=hours_back)
@@ -1100,7 +1246,7 @@ class RedditDataStorage:
         """
         cutoff_date = datetime.now() - timedelta(days=days_to_keep)
         
-        with sqlite3.connect(self.db_path) as conn:
+        with self._connect() as conn:
             cursor = conn.cursor()
             
             cursor.execute('''

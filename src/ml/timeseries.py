@@ -13,6 +13,7 @@ from typing import Any, Dict
 
 import pandas as pd
 
+from src.db.connection import is_postgres_connection
 from src.ml.db import (
     ensure_timeseries_tables,
     get_connection,
@@ -41,7 +42,13 @@ def _aggregate_daily_sentiment(conn: Any, days: int) -> pd.DataFrame:
     Joins `sentiment_predictions` → `preprocessed` → posts/comments to pick
     up the subreddit and the original Reddit timestamp.
     """
-    query = """
+    where_recent = (
+        f"COALESCE(po.timestamp, co.timestamp) >= NOW() - INTERVAL '{int(days)} days'"
+        if is_postgres_connection(conn)
+        else "COALESCE(po.timestamp, co.timestamp) >= datetime('now', ?)"
+    )
+    params = () if is_postgres_connection(conn) else (f"-{days} days",)
+    query = f"""
         SELECT
             COALESCE(po.subreddit, co.subreddit)              AS subreddit,
             DATE(COALESCE(po.timestamp, co.timestamp))        AS date,
@@ -51,10 +58,10 @@ def _aggregate_daily_sentiment(conn: Any, days: int) -> pd.DataFrame:
         JOIN preprocessed p ON sp.id = p.id
         LEFT JOIN posts    po ON p.id = po.id AND p.content_type = 'post'
         LEFT JOIN comments co ON p.id = co.id AND p.content_type = 'comment'
-        WHERE COALESCE(po.timestamp, co.timestamp) >= datetime('now', ?)
+        WHERE {where_recent}
           AND sp.label IS NOT NULL
     """
-    df = pd.read_sql_query(query, conn, params=(f"-{days} days",))
+    df = pd.read_sql_query(query, conn, params=params)
     if df.empty:
         return df
 
@@ -195,7 +202,13 @@ def _compute_topic_sentiment_trends(conn: Any, days: int) -> pd.DataFrame:
     Join topic_assignments → sentiment_predictions → posts/comments to get
     daily mean sentiment per topic, then compute a 7-day rolling average.
     """
-    query = """
+    where_recent = (
+        f"COALESCE(po.timestamp, co.timestamp) >= NOW() - INTERVAL '{int(days)} days'"
+        if is_postgres_connection(conn)
+        else "COALESCE(po.timestamp, co.timestamp) >= datetime('now', ?)"
+    )
+    params = () if is_postgres_connection(conn) else (f"-{days} days",)
+    query = f"""
         SELECT
             ta.topic_id,
             DATE(COALESCE(po.timestamp, co.timestamp)) AS date,
@@ -205,11 +218,11 @@ def _compute_topic_sentiment_trends(conn: Any, days: int) -> pd.DataFrame:
         JOIN preprocessed p ON ta.id = p.id
         LEFT JOIN posts    po ON p.id = po.id AND p.content_type = 'post'
         LEFT JOIN comments co ON p.id = co.id AND p.content_type = 'comment'
-        WHERE COALESCE(po.timestamp, co.timestamp) >= datetime('now', ?)
+        WHERE {where_recent}
           AND sp.label IS NOT NULL
           AND ta.topic_id >= 0
     """
-    df = pd.read_sql_query(query, conn, params=(f"-{days} days",))
+    df = pd.read_sql_query(query, conn, params=params)
     if df.empty:
         return pd.DataFrame(
             columns=["topic_id", "date", "mean_sentiment", "rolling_7d"]

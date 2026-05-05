@@ -3,6 +3,8 @@
 Split historical_reddit_data.db:
 - Keep AI-related subreddits in posts/comments
 - Move all others to posts_other/comments_other
+
+SQLite-only maintenance utility. Do not point this script at Neon/PostgreSQL.
 """
 
 import shutil
@@ -21,10 +23,9 @@ AI_SUBREDDITS = {
     "learnmachinelearning", "AutoGPT",
 }
 
-# Build a SQL IN clause with exact case-sensitive matches
-placeholders = ",".join(f"'{s}'" for s in sorted(AI_SUBREDDITS))
-NOT_IN_AI = f"subreddit NOT IN ({placeholders})"
-IN_AI = f"subreddit IN ({placeholders})"
+AI_SUBREDDIT_PARAMS = tuple(sorted(AI_SUBREDDITS))
+AI_PLACEHOLDERS = ",".join("?" for _ in AI_SUBREDDIT_PARAMS)
+NOT_IN_AI = f"subreddit NOT IN ({AI_PLACEHOLDERS})"
 
 
 def counts(cur, table):
@@ -63,13 +64,11 @@ for table in ("posts", "comments", "posts_other", "comments_other"):
     except sqlite3.OperationalError:
         print(f"\n  [{table}] — does not exist yet")
 
-before = {
-    t: counts(cur, t)
-    for t in ("posts", "comments", "posts_other", "comments_other")
-    if cur.execute(
-        f"SELECT name FROM sqlite_master WHERE type='table' AND name='{t}'"
-    ).fetchone()
-}
+before = {}
+for t in ("posts", "comments", "posts_other", "comments_other"):
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name = ?", (t,))
+    if cur.fetchone():
+        before[t] = counts(cur, t)
 print(f"\nBefore totals: {before}\n")
 
 # ── Step 2: (Re)create posts_other and comments_other ───────────────────────
@@ -120,9 +119,9 @@ print("=" * 60)
 print("STEP 3 — Copying non-AI rows to *_other tables")
 print("=" * 60)
 
-cur.execute(f"INSERT INTO posts_other SELECT * FROM posts WHERE {NOT_IN_AI}")
+cur.execute(f"INSERT INTO posts_other SELECT * FROM posts WHERE {NOT_IN_AI}", AI_SUBREDDIT_PARAMS)
 posts_moved = cur.rowcount
-cur.execute(f"INSERT INTO comments_other SELECT * FROM comments WHERE {NOT_IN_AI}")
+cur.execute(f"INSERT INTO comments_other SELECT * FROM comments WHERE {NOT_IN_AI}", AI_SUBREDDIT_PARAMS)
 comments_moved = cur.rowcount
 conn.commit()
 print(f"  Copied {posts_moved:,} posts → posts_other")
@@ -133,9 +132,9 @@ print("=" * 60)
 print("STEP 4 — Deleting non-AI rows from posts / comments")
 print("=" * 60)
 
-cur.execute(f"DELETE FROM posts WHERE {NOT_IN_AI}")
+cur.execute(f"DELETE FROM posts WHERE {NOT_IN_AI}", AI_SUBREDDIT_PARAMS)
 posts_deleted = cur.rowcount
-cur.execute(f"DELETE FROM comments WHERE {NOT_IN_AI}")
+cur.execute(f"DELETE FROM comments WHERE {NOT_IN_AI}", AI_SUBREDDIT_PARAMS)
 comments_deleted = cur.rowcount
 conn.commit()
 print(f"  Deleted {posts_deleted:,} posts from posts")

@@ -114,6 +114,7 @@ dev-dependencies = [
     "flake8>=5.0.0",
     "mypy>=1.0.0",
     "pre-commit>=2.20.0",
+    "httpx>=0.28.0",
 ]
 
 # UV workspace configuration - commented out for single package

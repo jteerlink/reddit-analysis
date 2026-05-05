@@ -1,6 +1,5 @@
 """Pipeline Runner tab — stream subprocess output for each ML pipeline step."""
 
-import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -14,6 +13,7 @@ from src.dashboard.theme import (
     step_card,
     terminal_header,
 )
+from src.db.connection import connection, database_reachable, execute, get_backend
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -69,9 +69,8 @@ STEPS: List[Dict] = [
 
 def _db_count(db_path: str, query: str) -> int:
     try:
-        conn = sqlite3.connect(db_path)
-        row = conn.execute(query).fetchone()
-        conn.close()
+        with connection(readonly=True) as conn:
+            row = execute(conn, query).fetchone()
         return int(row[0]) if row else 0
     except Exception:
         return 0
@@ -82,6 +81,8 @@ def _step_done(step_num: int, db_path: str) -> bool:
     abs_db = Path(db_path) if Path(db_path).is_absolute() else PROJECT_ROOT / db_path
 
     if step_num == 1:
+        if get_backend() == "postgres":
+            return database_reachable(readonly=True)
         return abs_db.exists()
     if step_num == 2:
         return (root / "models" / "embeddings_cache.npy").exists()

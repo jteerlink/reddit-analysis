@@ -66,6 +66,7 @@ def main():
         logger.warning("mlflow not installed; skipping tracking")
 
     from src.ml.db import get_connection
+    from src.db.connection import is_postgres_connection
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -73,21 +74,25 @@ def main():
     conn = get_connection(args.db)
     analyzer = SentimentIntensityAnalyzer()
 
-    query = """
+    query = f"""
         SELECT p.id, p.content_type, p.clean_text,
                COALESCE(
                    (SELECT subreddit FROM posts WHERE posts.id = p.id),
                    (SELECT subreddit FROM comments WHERE comments.id = p.id)
                ) AS subreddit
         FROM preprocessed p
-        WHERE p.is_filtered = 0
+        WHERE p.is_filtered = {'FALSE' if is_postgres_connection(conn) else '0'}
           AND p.clean_text IS NOT NULL
           AND p.clean_text != ''
     """
     if args.limit:
         query += f" LIMIT {args.limit}"
 
-    cursor = conn.execute(query)
+    if is_postgres_connection(conn):
+        cursor = conn.cursor()
+        cursor.execute(query)
+    else:
+        cursor = conn.execute(query)
 
     # Collect labeled rows; neutral candidates held separately for balancing
     positive_rows = []

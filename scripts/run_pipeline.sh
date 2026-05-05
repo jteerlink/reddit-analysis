@@ -42,16 +42,24 @@ dim()     { printf "  ${DIM}%s${RESET}\n" "$*"; }
 die() { error "$*"; exit 1; }
 
 require_db() {
+  [[ -n "${DATABASE_URL:-}" ]] && return 0
   [[ -f "$DB" ]] || die "Database not found: $DB\n  Set DB_PATH or run from project root."
 }
 
 python_query() {
-  # Run a SQLite query via Python; returns stdout trimmed
+  # Run a DB query via Python; returns stdout trimmed
   python3 - <<EOF
-import sqlite3, sys
+import os, sqlite3, sys
 try:
-    conn = sqlite3.connect('$DB')
-    result = conn.execute("""$1""").fetchone()
+    if os.environ.get("DATABASE_URL"):
+        import psycopg2
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        cur = conn.cursor()
+        cur.execute("""$1""")
+        result = cur.fetchone()
+    else:
+        conn = sqlite3.connect('$DB')
+        result = conn.execute("""$1""").fetchone()
     print(result[0] if result and result[0] is not None else 0)
 except Exception as e:
     print(0)
@@ -60,11 +68,18 @@ EOF
 
 table_exists() {
   python3 - <<EOF
-import sqlite3
+import os, sqlite3
 try:
-    conn = sqlite3.connect('$DB')
-    r = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='$1'").fetchone()
-    print("yes" if r else "no")
+    if os.environ.get("DATABASE_URL"):
+        import psycopg2
+        conn = psycopg2.connect(os.environ["DATABASE_URL"])
+        r = conn.cursor()
+        r.execute("SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename=%s", ('$1',))
+        row = r.fetchone()
+    else:
+        conn = sqlite3.connect('$DB')
+        row = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", ('$1',)).fetchone()
+    print("yes" if row else "no")
 except:
     print("no")
 EOF
@@ -81,6 +96,10 @@ trap trap_cleanup INT TERM
 
 gate_1_prerequisites() {
   # Gate: python reachable, uv/pip reachable, DB exists, dirs exist
+  if [[ -n "${DATABASE_URL:-}" ]]; then
+    python3 -c "import psycopg2" 2>/dev/null || return 1
+    return 0
+  fi
   python3 -c "import sqlite3" 2>/dev/null || return 1
   [[ -f "$DB" ]] || return 1
   return 0

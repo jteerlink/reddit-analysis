@@ -40,7 +40,7 @@ class RedditConfig:
     def __post_init__(self):
         """Initialize default values after creation"""
         if self.target_subreddits is None:
-            self.target_subreddits = ['ChatGPT', 'OpenAI', 'ClaudeAI', 'AnthropicAI', 'LocalLLaMA', 'MachineLearning', 'artificial', 'ArtificialIntelligence', 'DeepLearning', 'AGI', 'Singularity', 'StableDiffusion', 'AItools', 'aiNews', 'huggingface', 'AIStartups', 'DeepMind', 'nvidia', 'AIArt', 'technology', 'LLMDevs', 'PromptEngineering', 'Gemini', 'datascience', 'learnmachinelearning']
+            self.target_subreddits = ['ChatGPT', 'OpenAI', 'ClaudeAI', 'AnthropicAI', 'Gemini', 'AITA', 'LocalLLaMA', 'MachineLearning', 'artificial', 'ArtificialIntelligence', 'DeepLearning', 'AGI', 'Singularity', 'StableDiffusion', 'AItools', 'aiNews', 'huggingface', 'AIStartups', 'DeepMind', 'nvidia', 'AIArt', 'technology', 'LLMDevs', 'PromptEngineering', 'datascience', 'learnmachinelearning']
         if self.target_keywords is None:
             self.target_keywords = ['AI', 'LLM', 'machine learning', 'artificial intelligence', 'ChatGPT', 'Claude', 'GPT', 'neural network']
 

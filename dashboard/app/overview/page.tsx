@@ -1,6 +1,7 @@
 "use client";
 
 import useSWR from "swr";
+import { useSWRConfig } from "swr";
 import { useFilterStore } from "@/lib/store";
 import { MetricCard } from "@/components/shared/MetricCard";
 import { ChartCard } from "@/components/shared/ChartCard";
@@ -9,22 +10,29 @@ import { CommandBar } from "@/components/overview/CommandBar";
 import { PipelineHealthCard } from "@/components/overview/PipelineHealthCard";
 import { SignalStreamChart } from "@/components/overview/SignalStreamChart";
 import { TopicExplorerPanel } from "@/components/overview/TopicExplorerPanel";
-import type { CollectionSummary, SentimentSummary, VolumeDaily } from "@/lib/types";
+import type { CollectionSummary, SentimentDaily, SentimentSummary, VolumeDaily } from "@/lib/types";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
-function buildQuery(subreddits: string[]) {
-  if (!subreddits.length) return "";
-  return "?" + subreddits.map((s) => `subreddits=${encodeURIComponent(s)}`).join("&");
+function buildQuery(subreddits: string[], dateRange: [string, string]) {
+  const params = new URLSearchParams();
+  subreddits.forEach((s) => params.append("subreddits", s));
+  if (dateRange[0]) params.set("start", dateRange[0]);
+  if (dateRange[1]) params.set("end", dateRange[1]);
+  const query = params.toString();
+  return query ? `?${query}` : "";
 }
 
 export default function OverviewPage() {
-  const { subreddits, dateRange } = useFilterStore();
-  const q = buildQuery(subreddits);
+  const { mutate } = useSWRConfig();
+  const { subreddits, setSubreddits, dateRange, setDateRange } = useFilterStore();
+  const q = buildQuery(subreddits, dateRange);
 
   const { data: summary } = useSWR<CollectionSummary>(`/api/summary${q}`, fetcher);
   const { data: sentimentData } = useSWR<SentimentSummary[]>(`/api/sentiment/summary${q}`, fetcher);
+  const { data: sentimentDaily } = useSWR<SentimentDaily[]>(`/api/sentiment/daily${q}`, fetcher);
   const { data: volumeData } = useSWR<VolumeDaily[]>(`/api/volume/daily${q}`, fetcher);
+  const { data: allSubreddits = [] } = useSWR<string[]>("/api/subreddits", fetcher);
 
   const totalPosts = summary?.total_posts?.toLocaleString() ?? "—";
   const totalComments = summary?.total_comments?.toLocaleString() ?? "—";
@@ -37,10 +45,28 @@ export default function OverviewPage() {
   const sentimentMix = total
     ? `${Math.round((posCount / total) * 100)}% pos`
     : "-";
+  const toggleSubreddit = (subreddit: string) => {
+    setSubreddits(
+      subreddits.includes(subreddit)
+        ? subreddits.filter((s) => s !== subreddit)
+        : [...subreddits, subreddit]
+    );
+  };
+  const refreshOverview = () => {
+    mutate((key) => typeof key === "string" && key.startsWith("/api/"));
+  };
 
   return (
     <div className="mx-auto flex max-w-[1680px] flex-col gap-4">
-      <CommandBar selectedSubreddits={subreddits} dateRange={dateRange} />
+      <CommandBar
+        selectedSubreddits={subreddits}
+        dateRange={dateRange}
+        allSubreddits={allSubreddits}
+        onToggleSubreddit={toggleSubreddit}
+        onClearSubreddits={() => setSubreddits([])}
+        onDateRangeChange={setDateRange}
+        onRefresh={refreshOverview}
+      />
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard label="Total posts" value={totalPosts} sub="indexed signals" />
@@ -50,7 +76,7 @@ export default function OverviewPage() {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(380px,0.75fr)]">
-        <SignalStreamChart volumeData={volumeData} sentimentData={sentimentData} />
+        <SignalStreamChart volumeData={volumeData} sentimentData={sentimentData} sentimentDaily={sentimentDaily} />
 
         <div className="grid gap-4">
           <PipelineHealthCard />

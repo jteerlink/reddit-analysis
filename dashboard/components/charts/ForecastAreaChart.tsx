@@ -1,16 +1,16 @@
 "use client";
 
-import { Fragment } from "react";
-import { AreaChart, Area, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { Fragment, useId } from "react";
+import { AreaChart, Area, CartesianGrid, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { CHART_AXIS_PROPS, CHART_COLORS, CHART_GRID_PROPS, CHART_LEGEND_PROPS, CHART_SERIES_COLORS, CHART_TOOLTIP_PROPS } from "@/components/charts/chartTooltip";
 import type { Forecast } from "@/lib/types";
 
 interface Props {
   data: Forecast[];
 }
 
-const SUB_COLORS = ["#F59E0B", "#60A5FA", "#34D399", "#F87171"];
-
 export function ForecastAreaChart({ data }: Props) {
+  const chartId = useId().replace(/:/g, "");
   const subreddits = [...new Set(data.map((d) => d.subreddit))];
   const byDate: Record<string, Record<string, string | number | number[]>> = {};
   for (const row of data) {
@@ -21,18 +21,50 @@ export function ForecastAreaChart({ data }: Props) {
   const chartData = Object.values(byDate).sort((a, b) => (a.date > b.date ? 1 : -1));
 
   return (
-    <ResponsiveContainer width="100%" height={220}>
-      <AreaChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
-        <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(v) => v.slice(5)} />
-        <YAxis domain={[-1, 1]} tick={{ fontSize: 10 }} width={36} />
-        <Tooltip contentStyle={{ background: "#141619", border: "1px solid #2d2f33", fontSize: 12 }} />
-        <Legend wrapperStyle={{ fontSize: 11 }} />
+    <div className="signal-chart-frame">
+      <ResponsiveContainer width="100%" height={220}>
+      <AreaChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+        <defs>
+          <linearGradient id={`${chartId}-forecastGlow`} x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0%" stopColor={CHART_COLORS.green} stopOpacity="0.2" />
+            <stop offset="52%" stopColor={CHART_COLORS.copper} stopOpacity="0.3" />
+            <stop offset="100%" stopColor={CHART_COLORS.red} stopOpacity="0.18" />
+          </linearGradient>
+          <filter id={`${chartId}-softGlow`}>
+            <feGaussianBlur stdDeviation="3" result="coloredBlur" />
+            <feMerge>
+              <feMergeNode in="coloredBlur" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+        <CartesianGrid {...CHART_GRID_PROPS} />
+        <XAxis dataKey="date" {...CHART_AXIS_PROPS} tickFormatter={(v) => v.slice(5)} />
+        <YAxis domain={[-1, 1]} {...CHART_AXIS_PROPS} width={36} />
+        <Tooltip {...CHART_TOOLTIP_PROPS} />
+        <Legend {...CHART_LEGEND_PROPS} />
+        {subreddits.map((s) => (
+          <Area
+            key={`${s}_stream`}
+            dataKey={`${s}_yhat`}
+            name={`${s} signal band`}
+            stroke={`url(#${chartId}-forecastGlow)`}
+            fill="none"
+            strokeWidth={18}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            opacity={0.2}
+            legendType="none"
+            activeDot={false}
+            isAnimationActive={false}
+          />
+        ))}
         {subreddits.map((s, i) => (
           <Fragment key={s}>
             <Area
               dataKey={`${s}_ci`}
               name={`${s} 95% CI`}
-              fill={SUB_COLORS[i % SUB_COLORS.length]}
+              fill={CHART_SERIES_COLORS[i % CHART_SERIES_COLORS.length]}
               fillOpacity={0.15}
               stroke="none"
               isAnimationActive={false}
@@ -40,14 +72,19 @@ export function ForecastAreaChart({ data }: Props) {
             <Area
               dataKey={`${s}_yhat`}
               name={`${s} forecast`}
-              stroke={SUB_COLORS[i % SUB_COLORS.length]}
+              stroke={CHART_SERIES_COLORS[i % CHART_SERIES_COLORS.length]}
               fill="none"
-              strokeWidth={1.5}
+              strokeWidth={2.3}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              filter={`url(#${chartId}-softGlow)`}
+              activeDot={{ r: 5, stroke: CHART_COLORS.cursor, strokeWidth: 1.5 }}
               isAnimationActive={false}
             />
           </Fragment>
         ))}
       </AreaChart>
-    </ResponsiveContainer>
+      </ResponsiveContainer>
+    </div>
   );
 }

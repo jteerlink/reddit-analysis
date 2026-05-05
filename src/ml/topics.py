@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
+from src.db.connection import is_postgres_connection
 from src.ml.db import (
     ensure_topics_tables,
     get_connection,
@@ -33,6 +34,14 @@ MIN_COHERENCE_GATE = 0.50
 EMBEDDING_DIM = 384
 SENTIMENT_SCORE_MAP = {"positive": 1.0, "neutral": 0.0, "negative": -1.0}
 _SENTIMENT_BATCH = 999  # SQLite max safe parameters per query
+
+
+def _execute(conn, sql: str, params=()):
+    if is_postgres_connection(conn):
+        cursor = conn.cursor()
+        cursor.execute(sql, params)
+        return cursor
+    return conn.execute(sql, params)
 
 
 def _detect_device() -> str:
@@ -389,9 +398,9 @@ def run_topic_modeling(
             )
 
         # --- Step 5: Clear stale results (topic IDs aren't stable across runs) ---
-        conn.execute("DELETE FROM topics")
-        conn.execute("DELETE FROM topic_assignments")
-        conn.execute("DELETE FROM topic_over_time")
+        _execute(conn, "DELETE FROM topics")
+        _execute(conn, "DELETE FROM topic_assignments")
+        _execute(conn, "DELETE FROM topic_over_time")
         conn.commit()
 
         # --- Step 6: Write topics ---
@@ -429,10 +438,12 @@ def run_topic_modeling(
             chunk_ids = [x[0] for x in doc_week_topic]
             for i in range(0, len(chunk_ids), _SENTIMENT_BATCH):
                 chunk = chunk_ids[i : i + _SENTIMENT_BATCH]
-                placeholders = ",".join("?" * len(chunk))
-                rows = conn.execute(
+                marker = "%s" if is_postgres_connection(conn) else "?"
+                placeholders = ",".join([marker] * len(chunk))
+                rows = _execute(
+                    conn,
                     f"SELECT id, label FROM sentiment_predictions WHERE id IN ({placeholders})",
-                    chunk,
+                    tuple(chunk),
                 ).fetchall()
                 for row in rows:
                     sentiment_map[row["id"]] = SENTIMENT_SCORE_MAP.get(row["label"], 0.0)

@@ -160,4 +160,21 @@
       linear-gradient(to bottom, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
     background-size: 32px 32px;
   }
+
+  .signal-chart-frame {
+    @apply relative overflow-hidden rounded-lg border border-white/8 bg-black/18 p-2;
+  }
+
+  .signal-chart-frame::before {
+    content: "";
+    @apply pointer-events-none absolute inset-0 opacity-70;
+    background-image:
+      linear-gradient(to right, rgba(255, 255, 255, 0.045) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(255, 255, 255, 0.045) 1px, transparent 1px);
+    background-size: 32px 32px;
+  }
+
+  .signal-chart-frame > * {
+    @apply relative z-10;
+  }
 }

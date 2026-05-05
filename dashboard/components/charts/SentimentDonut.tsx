@@ -1,6 +1,7 @@
 "use client";
 
 import { PieChart, Pie, Cell, Tooltip, Legend, ResponsiveContainer } from "recharts";
+import { CHART_COLORS, CHART_LEGEND_PROPS, CHART_TOOLTIP_PROPS } from "@/components/charts/chartTooltip";
 import type { SentimentSummary } from "@/lib/types";
 
 interface Props {
@@ -8,9 +9,9 @@ interface Props {
 }
 
 const COLORS: Record<string, string> = {
-  positive: "#34D399",
-  neutral: "#94A3B8",
-  negative: "#F87171",
+  positive: CHART_COLORS.green,
+  neutral: CHART_COLORS.copper,
+  negative: CHART_COLORS.red,
 };
 
 export function SentimentDonut({ data }: Props) {
@@ -22,7 +23,8 @@ export function SentimentDonut({ data }: Props) {
   }));
 
   return (
-    <ResponsiveContainer width="100%" height={200}>
+    <div className="signal-chart-frame">
+      <ResponsiveContainer width="100%" height={200}>
       <PieChart>
         <Pie
           data={entries}
@@ -31,6 +33,7 @@ export function SentimentDonut({ data }: Props) {
           innerRadius={55}
           outerRadius={80}
           paddingAngle={2}
+          stroke="rgba(255,255,255,0.08)"
           isAnimationActive={false}
         >
           {entries.map((e) => (
@@ -39,10 +42,11 @@ export function SentimentDonut({ data }: Props) {
         </Pie>
         <Tooltip
           formatter={(value, name) => [`${value} (${entries.find((e) => e.name === name)?.pct}%)`, name]}
-          contentStyle={{ background: "#141619", border: "1px solid #2d2f33", fontSize: 12 }}
+          {...CHART_TOOLTIP_PROPS}
         />
-        <Legend wrapperStyle={{ fontSize: 11 }} />
+        <Legend {...CHART_LEGEND_PROPS} />
       </PieChart>
-    </ResponsiveContainer>
+      </ResponsiveContainer>
+    </div>
   );
 }
