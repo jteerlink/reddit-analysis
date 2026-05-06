@@ -25,6 +25,7 @@ STEPS = [
     {"num": 5, "name": "Batch Inference", "description": "Run trained model on all preprocessed records", "prereq": 4},
     {"num": 6, "name": "Topic Modeling", "description": "BERTopic discovery, coherence scoring, week-over-week tracking", "prereq": 5},
     {"num": 7, "name": "Time Series & Forecast", "description": "Daily aggregation + 14-day Prophet forecast", "prereq": 6},
+    {"num": 8, "name": "Analysis Artifacts", "description": "Backfill persisted dashboard intelligence artifacts", "prereq": 7},
 ]
 
 
@@ -62,6 +63,8 @@ def _step_done(step_num: int) -> bool:
         return _db_count("SELECT COUNT(*) FROM topics WHERE coherence_score >= 0.50") >= 20
     if step_num == 7:
         return _db_count("SELECT COUNT(*) FROM sentiment_forecast") > 0
+    if step_num == 8:
+        return _db_count("SELECT COUNT(*) FROM analysis_artifacts WHERE status = 'succeeded'") > 0
     return False
 
 
@@ -105,6 +108,8 @@ def _step_command(step_num: int) -> List[str]:
     if step_num == 7:
         return [py, "scripts/run_timeseries.py", "--db", abs_db,
                 "--days", "90", "--forecast-days", "14"]
+    if step_num == 8:
+        return [py, "scripts/run_analysis_jobs.py", "--db", abs_db]
     raise ValueError(f"Unknown step: {step_num}")
 
 
@@ -173,9 +178,9 @@ async def _run_generator(steps: List[int]) -> AsyncGenerator[str, None]:
 
 @router.get("/run/{step_num}")
 async def run_step(step_num: int):
-    if step_num < 1 or step_num > 7:
+    if step_num < 1 or step_num > len(STEPS):
         from fastapi import HTTPException
-        raise HTTPException(status_code=400, detail="step_num must be 1–7")
+        raise HTTPException(status_code=400, detail=f"step_num must be 1–{len(STEPS)}")
     return StreamingResponse(
         _run_generator([step_num]),
         media_type="text/event-stream",
@@ -186,7 +191,7 @@ async def run_step(step_num: int):
 @router.get("/run-all")
 async def run_all():
     return StreamingResponse(
-        _run_generator(list(range(1, 8))),
+        _run_generator(list(range(1, len(STEPS) + 1))),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

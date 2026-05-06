@@ -6,10 +6,11 @@ import { SectionHeader } from "@/components/layout/SectionHeader";
 import { ChartCard } from "@/components/shared/ChartCard";
 import { TopicBarChart } from "@/components/charts/TopicBarChart";
 import { TopicGraph } from "@/components/charts/TopicGraph";
+import { TopicHeatmap } from "@/components/charts/TopicHeatmap";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useFilterStore } from "@/lib/store";
-import type { Topic, TopicGraphResponse, TopicOverTime } from "@/lib/types";
+import type { Topic, TopicGraphResponse, TopicHeatmapResponse, TopicOverTime } from "@/lib/types";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -40,6 +41,7 @@ export default function TopicsPage() {
   const { data: topics } = useSWR<Topic[]>("/api/topics", fetcher);
   const { data: emerging } = useSWR<Topic[]>("/api/topics/emerging", fetcher);
   const { data: graph } = useSWR<TopicGraphResponse>(buildGraphQuery(subreddits, 60, 0.12), fetcher);
+  const { data: heatmap } = useSWR<TopicHeatmapResponse>("/api/topics/heatmap?n=30", fetcher);
   const [selected, setSelected] = useState<number | null>(null);
 
   const emergingIds = new Set((emerging ?? []).map((t) => t.topic_id));
@@ -121,6 +123,15 @@ export default function TopicsPage() {
           )}
         </div>
       </div>
+
+      <ChartCard title="Topic sentiment heatmap" subtitle="Topic x week average sentiment">
+        {heatmap?.state && heatmap.state !== "ready" && (
+          <div className="mb-3 rounded-md border border-signal-yellow/25 bg-signal-yellow/10 px-3 py-2 text-xs text-signal-yellow">
+            {heatmap.provenance?.detail ?? heatmap.state.replace("_", " ")}
+          </div>
+        )}
+        {heatmap ? <TopicHeatmap data={heatmap.items} /> : <Skeleton className="h-64 w-full" />}
+      </ChartCard>
     </div>
   );
 }

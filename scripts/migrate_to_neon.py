@@ -34,14 +34,19 @@ MIGRATION_ORDER = [
     "change_points",
     "sentiment_forecast",
     "topic_sentiment_trends",
+    "analysis_schema_version",
+    "llm_model_registry",
+    "analysis_runs",
+    "analysis_artifacts",
+    "artifact_status_history",
+    "embedding_2d",
+    "cluster_labels",
+    "narrative_events",
 ]
 
 EXCLUDED_TABLES = [
     "posts_other",
     "comments_other",
-    "embedding_2d",
-    "cluster_labels",
-    "narrative_events",
 ]
 
 DATE_COLUMNS = {
@@ -67,6 +72,30 @@ TIMESTAMP_COLUMNS = {
     "sentiment_predictions": ["predicted_at"],
     "topics": ["created_at"],
     "topic_assignments": ["assigned_at"],
+    "analysis_schema_version": ["applied_at"],
+    "llm_model_registry": ["discovered_at"],
+    "analysis_runs": [
+        "lease_expires_at",
+        "started_at",
+        "finished_at",
+        "created_at",
+        "updated_at",
+    ],
+    "analysis_artifacts": [
+        "freshness_timestamp",
+        "lease_expires_at",
+        "retry_after",
+        "created_at",
+        "updated_at",
+    ],
+    "artifact_status_history": ["created_at"],
+    "narrative_events": ["created_at"],
+}
+
+JSON_COLUMNS = {
+    "sentiment_predictions": ["logits"],
+    "llm_model_registry": ["metadata"],
+    "analysis_artifacts": ["payload"],
 }
 
 
@@ -123,8 +152,9 @@ def _transform(table: str, df: pd.DataFrame) -> pd.DataFrame:
             df[column] = df[column].map(_parse_date)
     if table == "preprocessed" and "is_filtered" in df.columns:
         df["is_filtered"] = df["is_filtered"].map(bool)
-    if table == "sentiment_predictions" and "logits" in df.columns:
-        df["logits"] = df["logits"].map(_parse_json)
+    for column in JSON_COLUMNS.get(table, []):
+        if column in df.columns:
+            df[column] = df[column].map(_parse_json)
     return df.where(pd.notna(df), None)
 
 
@@ -145,11 +175,14 @@ def _load_psycopg2():
 def _row_values(table: str, batch: pd.DataFrame, json_adapter) -> list[tuple]:
     rows = []
     for values in batch.itertuples(index=False, name=None):
-        if table == "sentiment_predictions" and "logits" in batch.columns:
+        json_columns = [column for column in JSON_COLUMNS.get(table, []) if column in batch.columns]
+        if json_columns:
             values = list(values)
-            logits_idx = list(batch.columns).index("logits")
-            if values[logits_idx] is not None:
-                values[logits_idx] = json_adapter(values[logits_idx])
+            columns = list(batch.columns)
+            for column in json_columns:
+                json_idx = columns.index(column)
+                if values[json_idx] is not None:
+                    values[json_idx] = json_adapter(values[json_idx])
             values = tuple(values)
         rows.append(values)
     return rows
@@ -185,7 +218,7 @@ def run(args: argparse.Namespace) -> int:
         ]
         if present_excluded:
             print(
-                "Tables excluded from v1 because runtime code does not reference them: "
+                "Tables excluded from v1 because they are auxiliary or archival: "
                 + ", ".join(present_excluded)
             )
 

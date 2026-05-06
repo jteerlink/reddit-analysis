@@ -146,6 +146,108 @@ CREATE TABLE IF NOT EXISTS topic_sentiment_trends (
     PRIMARY KEY (topic_id, date)
 );
 
+CREATE TABLE IF NOT EXISTS analysis_schema_version (
+    key TEXT PRIMARY KEY,
+    version INTEGER NOT NULL,
+    applied_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS llm_model_registry (
+    model_name TEXT PRIMARY KEY,
+    provider TEXT NOT NULL DEFAULT 'ollama',
+    available BOOLEAN NOT NULL DEFAULT FALSE,
+    metadata JSONB,
+    discovered_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS analysis_runs (
+    run_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    provider TEXT,
+    model_name TEXT,
+    prompt_version TEXT,
+    input_hash TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    lease_owner TEXT,
+    lease_expires_at TIMESTAMPTZ,
+    started_at TIMESTAMPTZ,
+    finished_at TIMESTAMPTZ,
+    error_category TEXT,
+    error_message TEXT,
+    resume_token TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS analysis_artifacts (
+    artifact_id TEXT PRIMARY KEY,
+    run_id TEXT,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued',
+    idempotency_key TEXT NOT NULL UNIQUE,
+    payload JSONB,
+    payload_location TEXT,
+    checksum TEXT,
+    content_type TEXT NOT NULL DEFAULT 'application/json',
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    provider TEXT,
+    model_name TEXT,
+    prompt_version TEXT,
+    source_input_hash TEXT NOT NULL,
+    freshness_timestamp TIMESTAMPTZ,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    lease_owner TEXT,
+    lease_expires_at TIMESTAMPTZ,
+    error_category TEXT,
+    error_message TEXT,
+    retry_after TIMESTAMPTZ,
+    resume_token TEXT,
+    parent_artifact_id TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS artifact_status_history (
+    id BIGSERIAL PRIMARY KEY,
+    artifact_id TEXT NOT NULL,
+    from_status TEXT,
+    to_status TEXT NOT NULL,
+    reason TEXT,
+    worker_id TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS embedding_2d (
+    post_id TEXT PRIMARY KEY,
+    x DOUBLE PRECISION NOT NULL,
+    y DOUBLE PRECISION NOT NULL,
+    cluster_id INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cluster_labels (
+    cluster_id INTEGER PRIMARY KEY,
+    label TEXT NOT NULL,
+    keywords TEXT NOT NULL,
+    doc_count INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS narrative_events (
+    event_id BIGSERIAL PRIMARY KEY,
+    start_date TEXT NOT NULL,
+    end_date TEXT NOT NULL,
+    peak_date TEXT NOT NULL,
+    peak_anomaly_score DOUBLE PRECISION,
+    sentiment_delta DOUBLE PRECISION,
+    dominant_subreddits TEXT,
+    top_terms TEXT,
+    top_post_ids TEXT,
+    auto_label TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE INDEX IF NOT EXISTS idx_posts_timestamp ON posts(timestamp);
 CREATE INDEX IF NOT EXISTS idx_posts_subreddit ON posts(subreddit);
 CREATE INDEX IF NOT EXISTS idx_comments_post_id ON comments(post_id);
@@ -158,5 +260,11 @@ CREATE INDEX IF NOT EXISTS idx_topic_assignments_topic ON topic_assignments(topi
 CREATE INDEX IF NOT EXISTS idx_tot_week ON topic_over_time(week_start);
 CREATE INDEX IF NOT EXISTS idx_sd_date ON sentiment_daily(date);
 CREATE INDEX IF NOT EXISTS idx_tst_date ON topic_sentiment_trends(date);
+CREATE INDEX IF NOT EXISTS idx_analysis_artifacts_kind ON analysis_artifacts(kind);
+CREATE INDEX IF NOT EXISTS idx_analysis_artifacts_status ON analysis_artifacts(status);
+CREATE INDEX IF NOT EXISTS idx_analysis_artifacts_freshness ON analysis_artifacts(freshness_timestamp);
+CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status);
+CREATE INDEX IF NOT EXISTS idx_events_peak ON narrative_events(peak_date);
+CREATE INDEX IF NOT EXISTS idx_emb2d_cluster ON embedding_2d(cluster_id);
 CREATE INDEX IF NOT EXISTS idx_batch_collections_subreddit ON batch_collections(subreddit);
 CREATE INDEX IF NOT EXISTS idx_batch_collections_timestamp ON batch_collections(collection_timestamp);

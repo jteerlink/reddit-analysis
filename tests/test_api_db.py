@@ -149,8 +149,8 @@ def api_db(monkeypatch, tmp_path):
 
         ts = datetime.now() - timedelta(days=1)
         conn.execute(
-            "INSERT INTO posts (id, title, content, timestamp, subreddit, content_type) VALUES (?, ?, ?, ?, ?, ?)",
-            ("p1", "Title", "Body", ts, "ChatGPT", "post"),
+            "INSERT INTO posts (id, title, content, upvotes, timestamp, subreddit, num_comments, content_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("p1", "Title", "Body", 9, ts, "ChatGPT", 4, "post"),
         )
         conn.execute(
             "INSERT INTO preprocessed (id, content_type, clean_text, is_filtered) VALUES (?, ?, ?, ?)",
@@ -238,6 +238,17 @@ def test_api_db_returns_expected_shapes(api_db):
     assert api_db.get_topic_over_time(1)[0]["doc_count"] == 5
     assert api_db.get_topic_heatmap(30)[0]["topic_id"] == 1
     assert api_db.get_known_subreddits() == ["ChatGPT", "LocalLLaMA"]
+
+
+def test_sentiment_summary_can_weight_by_engagement(api_db):
+    raw = api_db.get_sentiment_summary()
+    weighted = api_db.get_sentiment_summary(weighted=True)
+
+    assert raw[0]["count"] == 1
+    assert raw[0]["weighted_count"] == 1
+    assert weighted[0]["count"] == 1
+    assert weighted[0]["weighted_count"] == 14
+    assert weighted[0]["weighted"] is True
 
 
 def test_api_db_topic_graph_is_deterministic_and_thresholded(api_db):

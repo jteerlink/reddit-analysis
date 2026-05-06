@@ -392,3 +392,10 @@ def upsert_sentiment_forecast(conn, rows: List[Tuple]) -> None:
 def upsert_topic_sentiment_trends(conn, rows: List[Tuple]) -> None:
     columns = ["topic_id", "date", "mean_sentiment", "rolling_7d"]
     _upsert(conn, "topic_sentiment_trends", columns, ["topic_id", "date"], columns[2:], rows)
+
+
+def ensure_analysis_tables(conn) -> None:
+    """Ensure persisted dashboard intelligence artifact tables exist."""
+    from src.analysis.db import ensure_analysis_tables as _ensure_analysis_tables
+
+    _ensure_analysis_tables(conn)

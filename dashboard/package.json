@@ -5,7 +5,11 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "lint": "tsc --noEmit",
+    "test": "npm run check:api-types",
+    "generate:api-types": "cd .. && uv run python scripts/generate_openapi_types.py",
+    "check:api-types": "cd .. && uv run python scripts/generate_openapi_types.py --check"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",

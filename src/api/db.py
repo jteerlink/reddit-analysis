@@ -16,6 +16,7 @@ from src.db.connection import (
     execute,
     get_backend,
     get_read_connection,
+    is_postgres_connection,
     paramstyle,
     placeholders,
     recent_interval_params,
@@ -81,6 +82,42 @@ def _connect():
 
 def _close(conn) -> None:
     release_connection(conn)
+
+
+def get_table_state(required_tables: Tuple[str, ...]) -> dict:
+    try:
+        conn = _connect()
+        marker = paramstyle()
+        missing = []
+        for table in required_tables:
+            if is_postgres_connection(conn):
+                row = execute(
+                    conn,
+                    f"""
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = {marker}
+                    LIMIT 1
+                    """,
+                    (table,),
+                ).fetchone()
+            else:
+                row = execute(
+                    conn,
+                    f"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = {marker}",
+                    (table,),
+                ).fetchone()
+            if row is None:
+                missing.append(table)
+        _close(conn)
+        return {
+            "state": "missing_schema" if missing else "ready",
+            "missing_tables": missing,
+            "reason": f"Missing tables: {', '.join(missing)}" if missing else None,
+        }
+    except Exception as exc:
+        logger.exception("Failed to inspect dashboard table state")
+        return {"state": "error", "missing_tables": [], "reason": str(exc)}
 
 
 def _exclusive_end_date(end_date: Optional[str]) -> Optional[str]:
@@ -218,6 +255,7 @@ def get_sentiment_summary(
     subreddits: Tuple[str, ...] = (),
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    weighted: bool = False,
 ) -> List[dict]:
     try:
         conn = _connect()
@@ -245,18 +283,34 @@ def get_sentiment_summary(
             post_params.append(exclusive_end)
             comment_params.append(exclusive_end)
 
+        post_weight = "(1 + COALESCE(posts.upvotes, 0) + COALESCE(posts.num_comments, 0))"
+        comment_weight = "(1 + COALESCE(comments.upvotes, 0))"
+        post_count_expr = f"SUM({post_weight})" if weighted else "COUNT(*)"
+        comment_count_expr = f"SUM({comment_weight})" if weighted else "COUNT(*)"
+        post_conf_expr = f"SUM(sp.confidence * {post_weight})" if weighted else "SUM(sp.confidence)"
+        comment_conf_expr = f"SUM(sp.confidence * {comment_weight})" if weighted else "SUM(sp.confidence)"
+
         df = pd.read_sql_query(
             f"""
-            SELECT label, SUM(count) AS count, SUM(confidence_sum) / SUM(count) AS mean_confidence
+            SELECT label,
+                   SUM(raw_count) AS count,
+                   SUM(weighted_count) AS weighted_count,
+                   SUM(confidence_sum) / NULLIF(SUM(weighted_count), 0) AS mean_confidence
             FROM (
-                SELECT sp.label, COUNT(*) AS count, SUM(sp.confidence) AS confidence_sum
+                SELECT sp.label,
+                       COUNT(*) AS raw_count,
+                       {post_count_expr} AS weighted_count,
+                       {post_conf_expr} AS confidence_sum
                 FROM posts
                 JOIN preprocessed p ON posts.id = p.id
                 JOIN sentiment_predictions sp ON p.id = sp.id
                 WHERE {" AND ".join(post_conditions)}
                 GROUP BY sp.label
                 UNION ALL
-                SELECT sp.label, COUNT(*) AS count, SUM(sp.confidence) AS confidence_sum
+                SELECT sp.label,
+                       COUNT(*) AS raw_count,
+                       {comment_count_expr} AS weighted_count,
+                       {comment_conf_expr} AS confidence_sum
                 FROM comments
                 JOIN preprocessed p ON comments.id = p.id
                 JOIN sentiment_predictions sp ON p.id = sp.id
@@ -269,7 +323,10 @@ def get_sentiment_summary(
             params=post_params + comment_params,
         )
         _close(conn)
-        return df.to_dict(orient="records")
+        rows = df.to_dict(orient="records")
+        for row in rows:
+            row["weighted"] = weighted
+        return rows
     except Exception:
         logger.exception("Failed to read sentiment summary")
         return []
@@ -699,6 +756,116 @@ def get_vader_agreement() -> List[dict]:
         return result.to_dict(orient="records")
     except Exception:
         logger.exception("Failed to compute VADER agreement")
+        return []
+
+
+def get_low_confidence_examples(limit: int = 50) -> List[dict]:
+    try:
+        conn = _connect()
+        df = pd.read_sql_query(
+            f"""
+            SELECT p.id, DATE(src.timestamp) AS date, src.subreddit, p.content_type,
+                   p.clean_text, sp.label, sp.confidence
+            FROM preprocessed p
+            JOIN sentiment_predictions sp ON p.id = sp.id
+            JOIN (
+                SELECT id, timestamp, subreddit, 'post' AS content_type FROM posts
+                UNION ALL
+                SELECT id, timestamp, subreddit, 'comment' AS content_type FROM comments
+            ) src ON p.id = src.id AND p.content_type = src.content_type
+            WHERE p.is_filtered = {false_literal()}
+            ORDER BY sp.confidence ASC, src.timestamp DESC
+            LIMIT {paramstyle()}
+            """,
+            conn,
+            params=[limit],
+        )
+        _close(conn)
+        rows = df.to_dict(orient="records")
+        for row in rows:
+            row["text_preview"] = str(row.pop("clean_text") or "")[:220]
+        return rows
+    except Exception:
+        logger.exception("Failed to read low confidence examples")
+        return []
+
+
+def get_vader_disagreements(limit: int = 50) -> List[dict]:
+    try:
+        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+        conn = _connect()
+        df = pd.read_sql_query(
+            f"""
+            SELECT p.id, DATE(src.timestamp) AS date, src.subreddit, p.content_type,
+                   p.clean_text, sp.label, sp.confidence
+            FROM preprocessed p
+            JOIN sentiment_predictions sp ON p.id = sp.id
+            JOIN (
+                SELECT id, timestamp, subreddit, 'post' AS content_type FROM posts
+                UNION ALL
+                SELECT id, timestamp, subreddit, 'comment' AS content_type FROM comments
+            ) src ON p.id = src.id AND p.content_type = src.content_type
+            WHERE p.is_filtered = {false_literal()} AND p.clean_text IS NOT NULL
+            ORDER BY src.timestamp DESC
+            LIMIT 5000
+            """,
+            conn,
+        )
+        _close(conn)
+        if df.empty:
+            return []
+        analyzer = SentimentIntensityAnalyzer()
+        label_sign = {"positive": 1, "neutral": 0, "negative": -1}
+
+        def vader_label(text: str) -> str:
+            compound = analyzer.polarity_scores(str(text))["compound"]
+            if compound > 0.05:
+                return "positive"
+            if compound < -0.05:
+                return "negative"
+            return "neutral"
+
+        df["vader_label"] = df["clean_text"].apply(vader_label)
+        df["model_sign"] = df["label"].map(label_sign).fillna(0).astype(int)
+        df["vader_sign"] = df["vader_label"].map(label_sign).fillna(0).astype(int)
+        disagreements = df[df["model_sign"] != df["vader_sign"]].sort_values(["confidence"], ascending=[False]).head(limit)
+        rows = disagreements.to_dict(orient="records")
+        for row in rows:
+            row["text_preview"] = str(row.pop("clean_text") or "")[:220]
+            row.pop("model_sign", None)
+            row.pop("vader_sign", None)
+        return rows
+    except Exception:
+        logger.exception("Failed to compute VADER disagreements")
+        return []
+
+
+def get_confidence_by_subreddit() -> List[dict]:
+    try:
+        conn = _connect()
+        df = pd.read_sql_query(
+            """
+            SELECT src.subreddit,
+                   COUNT(*) AS total,
+                   AVG(sp.confidence) AS mean_confidence,
+                   SUM(CASE WHEN sp.confidence < 0.6 THEN 1 ELSE 0 END) AS low_confidence_count
+            FROM preprocessed p
+            JOIN sentiment_predictions sp ON p.id = sp.id
+            JOIN (
+                SELECT id, subreddit, 'post' AS content_type FROM posts
+                UNION ALL
+                SELECT id, subreddit, 'comment' AS content_type FROM comments
+            ) src ON p.id = src.id AND p.content_type = src.content_type
+            GROUP BY src.subreddit
+            ORDER BY mean_confidence ASC, total DESC
+            """,
+            conn,
+        )
+        _close(conn)
+        return df.to_dict(orient="records")
+    except Exception:
+        logger.exception("Failed to read confidence by subreddit")
         return []
 
 

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect } from "react";
 import useSWR from "swr";
-import { Activity, BarChart3, BrainCircuit, Gauge, GitBranch, Layers3, RadioTower } from "lucide-react";
+import { Activity, BarChart3, BrainCircuit, FileText, Gauge, GitBranch, Layers3, Network, RadioTower, Zap } from "lucide-react";
 import { useFilterStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
@@ -13,6 +13,9 @@ const TABS = [
   { href: "/sentiment", label: "Sentiment Trends", icon: Activity },
   { href: "/topics", label: "Topic Explorer", icon: Layers3 },
   { href: "/deep-dive", label: "Deep Dive", icon: BarChart3 },
+  { href: "/embedding-map", label: "Embedding Map", icon: Network },
+  { href: "/events", label: "Events", icon: Zap },
+  { href: "/briefs", label: "Briefs", icon: FileText },
   { href: "/model-health", label: "Model Health", icon: BrainCircuit },
   { href: "/pipeline", label: "Pipeline", icon: GitBranch },
 ];

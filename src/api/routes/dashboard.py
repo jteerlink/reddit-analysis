@@ -5,6 +5,8 @@ from typing import List, Optional
 from fastapi import APIRouter, Query
 
 from src.api import db
+from src.analysis import models
+from src.analysis.db import ANALYSIS_SCHEMA_VERSION
 
 router = APIRouter()
 
@@ -29,9 +31,12 @@ def sentiment_summary(
     subreddits: List[str] = Query(default=[]),
     start: Optional[str] = Query(default=None),
     end: Optional[str] = Query(default=None),
+    weighted: bool = Query(default=False),
 ):
     if subreddits or start or end:
-        return db.get_sentiment_summary(tuple(subreddits), start, end)
+        return db.get_sentiment_summary(tuple(subreddits), start, end, weighted)
+    if weighted:
+        return db.get_sentiment_summary(weighted=True)
     return db.get_sentiment_summary()
 
 
@@ -79,9 +84,29 @@ def emerging_topics(days: int = Query(default=7, ge=1, le=90)):
     return db.get_emerging_topics(days)
 
 
-@router.get("/topics/heatmap")
+def _response(items: list[dict], source_table: str, algorithm: str, readiness: dict | None = None) -> dict:
+    readiness = readiness or {"state": "ready", "reason": None}
+    state = readiness["state"] if readiness["state"] != "ready" else ("ready" if items else "unpopulated")
+    return {
+        "items": items,
+        "state": state,
+        "provenance": {
+            "state": state,
+            "label": "real_data" if state == "ready" else "missing_config",
+            "source": source_table,
+            "source_table": source_table,
+            "source_ids": [],
+            "schema_version": ANALYSIS_SCHEMA_VERSION,
+            "algorithm": algorithm,
+            "detail": readiness.get("reason"),
+        },
+    }
+
+
+@router.get("/topics/heatmap", response_model=models.TopicHeatmapResponse)
 def topic_heatmap(n: int = Query(default=30, ge=1, le=100)):
-    return db.get_topic_heatmap(n)
+    readiness = db.get_table_state(("topic_over_time", "topics"))
+    return _response([] if readiness["state"] != "ready" else db.get_topic_heatmap(n), "topic_over_time", "topic_week_sentiment", readiness)
 
 
 @router.get("/topics/graph")
@@ -124,6 +149,24 @@ def posts_search(
 @router.get("/model/vader-agreement")
 def vader_agreement():
     return db.get_vader_agreement()
+
+
+@router.get("/model/low-confidence", response_model=models.LowConfidenceResponse)
+def low_confidence(limit: int = Query(default=50, ge=1, le=500)):
+    readiness = db.get_table_state(("preprocessed", "sentiment_predictions", "posts", "comments"))
+    return _response([] if readiness["state"] != "ready" else db.get_low_confidence_examples(limit), "sentiment_predictions", "confidence_rank", readiness)
+
+
+@router.get("/model/vader-disagreements", response_model=models.VaderDisagreementResponse)
+def vader_disagreements(limit: int = Query(default=50, ge=1, le=500)):
+    readiness = db.get_table_state(("preprocessed", "sentiment_predictions", "posts", "comments"))
+    return _response([] if readiness["state"] != "ready" else db.get_vader_disagreements(limit), "sentiment_predictions", "vader_label_compare", readiness)
+
+
+@router.get("/model/confidence-by-subreddit", response_model=models.ConfidenceBySubredditResponse)
+def confidence_by_subreddit():
+    readiness = db.get_table_state(("preprocessed", "sentiment_predictions", "posts", "comments"))
+    return _response([] if readiness["state"] != "ready" else db.get_confidence_by_subreddit(), "sentiment_predictions", "confidence_group_by_subreddit", readiness)
 
 
 @router.get("/subreddits")

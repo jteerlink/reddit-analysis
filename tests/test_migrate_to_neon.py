@@ -2,6 +2,8 @@ import sqlite3
 import subprocess
 import sys
 
+from scripts.migrate_to_neon import EXCLUDED_TABLES, MIGRATION_ORDER
+
 
 def test_migrate_to_neon_dry_run_reports_runtime_tables(tmp_path):
     source = tmp_path / "source.db"
@@ -30,3 +32,9 @@ def test_migrate_to_neon_dry_run_reports_runtime_tables(tmp_path):
     assert "posts_other" in result.stdout
     assert "embedding_2d" in result.stdout
     assert "excluded from v1" in result.stdout
+
+
+def test_analysis_tables_are_in_neon_migration_order():
+    for table in ["analysis_artifacts", "embedding_2d", "cluster_labels", "narrative_events"]:
+        assert table in MIGRATION_ORDER
+        assert table not in EXCLUDED_TABLES
