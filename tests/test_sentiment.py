@@ -122,8 +122,8 @@ def test_id2label_inverse():
 
 def _make_predict_batch_patches(fake_logits_array):
     """
-    Return context managers that patch DistilBert classes at the transformers
-    module level (where predict_batch lazy-imports them from).
+    Return context managers that patch the concrete DistilBERT modules
+    resolved by transformers' lazy imports.
     """
     import torch
 
@@ -145,8 +145,16 @@ def _make_predict_batch_patches(fake_logits_array):
     mock_model_cls.from_pretrained.return_value = mock_model
 
     return (
-        patch("transformers.DistilBertTokenizerFast", mock_tok_cls),
-        patch("transformers.DistilBertForSequenceClassification", mock_model_cls),
+        patch(
+            "transformers.models.distilbert.tokenization_distilbert."
+            "DistilBertTokenizerFast",
+            mock_tok_cls,
+        ),
+        patch(
+            "transformers.models.distilbert.modeling_distilbert."
+            "DistilBertForSequenceClassification",
+            mock_model_cls,
+        ),
     )
 
 

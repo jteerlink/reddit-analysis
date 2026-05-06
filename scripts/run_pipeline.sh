@@ -107,7 +107,7 @@ gate_1_prerequisites() {
 
 gate_2_preprocessing() {
   # Gate: embeddings cache exists
-  [[ -f "$PROJECT_ROOT/models/embeddings.npy" ]] || return 1
+  [[ -f "$PROJECT_ROOT/models/embeddings_cache.npy" ]] || return 1
   return 0
 }
 
@@ -277,7 +277,8 @@ freshness_7_timeseries() {
 }
 
 get_freshness() {
-  case "$1" in
+  local step="${1:-}"
+  case "$step" in
     1) echo "—" ;;
     2) freshness_2_preprocessing ;;
     3) freshness_3_weak_labels ;;
@@ -291,7 +292,8 @@ get_freshness() {
 # ── Step metadata ──────────────────────────────────────────────────────────────
 
 step_name() {
-  case "$1" in
+  local step="${1:-}"
+  case "$step" in
     1) echo "Prerequisites" ;;
     2) echo "Preprocessing" ;;
     3) echo "Weak Labels" ;;
@@ -303,7 +305,8 @@ step_name() {
 }
 
 step_desc() {
-  case "$1" in
+  local step="${1:-}"
+  case "$step" in
     1) echo "Install ml+production deps, verify database, create models/ and data/ dirs" ;;
     2) echo "Clean raw posts/comments, generate sentence embeddings, write preprocessed table" ;;
     3) echo "Score preprocessed text with keyword rules and produce a labeled training CSV" ;;
@@ -315,9 +318,10 @@ step_desc() {
 }
 
 step_gate_desc() {
-  case "$1" in
+  local step="${1:-}"
+  case "$step" in
     1) echo "python3 reachable, database exists, models/ and data/ present" ;;
-    2) echo "models/embeddings.npy exists" ;;
+    2) echo "models/embeddings_cache.npy exists" ;;
     3) echo "data/weak_labels.csv exists with ≥ 30,000 rows" ;;
     4) echo "models/sentiment_v1/config.json exists" ;;
     5) echo "sentiment_predictions table has rows" ;;
@@ -327,7 +331,8 @@ step_gate_desc() {
 }
 
 step_hint() {
-  case "$1" in
+  local step="${1:-}"
+  case "$step" in
     2) echo "Run: uv pip install -e \".[ml,production]\"  |  Check DB path with: ls -lh $DB" ;;
     3) echo "Lower --threshold to 0.4 in the weak labels step to get more labeled rows" ;;
     4) echo "Lower --threshold 0.4 in weak labels step or check models/sentiment_v1/ for partial output" ;;
@@ -369,7 +374,8 @@ print_status_table() {
 # ── Step runners ───────────────────────────────────────────────────────────────
 
 run_step() {
-  local step="$1"
+  local step="${1:-}"
+  [[ "$step" =~ ^[1-7]$ ]] || die "Invalid step: ${step:-<empty>} (must be 1–7)"
   local name
   name=$(step_name "$step")
 
@@ -453,12 +459,12 @@ PYEOF
   fi
 
   printf "\n"
-  info "Checking gate: models/embeddings.npy..."
+  info "Checking gate: models/embeddings_cache.npy..."
   if gate_2_preprocessing; then
     success "Gate PASSED — embeddings cache found"
     mark_done 2
   else
-    error "Gate FAILED — models/embeddings.npy not found"
+    error "Gate FAILED — models/embeddings_cache.npy not found"
     warn "$(step_hint 2)"
     return 1
   fi
@@ -679,7 +685,8 @@ run_step_7() {
 # ── Prompt helper ──────────────────────────────────────────────────────────────
 
 prompt_step() {
-  local step="$1"
+  local step="${1:-}"
+  [[ "$step" =~ ^[1-7]$ ]] || die "Invalid step: ${step:-<empty>} (must be 1–7)"
   local name
   name=$(step_name "$step")
 
@@ -740,8 +747,8 @@ mode_interactive() {
 }
 
 mode_step() {
-  local step="$1"
-  [[ "$step" =~ ^[1-7]$ ]] || die "Invalid step: $step (must be 1–7)"
+  local step="${1:-}"
+  [[ "$step" =~ ^[1-7]$ ]] || die "Invalid step: ${step:-<empty>} (must be 1–7)"
   header "Pipeline Status"
   print_status_table true
   run_step "$step"
