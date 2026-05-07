@@ -5,6 +5,8 @@
 #   ./scripts/run_pipeline.sh              # interactive menu
 #   ./scripts/run_pipeline.sh --check      # show status table only
 #   ./scripts/run_pipeline.sh --step N     # run a specific step (1-7)
+#   ./scripts/run_pipeline.sh step N       # run a specific step (1-7)
+#   ./scripts/run_pipeline.sh N            # run a specific step (1-7)
 #   ./scripts/run_pipeline.sh --all        # run all steps in sequence
 #   ./scripts/run_pipeline.sh --verbose    # show full command output
 
@@ -423,10 +425,11 @@ run_step_2() {
   local logfile="$1"
   info "Running preprocessing (this may take several minutes)..."
   if $VERBOSE; then
-    (cd "$PROJECT_ROOT" && python3 - <<'PYEOF'
+    (cd "$PROJECT_ROOT" && REDDIT_PIPELINE_DB="$DB" python3 - <<'PYEOF'
+import os
 from src.ml.preprocessing import run_preprocessing
 result = run_preprocessing(
-    db_path="historical_reddit_data.db",
+    db_path=os.environ["REDDIT_PIPELINE_DB"],
     cache_dir="models/",
     batch_size=1000,
     embed_batch_size=256,
@@ -439,10 +442,11 @@ print(f"Device:          {result['device']}")
 PYEOF
 ) | tee "$logfile"
   else
-    (cd "$PROJECT_ROOT" && python3 - <<'PYEOF'
+    (cd "$PROJECT_ROOT" && REDDIT_PIPELINE_DB="$DB" python3 - <<'PYEOF'
+import os
 from src.ml.preprocessing import run_preprocessing
 result = run_preprocessing(
-    db_path="historical_reddit_data.db",
+    db_path=os.environ["REDDIT_PIPELINE_DB"],
     cache_dir="models/",
     batch_size=1000,
     embed_batch_size=256,
@@ -475,14 +479,14 @@ run_step_3() {
   info "Generating weak labels..."
   if $VERBOSE; then
     (cd "$PROJECT_ROOT" && python3 scripts/generate_weak_labels.py \
-      --db historical_reddit_data.db \
+      --db "$DB" \
       --output data/weak_labels.csv \
       --threshold 0.5 \
       --include-neutral \
       --neutral-threshold 0.1) | tee "$logfile"
   else
     (cd "$PROJECT_ROOT" && python3 scripts/generate_weak_labels.py \
-      --db historical_reddit_data.db \
+      --db "$DB" \
       --output data/weak_labels.csv \
       --threshold 0.5 \
       --include-neutral \
@@ -585,12 +589,12 @@ run_step_5() {
   info "Running batch inference across all preprocessed records..."
   if $VERBOSE; then
     (cd "$PROJECT_ROOT" && python3 scripts/batch_inference.py \
-      --db historical_reddit_data.db \
+      --db "$DB" \
       --model-dir models/sentiment_v1 \
       --batch-size 1000) | tee "$logfile"
   else
     (cd "$PROJECT_ROOT" && python3 scripts/batch_inference.py \
-      --db historical_reddit_data.db \
+      --db "$DB" \
       --model-dir models/sentiment_v1 \
       --batch-size 1000) > "$logfile" 2>&1 \
       && success "Batch inference complete" \
@@ -616,7 +620,7 @@ run_step_6() {
   info "Training BERTopic model (this may take several minutes)..."
   if $VERBOSE; then
     (cd "$PROJECT_ROOT" && python3 scripts/train_topic_model.py \
-      --db historical_reddit_data.db \
+      --db "$DB" \
       --cache-dir models/ \
       --days 90 \
       --min-cluster-size 30 \
@@ -624,7 +628,7 @@ run_step_6() {
       --nr-topics auto) | tee "$logfile"
   else
     (cd "$PROJECT_ROOT" && python3 scripts/train_topic_model.py \
-      --db historical_reddit_data.db \
+      --db "$DB" \
       --cache-dir models/ \
       --days 90 \
       --min-cluster-size 30 \
@@ -655,12 +659,12 @@ run_step_7() {
   info "Running time series analysis and 14-day forecast..."
   if $VERBOSE; then
     (cd "$PROJECT_ROOT" && python3 scripts/run_timeseries.py \
-      --db historical_reddit_data.db \
+      --db "$DB" \
       --days 90 \
       --forecast-days 14) | tee "$logfile"
   else
     (cd "$PROJECT_ROOT" && python3 scripts/run_timeseries.py \
-      --db historical_reddit_data.db \
+      --db "$DB" \
       --days 90 \
       --forecast-days 14) > "$logfile" 2>&1 \
       && success "Time series analysis complete" \
@@ -688,6 +692,7 @@ prompt_step() {
   local step="${1:-}"
   [[ "$step" =~ ^[1-7]$ ]] || die "Invalid step: ${step:-<empty>} (must be 1–7)"
   local name
+  local ans
   name=$(step_name "$step")
 
   printf "\n"
@@ -736,9 +741,12 @@ mode_interactive() {
 
   case "$ans" in
     [1-7])
-      prompt_step "$ans"
-      local rc=$?
-      [[ $rc -eq 0 ]] && run_step "$ans"
+      if prompt_step "$ans"; then
+        run_step "$ans"
+      else
+        local rc=$?
+        [[ $rc -eq 2 ]] || return "$rc"
+      fi
       ;;
     a|A) mode_all ;;
     q|Q) exit 0 ;;
@@ -749,8 +757,14 @@ mode_interactive() {
 mode_step() {
   local step="${1:-}"
   [[ "$step" =~ ^[1-7]$ ]] || die "Invalid step: ${step:-<empty>} (must be 1–7)"
-  header "Pipeline Status"
-  print_status_table true
+  header "Selected Pipeline Step"
+  dim "DB: $DB"
+  printf "\n"
+  if check_gate "$step" 2>/dev/null; then
+    success "Current gate already passes: step $step — $(step_name "$step")"
+  else
+    warn "Current gate does not pass yet: step $step — $(step_name "$step")"
+  fi
   run_step "$step"
 }
 
@@ -759,15 +773,16 @@ mode_all() {
   print_status_table true
 
   for i in 1 2 3 4 5 6 7; do
-    prompt_step "$i"
-    local rc=$?
-    if [[ $rc -eq 0 ]]; then
+    if prompt_step "$i"; then
       run_step "$i" || {
         error "Step $i failed."
         printf "\n  Continue to next step anyway? [y/N]  > "
         read -r cont
         [[ "$cont" =~ ^[Yy]$ ]] || exit 1
       }
+    else
+      local rc=$?
+      [[ $rc -eq 2 ]] || return "$rc"
     fi
   done
 
@@ -780,6 +795,8 @@ mode_all() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    [1-7])    MODE="step"; TARGET_STEP="$1" ;;
+    step)     MODE="step"; TARGET_STEP="${2:-}"; shift ;;
     --check)   MODE="check" ;;
     --all)     MODE="all" ;;
     --step)    MODE="step"; TARGET_STEP="${2:-}"; shift ;;
@@ -791,6 +808,8 @@ while [[ $# -gt 0 ]]; do
       printf "\nUsage: %s [options]\n\n" "$(basename "$0")"
       printf "  --check          Show gate + freshness status for all steps\n"
       printf "  --step N         Run only step N (1–7)\n"
+      printf "  step N           Run only step N (1–7)\n"
+      printf "  N                Run only step N (1–7)\n"
       printf "  --all            Run all steps with confirmation prompts\n"
       printf "  --verbose, -v    Show full command output\n"
       printf "  --db PATH        Override database path (default: historical_reddit_data.db)\n"
