@@ -74,7 +74,9 @@ export function TopicExplorerPanel({ topics }: Props) {
         </div>
         <div className="flex items-center gap-2 text-muted-foreground">
           <Sparkles className="size-3.5" aria-hidden="true" />
-          <Maximize2 className="size-3.5" aria-hidden="true" />
+          <Link href="/topics" aria-label="Expand topic explorer" className="transition-colors hover:text-foreground">
+            <Maximize2 className="size-3.5" />
+          </Link>
         </div>
       </div>
 

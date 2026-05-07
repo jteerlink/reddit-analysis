@@ -38,14 +38,19 @@ export default function PipelinePage() {
       const res = await fetch(url);
       if (!res.body) throw new Error("No response body");
       const reader = res.body.getReader();
-      const dec = new TextDecoder();
+      const dec = new TextDecoder("utf-8", { fatal: false });
+      let buf = "";
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const text = dec.decode(value);
-        const lines = text.split("\n").filter((l) => l.startsWith("data: ")).map((l) => l.slice(6));
-        setOutput((prev) => [...prev, ...lines].slice(-300));
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        const events = lines.filter((l) => l.startsWith("data: ")).map((l) => l.slice(6));
+        if (events.length) setOutput((prev) => [...prev, ...events].slice(-300));
       }
+      const remaining = dec.decode();
+      if (remaining.startsWith("data: ")) setOutput((prev) => [...prev, remaining.slice(6)].slice(-300));
     } catch (e) {
       setOutput((prev) => [...prev, `[ERROR] ${e}`]);
     }

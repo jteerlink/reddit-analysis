@@ -82,13 +82,41 @@ class TestBatchedCollection:
         """Test successful batch collection with immediate storage."""
         storage = RedditDataStorage(temp_db)
         collector = RedditDataCollector(test_config, storage)
-        
-        # Mock the collector methods to return test data
+
+        # Mock the collector methods to return test data with unique IDs per subreddit
+        # so INSERT OR REPLACE doesn't collapse them into a single row.
         with patch.object(collector, 'collect_subreddit_posts') as mock_posts, \
              patch.object(collector, 'collect_post_comments') as mock_comments:
-            
-            mock_posts.return_value = [mock_reddit_post]
-            mock_comments.return_value = [mock_reddit_comment]
+
+            def unique_posts(subreddit, **kwargs):
+                return [RedditPost(
+                    id=f'post_{subreddit}',
+                    title='Test Post About Inflation',
+                    content='This is test content about inflation rates',
+                    upvotes=100,
+                    timestamp=datetime.now(),
+                    subreddit=subreddit,
+                    author='test_user',
+                    author_karma=1000,
+                    url='https://reddit.com/test',
+                    num_comments=5,
+                )]
+
+            def unique_comments(post_id, **kwargs):
+                return [RedditComment(
+                    id=f'comment_{post_id}',
+                    parent_id=post_id,
+                    content='Great insights about the economy',
+                    upvotes=25,
+                    timestamp=datetime.now(),
+                    subreddit='test1',
+                    author='commenter',
+                    author_karma=500,
+                    post_id=post_id,
+                )]
+
+            mock_posts.side_effect = unique_posts
+            mock_comments.side_effect = unique_comments
             
             # Mock storage callback
             storage_results = []

@@ -1,6 +1,7 @@
 "use client";
 
 import useSWR from "swr";
+import Link from "next/link";
 import { AlertTriangle, ArrowRight, CheckCircle2, Clock3, TriangleAlert } from "lucide-react";
 import type { ActivityEvent } from "@/lib/types";
 
@@ -40,10 +41,10 @@ export function ActivityFeedStrip() {
     <section className="command-panel overflow-hidden">
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <h3 className="text-sm font-semibold text-foreground">Activity feed</h3>
-        <button className="flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground">
+        <Link href="/events" className="flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground">
           View all
           <ArrowRight className="size-3" aria-hidden="true" />
-        </button>
+        </Link>
       </div>
       <div className="grid divide-y divide-border md:grid-cols-4 md:divide-x md:divide-y-0">
         {events.length ? events.map((event, index) => {

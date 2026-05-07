@@ -1,7 +1,8 @@
-"""Ollama provider configuration and model discovery."""
+"""Ollama provider configuration, model discovery, and LLM chat."""
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from typing import List, Optional
@@ -16,6 +17,18 @@ SEED_MODEL_PREFERENCES = [
     "qwen3.5:cloud",
     "qwen3.5:397b-cloud",
 ]
+
+
+class OllamaAuthError(Exception):
+    pass
+
+
+class OllamaTimeoutError(Exception):
+    pass
+
+
+class OllamaUnavailableError(Exception):
+    pass
 
 
 @dataclass(frozen=True)
@@ -93,3 +106,63 @@ def discover_models(config: Optional[OllamaConfig] = None) -> DiscoveryResult:
     if not names:
         return DiscoveryResult(models=[], selected_model=None, error="empty_model_list")
     return DiscoveryResult(models=models, selected_model=select_model(names))
+
+
+def chat(
+    config: OllamaConfig,
+    model: str,
+    messages: List[dict],
+    temperature: float = 0.3,
+    timeout: Optional[float] = None,
+) -> str:
+    """
+    Send a chat request to Ollama and return the assistant's reply text.
+
+    Uses non-streaming mode for simplicity. Raises typed exceptions on
+    auth failure, timeout, or any other HTTP/connection error.
+    """
+    if timeout is None:
+        timeout = config.timeout_seconds
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "options": {"temperature": temperature},
+    }
+
+    try:
+        response = requests.post(
+            config.chat_url,
+            headers={**config.headers(), "Content-Type": "application/json"},
+            data=json.dumps(payload),
+            timeout=timeout,
+        )
+    except requests.Timeout:
+        raise OllamaTimeoutError(f"Ollama chat timed out after {timeout}s")
+    except requests.RequestException as exc:
+        raise OllamaUnavailableError(f"Ollama request failed: {exc.__class__.__name__}: {exc}")
+
+    if response.status_code in {401, 403}:
+        raise OllamaAuthError(f"Ollama auth failed: HTTP {response.status_code}")
+    if response.status_code >= 400:
+        raise OllamaUnavailableError(f"Ollama returned HTTP {response.status_code}: {response.text[:200]}")
+
+    try:
+        data = response.json()
+    except ValueError as exc:
+        raise OllamaUnavailableError(f"Ollama returned non-JSON response: {exc}")
+
+    content = (data.get("message") or {}).get("content") or ""
+    if not content:
+        raise OllamaUnavailableError("Ollama returned empty content")
+    return content.strip()
+
+
+def probe_model(config: OllamaConfig, model: str, timeout: float = 10.0) -> bool:
+    """Return True if the model responds to a minimal ping message."""
+    try:
+        chat(config, model, [{"role": "user", "content": "ping"}], timeout=timeout)
+        return True
+    except (OllamaAuthError, OllamaTimeoutError, OllamaUnavailableError):
+        return False

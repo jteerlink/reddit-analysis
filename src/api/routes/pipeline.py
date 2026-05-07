@@ -26,6 +26,7 @@ STEPS = [
     {"num": 6, "name": "Topic Modeling", "description": "BERTopic discovery, coherence scoring, week-over-week tracking", "prereq": 5},
     {"num": 7, "name": "Time Series & Forecast", "description": "Daily aggregation + 14-day Prophet forecast", "prereq": 6},
     {"num": 8, "name": "Analysis Artifacts", "description": "Backfill persisted dashboard intelligence artifacts", "prereq": 7},
+    {"num": 9, "name": "LLM Enrichment", "description": "Ollama narrative summaries, thread analysis, analyst brief, topic labels", "prereq": 8},
 ]
 
 
@@ -65,6 +66,8 @@ def _step_done(step_num: int) -> bool:
         return _db_count("SELECT COUNT(*) FROM sentiment_forecast") > 0
     if step_num == 8:
         return _db_count("SELECT COUNT(*) FROM analysis_artifacts WHERE status = 'succeeded'") > 0
+    if step_num == 9:
+        return _db_count("SELECT COUNT(*) FROM analysis_artifacts WHERE status = 'succeeded' AND provider = 'ollama'") > 0
     return False
 
 
@@ -110,6 +113,8 @@ def _step_command(step_num: int) -> List[str]:
                 "--days", "90", "--forecast-days", "14"]
     if step_num == 8:
         return [py, "scripts/run_analysis_jobs.py", "--db", abs_db]
+    if step_num == 9:
+        return [py, "scripts/run_enrichment.py", "--db", abs_db, "--all"]
     raise ValueError(f"Unknown step: {step_num}")
 
 

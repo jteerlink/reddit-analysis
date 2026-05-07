@@ -180,17 +180,40 @@ def collect_reddit_data(config: RedditConfig,
     """
     collection_mode = "batched" if enable_batching else "traditional"
     logger.info(f"Starting Reddit data collection in {collection_mode} mode...")
-    
-    # Initialize components with storage reference for pre-filtering
+
     storage = RedditDataStorage(db_path)
-    collector = RedditDataCollector(config, storage)
-    
+
+    # Apply resume filtering before creating the collector so the collector
+    # already holds the filtered subreddit list when passed to _collect_with_batching.
+    working_config = config
+    if enable_resume and enable_batching:
+        resume_state = storage.get_collection_resume_state(config.target_subreddits, hours_back=24)
+        if resume_state['resume_available']:
+            working_config = RedditConfig(
+                client_id=config.client_id,
+                client_secret=config.client_secret,
+                user_agent=config.user_agent,
+                username=getattr(config, 'username', None),
+                password=getattr(config, 'password', None),
+                target_subreddits=resume_state['pending_subreddits'],
+                target_keywords=config.target_keywords,
+                max_requests_per_window=config.max_requests_per_window,
+                base_delay=config.base_delay,
+                max_delay=config.max_delay,
+                max_retries=config.max_retries,
+                circuit_breaker_threshold=config.circuit_breaker_threshold,
+            )
+            logger.info(f"Resume mode: processing {len(resume_state['pending_subreddits'])} pending subreddits, "
+                        f"skipping {len(resume_state['completed_subreddits'])} recently completed")
+
+    collector = RedditDataCollector(working_config, storage)
+
     try:
         if enable_batching:
-            return _collect_with_batching(collector, storage, config, 
+            return _collect_with_batching(collector, storage, working_config,
                                         posts_per_subreddit, comments_per_post, enable_resume)
         else:
-            return _collect_traditional_way(collector, storage, config,
+            return _collect_traditional_way(collector, storage, working_config,
                                           posts_per_subreddit, comments_per_post)
                 
     except Exception as e:
@@ -207,37 +230,9 @@ def collect_reddit_data(config: RedditConfig,
 def _collect_with_batching(collector, storage, config, posts_per_subreddit, comments_per_post, enable_resume):
     """
     Handle batched collection with immediate storage and fault tolerance.
+    Resume filtering is already applied by collect_reddit_data before this is called.
     """
     from datetime import datetime
-    
-    # Check for resume capability if enabled
-    target_subreddits = config.target_subreddits
-    if enable_resume:
-        resume_state = storage.get_collection_resume_state(config.target_subreddits, hours_back=24)
-        if resume_state['resume_available']:
-            target_subreddits = resume_state['pending_subreddits']
-            logger.info(f"📋 Resume mode enabled: Processing {len(target_subreddits)} pending subreddits")
-            logger.info(f"   Skipping {len(resume_state['completed_subreddits'])} recently completed subreddits")
-        else:
-            logger.info("📋 Resume mode enabled but no recent partial completion found")
-    
-    # Update config for potentially filtered subreddits
-    from .models import RedditConfig
-    working_config = RedditConfig(
-        client_id=config.client_id,
-        client_secret=config.client_secret,
-        user_agent=config.user_agent,
-        username=config.username,
-        password=config.password,
-        target_subreddits=target_subreddits,
-        target_keywords=config.target_keywords,
-        max_requests_per_window=config.max_requests_per_window,
-        base_delay=config.base_delay,
-        max_delay=config.max_delay,
-        max_retries=config.max_retries,
-        circuit_breaker_threshold=config.circuit_breaker_threshold
-    )
-    collector.config = working_config
 
     # Progress tracking callback
     def progress_callback(progress_info):

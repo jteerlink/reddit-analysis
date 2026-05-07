@@ -361,7 +361,17 @@ class RedditDataCollector:
                 batch_result = self._collect_subreddit_batch(
                     subreddit, posts_per_subreddit, comments_per_post
                 )
-                
+
+                # Route failed batches (exception caught inside _collect_subreddit_batch)
+                if not batch_result['batch_metrics']['success']:
+                    collection_state['failed_subreddits'].append({
+                        'subreddit': subreddit,
+                        'error_type': 'collection_error',
+                        'error': batch_result['batch_metrics'].get('error', 'unknown'),
+                        'batch_data_available': False
+                    })
+                    continue
+
                 # Store immediately if storage callback provided and we have data
                 storage_result = None
                 if storage_callback and (batch_result['posts'] or batch_result['comments']):
@@ -418,7 +428,7 @@ class RedditDataCollector:
         # Final summary
         collection_state['end_time'] = datetime.now().isoformat()
         collection_state['success_rate'] = (
-            len(collection_state['completed_subreddits']) / total_subreddits * 100
+            round(len(collection_state['completed_subreddits']) / total_subreddits * 100, 2)
             if total_subreddits > 0 else 0
         )
 

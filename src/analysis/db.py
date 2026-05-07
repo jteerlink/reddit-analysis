@@ -262,12 +262,21 @@ def ensure_analysis_tables(conn: Any) -> None:
             top_terms TEXT,
             top_post_ids TEXT,
             auto_label TEXT,
+            llm_label TEXT,
+            llm_summary TEXT,
             created_at {timestamp_type} DEFAULT {default_now}
         )
     """)
+    # Additive migration: add LLM columns to existing narrative_events tables
+    for col, col_type in [("llm_label", "TEXT"), ("llm_summary", "TEXT")]:
+        try:
+            execute(conn, f"ALTER TABLE narrative_events ADD COLUMN {col} {col_type}")
+        except Exception:
+            pass  # column already exists
     execute(conn, "CREATE INDEX IF NOT EXISTS idx_analysis_artifacts_kind ON analysis_artifacts(kind)")
     execute(conn, "CREATE INDEX IF NOT EXISTS idx_analysis_artifacts_status ON analysis_artifacts(status)")
     execute(conn, "CREATE INDEX IF NOT EXISTS idx_analysis_artifacts_freshness ON analysis_artifacts(freshness_timestamp)")
+    execute(conn, "CREATE INDEX IF NOT EXISTS idx_analysis_artifacts_provider ON analysis_artifacts(provider, kind, status)")
     execute(conn, "CREATE INDEX IF NOT EXISTS idx_analysis_runs_status ON analysis_runs(status)")
     execute(conn, "CREATE INDEX IF NOT EXISTS idx_events_peak ON narrative_events(peak_date)")
     execute(conn, "CREATE INDEX IF NOT EXISTS idx_emb2d_cluster ON embedding_2d(cluster_id)")

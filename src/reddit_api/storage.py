@@ -1149,7 +1149,7 @@ class RedditDataStorage:
                 'completion_stats': completion_stats,
                 'resume_available': len(pending_subreddits) > 0,
                 'total_subreddits': len(subreddit_list),
-                'completion_rate': len(completed_subreddits) / len(subreddit_list) * 100 if subreddit_list else 0,
+                'completion_rate': round(len(completed_subreddits) / len(subreddit_list) * 100, 2) if subreddit_list else 0,
                 'hours_back': hours_back
             }
 

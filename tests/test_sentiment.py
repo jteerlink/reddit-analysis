@@ -11,6 +11,7 @@ import sqlite3
 import sys
 import tempfile
 import types
+from contextlib import nullcontext
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -123,8 +124,11 @@ def test_id2label_inverse():
 
 def _make_predict_batch_patches(fake_logits_array):
     """
-    Return context managers that patch the concrete DistilBERT modules
-    resolved by transformers' lazy imports.
+    Return context managers that stub out DistilBERT without importing the
+    real transformers package (which has a strict regex version requirement).
+
+    Injects a fake 'transformers' entry into sys.modules so that
+    predict_batch's `from transformers import ...` resolves to our mocks.
     """
     import torch
 
@@ -145,18 +149,11 @@ def _make_predict_batch_patches(fake_logits_array):
     mock_model_cls = MagicMock()
     mock_model_cls.from_pretrained.return_value = mock_model
 
-    return (
-        patch(
-            "transformers.models.distilbert.tokenization_distilbert."
-            "DistilBertTokenizerFast",
-            mock_tok_cls,
-        ),
-        patch(
-            "transformers.models.distilbert.modeling_distilbert."
-            "DistilBertForSequenceClassification",
-            mock_model_cls,
-        ),
-    )
+    fake_transformers = MagicMock()
+    fake_transformers.DistilBertTokenizerFast = mock_tok_cls
+    fake_transformers.DistilBertForSequenceClassification = mock_model_cls
+
+    return patch.dict(sys.modules, {"transformers": fake_transformers}), nullcontext()
 
 
 def test_predict_batch_output_length():
