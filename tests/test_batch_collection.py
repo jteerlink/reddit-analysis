@@ -157,11 +157,23 @@ class TestBatchedCollection:
         storage = RedditDataStorage(temp_db)
         collector = RedditDataCollector(test_config, storage)
         
-        # Mock collector to fail on second subreddit
+        # Mock collector to fail on second subreddit; use unique IDs so each
+        # successful subreddit produces a distinct DB row.
         def mock_collect_posts_side_effect(subreddit, **kwargs):
             if subreddit == 'test2':
                 raise Exception("API rate limit exceeded")
-            return [mock_reddit_post]
+            return [RedditPost(
+                id=f'post_{subreddit}',
+                title='Test Post About Inflation',
+                content='This is test content about inflation rates',
+                upvotes=100,
+                timestamp=datetime.now(),
+                subreddit=subreddit,
+                author='test_user',
+                author_karma=1000,
+                url='https://reddit.com/test',
+                num_comments=5,
+            )]
         
         with patch.object(collector, 'collect_subreddit_posts') as mock_posts, \
              patch.object(collector, 'collect_post_comments') as mock_comments:
@@ -260,8 +272,12 @@ class TestBatchStorage:
                 cursor = conn.cursor()
                 cursor.execute('SELECT COUNT(*) FROM posts')
                 assert cursor.fetchone()[0] == 0
-                cursor.execute('SELECT COUNT(*) FROM batch_collections')
-                assert cursor.fetchone()[0] == 0
+                # batch_collections may not exist if rollback happened before its creation
+                try:
+                    cursor.execute('SELECT COUNT(*) FROM batch_collections')
+                    assert cursor.fetchone()[0] == 0
+                except sqlite3.OperationalError:
+                    pass
 
     def test_batch_metadata_creation(self, temp_db):
         """Test that batch metadata table is created properly."""
@@ -473,10 +489,24 @@ class TestFaultTolerance:
         
         with patch.object(collector, 'collect_subreddit_posts') as mock_posts, \
              patch.object(collector, 'collect_post_comments') as mock_comments:
-            
-            mock_posts.return_value = [mock_reddit_post]
+
+            def unique_posts(subreddit, **kwargs):
+                return [RedditPost(
+                    id=f'post_{subreddit}',
+                    title='Test Post',
+                    content='Content',
+                    upvotes=100,
+                    timestamp=datetime.now(),
+                    subreddit=subreddit,
+                    author='test_user',
+                    author_karma=1000,
+                    url='https://reddit.com/test',
+                    num_comments=0,
+                )]
+
+            mock_posts.side_effect = unique_posts
             mock_comments.return_value = []
-            
+
             # Should raise KeyboardInterrupt after 2 successful batches
             with pytest.raises(KeyboardInterrupt):
                 collector.collect_all_data_with_batching(
@@ -484,10 +514,10 @@ class TestFaultTolerance:
                     comments_per_post=0,
                     storage_callback=interrupt_after_two_callback
                 )
-            
+
             # Verify first 2 batches were successfully stored
             assert len(stored_batches) == 2
-            
+
             # Verify database contains the stored data
             summary = storage.get_data_summary()
             assert summary['total_posts'] == 2  # From 2 completed batches
@@ -535,7 +565,7 @@ class TestMainIntegration:
     def test_configuration_validation(self, temp_db, test_config):
         """Test configuration validation and error handling."""
         # Test with invalid database path
-        with patch('src.reddit_api.storage.RedditDataStorage') as mock_storage_class:
+        with patch('src.reddit_api.main.RedditDataStorage') as mock_storage_class:
             mock_storage_class.side_effect = Exception("Cannot create database")
             
             result = collect_reddit_data(

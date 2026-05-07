@@ -3,14 +3,17 @@
 import useSWR from "swr";
 import { SectionHeader } from "@/components/layout/SectionHeader";
 import { ChartCard } from "@/components/shared/ChartCard";
-import type { AnalystBrief, FreshnessResponse, ModelRegistryResponse } from "@/lib/types";
+import { Badge } from "@/components/ui/badge";
+import type { AnalystBrief, AnalystBriefsResponse, FreshnessResponse, ModelRegistryResponse } from "@/lib/types";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
 export default function BriefsPage() {
-  const { data: brief } = useSWR<AnalystBrief>("/api/analysis/briefs/latest", fetcher);
+  const { data: briefs } = useSWR<AnalystBriefsResponse>("/api/analysis/briefs?limit=10", fetcher);
+  const { data: latest } = useSWR<AnalystBrief>("/api/analysis/briefs/latest", fetcher);
   const { data: freshness } = useSWR<FreshnessResponse>("/api/analysis/freshness", fetcher);
   const { data: models } = useSWR<ModelRegistryResponse>("/api/analysis/model-registry", fetcher);
+  const items = briefs?.items?.length ? briefs.items : latest ? [latest] : [];
 
   return (
     <div className="space-y-6">
@@ -21,25 +24,45 @@ export default function BriefsPage() {
       />
 
       <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
-        <ChartCard title={brief?.headline ?? "No analyst brief"} subtitle={brief?.generated_at ?? "waiting for artifact"}>
-          {brief?.state && brief.state !== "ready" && (
-            <div className="mb-3 rounded-md border border-signal-yellow/25 bg-signal-yellow/10 px-3 py-2 text-xs text-signal-yellow">
-              {brief.provenance?.detail ?? brief.state.replace("_", " ")}
+        <div className="space-y-4">
+          {briefs?.state && briefs.state !== "ready" && (
+            <div className="rounded-md border border-signal-yellow/25 bg-signal-yellow/10 px-3 py-2 text-xs text-signal-yellow">
+              {briefs.provenance?.detail ?? briefs.state.replace("_", " ")}
             </div>
           )}
-          <div className="space-y-4">
-            {brief?.sections?.length ? brief.sections.map((section, index) => (
-              <section key={index} className="rounded-md border border-border bg-background/35 p-4">
-                <h3 className="text-sm font-semibold text-foreground">{String(section.title ?? `Section ${index + 1}`)}</h3>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">{String(section.body ?? "")}</p>
-              </section>
-            )) : (
+
+          {items.length ? items.map((brief) => (
+            <ChartCard
+              key={`${brief.provenance?.artifact_id ?? brief.brief_id}-${brief.provenance?.label ?? "brief"}`}
+              title={brief.headline}
+              subtitle={brief.generated_at ?? "artifact timestamp unavailable"}
+            >
+              <div className="mb-4 flex flex-wrap gap-2">
+                <Badge variant="secondary">{brief.provenance?.label === "llm_artifact" ? "LLM" : "Deterministic"}</Badge>
+                {brief.model_name && <Badge variant="outline">{brief.model_name}</Badge>}
+                {brief.provenance?.provider && <Badge variant="outline">{brief.provenance.provider}</Badge>}
+              </div>
+              <div className="space-y-3">
+                {brief.sections?.length ? brief.sections.map((section, index) => (
+                  <section key={index} className="border-t border-border pt-3 first:border-t-0 first:pt-0">
+                    <h3 className="text-sm font-semibold text-foreground">{String(section.title ?? `Section ${index + 1}`)}</h3>
+                    <p className="mt-2 whitespace-pre-line text-sm leading-6 text-muted-foreground">{String(section.body ?? "")}</p>
+                  </section>
+                )) : (
+                  <div className="grid h-32 place-items-center text-sm text-muted-foreground">
+                    Brief artifact has no sections.
+                  </div>
+                )}
+              </div>
+            </ChartCard>
+          )) : (
+            <ChartCard title="No analyst briefs" subtitle="waiting for artifact">
               <div className="grid h-40 place-items-center text-sm text-muted-foreground">
                 No brief artifact has been generated yet.
               </div>
-            )}
-          </div>
-        </ChartCard>
+            </ChartCard>
+          )}
+        </div>
 
         <div className="space-y-4">
           <ChartCard title="Artifact freshness">

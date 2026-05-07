@@ -58,6 +58,33 @@ def test_latest_brief_requires_succeeded_artifact():
     assert queries.latest_brief(conn) is None
 
 
+def test_briefs_returns_llm_and_deterministic_artifacts():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_analysis_tables(conn)
+    deterministic = enqueue_artifact(
+        conn,
+        kind="analyst_brief",
+        source_input_hash="deterministic",
+        payload={"brief_id": "det", "headline": "Deterministic brief", "sections": []},
+        provider="deterministic",
+    )
+    complete_artifact(conn, deterministic["artifact_id"], {"brief_id": "det", "headline": "Deterministic brief", "sections": []})
+    llm = enqueue_artifact(
+        conn,
+        kind="analyst_brief_llm",
+        source_input_hash="llm",
+        payload={"brief_id": "llm", "headline": "LLM brief", "sections": []},
+        provider="ollama",
+    )
+    complete_artifact(conn, llm["artifact_id"], {"brief_id": "llm", "headline": "LLM brief", "sections": []})
+
+    result = queries.briefs(conn)
+
+    assert {brief["brief_id"] for brief in result} == {"det", "llm"}
+    assert {brief["provenance"]["label"] for brief in result} == {"deterministic_fallback", "llm_artifact"}
+
+
 def test_semantic_search_uses_nonconstant_lexical_fallback_scores():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row

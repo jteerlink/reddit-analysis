@@ -45,6 +45,7 @@ def test_analysis_routes_are_read_only_and_typed(monkeypatch):
     monkeypatch.setattr(analysis.queries, "semantic_search", lambda conn, q, limit=50: [])
     monkeypatch.setattr(analysis.queries, "thread_analysis", lambda conn, post_id: {"post_id": post_id})
     monkeypatch.setattr(analysis.queries, "latest_brief", lambda conn: None)
+    monkeypatch.setattr(analysis.queries, "briefs", lambda conn, limit=10: [])
     monkeypatch.setattr(analysis, "missing_analysis_tables", lambda conn, tables: [])
 
     client = TestClient(app)
@@ -58,3 +59,4 @@ def test_analysis_routes_are_read_only_and_typed(monkeypatch):
     assert client.get("/analysis/semantic-search?q=ai").json()["items"] == []
     assert client.get("/analysis/thread-analysis/p1").json()["post_id"] == "p1"
     assert client.get("/analysis/briefs/latest").json()["brief_id"] == "none"
+    assert client.get("/analysis/briefs").json()["items"] == []

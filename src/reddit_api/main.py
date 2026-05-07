@@ -181,41 +181,41 @@ def collect_reddit_data(config: RedditConfig,
     collection_mode = "batched" if enable_batching else "traditional"
     logger.info(f"Starting Reddit data collection in {collection_mode} mode...")
 
-    storage = RedditDataStorage(db_path)
-
-    # Apply resume filtering before creating the collector so the collector
-    # already holds the filtered subreddit list when passed to _collect_with_batching.
-    working_config = config
-    if enable_resume and enable_batching:
-        resume_state = storage.get_collection_resume_state(config.target_subreddits, hours_back=24)
-        if resume_state['resume_available']:
-            working_config = RedditConfig(
-                client_id=config.client_id,
-                client_secret=config.client_secret,
-                user_agent=config.user_agent,
-                username=getattr(config, 'username', None),
-                password=getattr(config, 'password', None),
-                target_subreddits=resume_state['pending_subreddits'],
-                target_keywords=config.target_keywords,
-                max_requests_per_window=config.max_requests_per_window,
-                base_delay=config.base_delay,
-                max_delay=config.max_delay,
-                max_retries=config.max_retries,
-                circuit_breaker_threshold=config.circuit_breaker_threshold,
-            )
-            logger.info(f"Resume mode: processing {len(resume_state['pending_subreddits'])} pending subreddits, "
-                        f"skipping {len(resume_state['completed_subreddits'])} recently completed")
-
-    collector = RedditDataCollector(working_config, storage)
-
     try:
+        storage = RedditDataStorage(db_path)
+
+        # Apply resume filtering before creating the collector so the collector
+        # already holds the filtered subreddit list when passed to _collect_with_batching.
+        working_config = config
+        if enable_resume and enable_batching:
+            resume_state = storage.get_collection_resume_state(config.target_subreddits, hours_back=24)
+            if resume_state['resume_available']:
+                working_config = RedditConfig(
+                    client_id=config.client_id,
+                    client_secret=config.client_secret,
+                    user_agent=config.user_agent,
+                    username=getattr(config, 'username', None),
+                    password=getattr(config, 'password', None),
+                    target_subreddits=resume_state['pending_subreddits'],
+                    target_keywords=config.target_keywords,
+                    max_requests_per_window=config.max_requests_per_window,
+                    base_delay=config.base_delay,
+                    max_delay=config.max_delay,
+                    max_retries=config.max_retries,
+                    circuit_breaker_threshold=config.circuit_breaker_threshold,
+                )
+                logger.info(f"Resume mode: processing {len(resume_state['pending_subreddits'])} pending subreddits, "
+                            f"skipping {len(resume_state['completed_subreddits'])} recently completed")
+
+        collector = RedditDataCollector(working_config, storage)
+
         if enable_batching:
             return _collect_with_batching(collector, storage, working_config,
                                         posts_per_subreddit, comments_per_post, enable_resume)
         else:
             return _collect_traditional_way(collector, storage, working_config,
                                           posts_per_subreddit, comments_per_post)
-                
+
     except Exception as e:
         logger.error(f"Data collection failed: {e}")
         return {

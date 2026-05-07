@@ -294,6 +294,42 @@ export const generatedApiSchemas = {
     "title": "AnalystBrief",
     "type": "object"
   },
+  "AnalystBriefsResponse": {
+    "properties": {
+      "items": {
+        "items": {
+          "$ref": "#/components/schemas/AnalystBrief"
+        },
+        "title": "Items",
+        "type": "array"
+      },
+      "provenance": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/AnalysisProvenance"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "state": {
+        "default": "ready",
+        "enum": [
+          "ready",
+          "missing_schema",
+          "unpopulated",
+          "stale_artifact",
+          "missing_config",
+          "error"
+        ],
+        "title": "State",
+        "type": "string"
+      }
+    },
+    "title": "AnalystBriefsResponse",
+    "type": "object"
+  },
   "ArtifactRecord": {
     "properties": {
       "artifact_id": {
@@ -669,6 +705,30 @@ export const generatedApiSchemas = {
       "cluster_id"
     ],
     "title": "EmbeddingPoint",
+    "type": "object"
+  },
+  "EnrichRequest": {
+    "properties": {
+      "kind": {
+        "title": "Kind",
+        "type": "string"
+      },
+      "post_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Post Id"
+      }
+    },
+    "required": [
+      "kind"
+    ],
+    "title": "EnrichRequest",
     "type": "object"
   },
   "FreshnessResponse": {

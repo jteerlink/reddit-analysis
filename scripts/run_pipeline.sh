@@ -4,9 +4,9 @@
 # Usage:
 #   ./scripts/run_pipeline.sh              # interactive menu
 #   ./scripts/run_pipeline.sh --check      # show status table only
-#   ./scripts/run_pipeline.sh --step N     # run a specific step (1-7)
-#   ./scripts/run_pipeline.sh step N       # run a specific step (1-7)
-#   ./scripts/run_pipeline.sh N            # run a specific step (1-7)
+#   ./scripts/run_pipeline.sh --step N     # run a specific step (1-9)
+#   ./scripts/run_pipeline.sh step N       # run a specific step (1-9)
+#   ./scripts/run_pipeline.sh N            # run a specific step (1-9)
 #   ./scripts/run_pipeline.sh --all        # run all steps in sequence
 #   ./scripts/run_pipeline.sh --verbose    # show full command output
 
@@ -18,6 +18,13 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DB="${DB_PATH:-$PROJECT_ROOT/historical_reddit_data.db}"
 STATUS_DIR="$PROJECT_ROOT/.pipeline_status"
 LOG_DIR="$PROJECT_ROOT/.pipeline_logs"
+
+# Prefer the project venv Python so all ML/enrichment packages are available.
+if [[ -x "${PROJECT_ROOT}/.venv/bin/python3" ]]; then
+  PYTHON="${PROJECT_ROOT}/.venv/bin/python3"
+else
+  PYTHON="python3"
+fi
 
 # ── Flags ──────────────────────────────────────────────────────────────────────
 MODE="interactive"   # interactive | check | step | all
@@ -50,7 +57,7 @@ require_db() {
 
 python_query() {
   # Run a DB query via Python; returns stdout trimmed
-  python3 - <<EOF
+  "$PYTHON" - <<EOF
 import os, sqlite3, sys
 try:
     if os.environ.get("DATABASE_URL"):
@@ -69,7 +76,7 @@ EOF
 }
 
 table_exists() {
-  python3 - <<EOF
+  "$PYTHON" - <<EOF
 import os, sqlite3
 try:
     if os.environ.get("DATABASE_URL"):
@@ -99,10 +106,10 @@ trap trap_cleanup INT TERM
 gate_1_prerequisites() {
   # Gate: python reachable, uv/pip reachable, DB exists, dirs exist
   if [[ -n "${DATABASE_URL:-}" ]]; then
-    python3 -c "import psycopg2" 2>/dev/null || return 1
+    "$PYTHON" -c "import psycopg2" 2>/dev/null || return 1
     return 0
   fi
-  python3 -c "import sqlite3" 2>/dev/null || return 1
+  "$PYTHON" -c "import sqlite3" 2>/dev/null || return 1
   [[ -f "$DB" ]] || return 1
   return 0
 }
@@ -118,7 +125,7 @@ gate_3_weak_labels() {
   local csv="$PROJECT_ROOT/data/weak_labels.csv"
   [[ -f "$csv" ]] || return 1
   local count
-  count=$(python3 -c "
+  count=$("$PYTHON" -c "
 import csv
 try:
     with open('$csv') as f:
@@ -164,6 +171,24 @@ gate_7_timeseries() {
   return 0
 }
 
+gate_8_analysis_artifacts() {
+  # Gate: at least one succeeded analysis artifact
+  [[ "$(table_exists analysis_artifacts)" == "yes" ]] || return 1
+  local n
+  n=$(python_query "SELECT COUNT(*) FROM analysis_artifacts WHERE status = 'succeeded'")
+  [[ "$n" -gt 0 ]] || return 1
+  return 0
+}
+
+gate_9_llm_enrichment() {
+  # Gate: at least one succeeded Ollama artifact
+  [[ "$(table_exists analysis_artifacts)" == "yes" ]] || return 1
+  local n
+  n=$(python_query "SELECT COUNT(*) FROM analysis_artifacts WHERE status = 'succeeded' AND provider = 'ollama'")
+  [[ "$n" -gt 0 ]] || return 1
+  return 0
+}
+
 check_gate() {
   local step="$1"
   case "$step" in
@@ -174,6 +199,8 @@ check_gate() {
     5) gate_5_batch_inference ;;
     6) gate_6_topic_modeling ;;
     7) gate_7_timeseries ;;
+    8) gate_8_analysis_artifacts ;;
+    9) gate_9_llm_enrichment ;;
     *) return 1 ;;
   esac
 }
@@ -202,7 +229,7 @@ freshness_3_weak_labels() {
   [[ "$(table_exists preprocessed)" == "yes" ]] || { printf "${GREEN}Fresh${RESET}"; return; }
   local newest_db csv_mtime
   newest_db=$(python_query "SELECT MAX(created_utc) FROM preprocessed WHERE is_filtered=0" 2>/dev/null || echo 0)
-  csv_mtime=$(python3 -c "import os; print(int(os.path.getmtime('$csv')))" 2>/dev/null || echo 0)
+  csv_mtime=$("$PYTHON" -c "import os; print(int(os.path.getmtime('$csv')))" 2>/dev/null || echo 0)
   if [[ "$newest_db" -gt "$csv_mtime" ]]; then
     printf "${YELLOW}STALE${RESET}  (new preprocessed rows since last label run)"
   else
@@ -216,8 +243,8 @@ freshness_4_sentiment_model() {
   local csv="$PROJECT_ROOT/data/weak_labels.csv"
   [[ -f "$csv" ]] || { printf "${GREEN}Fresh${RESET}"; return; }
   local model_mtime csv_mtime
-  model_mtime=$(python3 -c "import os; print(int(os.path.getmtime('$model_dir')))" 2>/dev/null || echo 0)
-  csv_mtime=$(python3 -c "import os; print(int(os.path.getmtime('$csv')))" 2>/dev/null || echo 0)
+  model_mtime=$("$PYTHON" -c "import os; print(int(os.path.getmtime('$model_dir')))" 2>/dev/null || echo 0)
+  csv_mtime=$("$PYTHON" -c "import os; print(int(os.path.getmtime('$csv')))" 2>/dev/null || echo 0)
   if [[ "$csv_mtime" -gt "$model_mtime" ]]; then
     printf "${YELLOW}STALE${RESET}  (weak labels updated since last training)"
   else
@@ -253,7 +280,7 @@ freshness_6_topic_modeling() {
   " 2>/dev/null || echo 0)
   local model_file="$PROJECT_ROOT/models/topic_model"
   if [[ -d "$model_file" || -f "$model_file" ]]; then
-    model_mtime=$(python3 -c "import os; print(int(os.path.getmtime('$model_file')))" 2>/dev/null || echo 0)
+    model_mtime=$("$PYTHON" -c "import os; print(int(os.path.getmtime('$model_file')))" 2>/dev/null || echo 0)
     if [[ "$newest_pred" -gt "$model_mtime" ]]; then
       printf "${YELLOW}STALE${RESET}  (new predictions since last topic run)"
     else
@@ -268,13 +295,35 @@ freshness_7_timeseries() {
   [[ "$(table_exists sentiment_forecast)" == "yes" ]] || { echo "—"; return; }
   local max_date today
   max_date=$(python_query "SELECT MAX(date) FROM sentiment_forecast" 2>/dev/null || echo "")
-  today=$(python3 -c "from datetime import date; print(date.today())")
+  today=$("$PYTHON" -c "from datetime import date; print(date.today())")
   if [[ -z "$max_date" || "$max_date" == "0" ]]; then
     echo "—"
   elif [[ "$max_date" < "$today" ]]; then
     printf "${YELLOW}STALE${RESET}  (forecast ends %s, today is %s)" "$max_date" "$today"
   else
     printf "${GREEN}Fresh${RESET}"
+  fi
+}
+
+freshness_8_analysis_artifacts() {
+  [[ "$(table_exists analysis_artifacts)" == "yes" ]] || { echo "—"; return; }
+  local n
+  n=$(python_query "SELECT COUNT(*) FROM analysis_artifacts WHERE status = 'succeeded'" 2>/dev/null || echo 0)
+  if [[ "$n" -gt 0 ]]; then
+    printf "${GREEN}Fresh${RESET}  (%s artifacts)" "$n"
+  else
+    echo "—"
+  fi
+}
+
+freshness_9_llm_enrichment() {
+  [[ "$(table_exists analysis_artifacts)" == "yes" ]] || { echo "—"; return; }
+  local n
+  n=$(python_query "SELECT COUNT(*) FROM analysis_artifacts WHERE status = 'succeeded' AND provider = 'ollama'" 2>/dev/null || echo 0)
+  if [[ "$n" -gt 0 ]]; then
+    printf "${GREEN}Fresh${RESET}  (%s ollama artifacts)" "$n"
+  else
+    echo "—"
   fi
 }
 
@@ -288,6 +337,8 @@ get_freshness() {
     5) freshness_5_batch_inference ;;
     6) freshness_6_topic_modeling ;;
     7) freshness_7_timeseries ;;
+    8) freshness_8_analysis_artifacts ;;
+    9) freshness_9_llm_enrichment ;;
   esac
 }
 
@@ -303,6 +354,8 @@ step_name() {
     5) echo "Batch Inference" ;;
     6) echo "Topic Modeling" ;;
     7) echo "Time Series & Forecasting" ;;
+    8) echo "Analysis Artifacts" ;;
+    9) echo "LLM Enrichment" ;;
   esac
 }
 
@@ -316,19 +369,23 @@ step_desc() {
     5) echo "Run the trained sentiment model across all preprocessed records" ;;
     6) echo "Discover dominant themes with BERTopic and track them week over week" ;;
     7) echo "Aggregate daily sentiment, detect trend shifts, generate 14-day Prophet forecasts" ;;
+    8) echo "Backfill dashboard intelligence artifacts (narrative events, briefs, trend analysis)" ;;
+    9) echo "Ollama LLM enrichment: narrative summaries, thread analysis, analyst brief, topic labels" ;;
   esac
 }
 
 step_gate_desc() {
   local step="${1:-}"
   case "$step" in
-    1) echo "python3 reachable, database exists, models/ and data/ present" ;;
+    1) echo "project Python reachable, database exists, models/ and data/ present" ;;
     2) echo "models/embeddings_cache.npy exists" ;;
     3) echo "data/weak_labels.csv exists with ≥ 30,000 rows" ;;
     4) echo "models/sentiment_v1/config.json exists" ;;
     5) echo "sentiment_predictions table has rows" ;;
     6) echo "≥ 20 topics with coherence ≥ 0.50 in topics table" ;;
     7) echo "sentiment_forecast table has rows" ;;
+    8) echo "analysis_artifacts table has ≥ 1 succeeded artifact" ;;
+    9) echo "analysis_artifacts table has ≥ 1 succeeded artifact with provider='ollama'" ;;
   esac
 }
 
@@ -341,6 +398,8 @@ step_hint() {
     5) echo "Reduce --batch-size to 8 if OOM on training; use --batch-size 512 for inference" ;;
     6) echo "Try: TOPIC_MIN_CLUSTER_SIZE=15 TOPIC_MIN_TOPIC_SIZE=15 ./scripts/run_pipeline.sh --step 6" ;;
     7) echo "Ensure batch inference ran first to populate sentiment_predictions" ;;
+    8) echo "Ensure steps 1–7 completed; check logs in .pipeline_logs/" ;;
+    9) echo "Set OLLAMA_API_KEY in .env and ensure Ollama is running at OLLAMA_BASE_URL" ;;
     *) echo "" ;;
   esac
 }
@@ -353,7 +412,7 @@ print_status_table() {
   printf "  ${BOLD}%-3s  %-28s  %-6s  %-10s  %s${RESET}\n" "#" "Step" "Gate" "Last Run" "Freshness"
   printf "  %s\n" "──────────────────────────────────────────────────────────────────────────────"
 
-  for i in 1 2 3 4 5 6 7; do
+  for i in 1 2 3 4 5 6 7 8 9; do
     local gate_str fresh_str last_run
     if [[ "$check_db" == "true" ]]; then
       if check_gate "$i" 2>/dev/null; then
@@ -377,7 +436,7 @@ print_status_table() {
 
 run_step() {
   local step="${1:-}"
-  [[ "$step" =~ ^[1-7]$ ]] || die "Invalid step: ${step:-<empty>} (must be 1–7)"
+  [[ "$step" =~ ^[1-9]$ ]] || die "Invalid step: ${step:-<empty>} (must be 1–9)"
   local name
   name=$(step_name "$step")
 
@@ -396,6 +455,8 @@ run_step() {
     5) run_step_5 "$logfile" ;;
     6) run_step_6 "$logfile" ;;
     7) run_step_7 "$logfile" ;;
+    8) run_step_8 "$logfile" ;;
+    9) run_step_9 "$logfile" ;;
   esac
 }
 
@@ -425,7 +486,7 @@ run_step_2() {
   local logfile="$1"
   info "Running preprocessing (this may take several minutes)..."
   if $VERBOSE; then
-    (cd "$PROJECT_ROOT" && REDDIT_PIPELINE_DB="$DB" python3 - <<'PYEOF'
+    (cd "$PROJECT_ROOT" && REDDIT_PIPELINE_DB="$DB" "$PYTHON" - <<'PYEOF'
 import os
 from src.ml.preprocessing import run_preprocessing
 result = run_preprocessing(
@@ -442,7 +503,7 @@ print(f"Device:          {result['device']}")
 PYEOF
 ) | tee "$logfile"
   else
-    (cd "$PROJECT_ROOT" && REDDIT_PIPELINE_DB="$DB" python3 - <<'PYEOF'
+    (cd "$PROJECT_ROOT" && REDDIT_PIPELINE_DB="$DB" "$PYTHON" - <<'PYEOF'
 import os
 from src.ml.preprocessing import run_preprocessing
 result = run_preprocessing(
@@ -478,14 +539,14 @@ run_step_3() {
   local logfile="$1"
   info "Generating weak labels..."
   if $VERBOSE; then
-    (cd "$PROJECT_ROOT" && python3 scripts/generate_weak_labels.py \
+    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/generate_weak_labels.py \
       --db "$DB" \
       --output data/weak_labels.csv \
       --threshold 0.5 \
       --include-neutral \
       --neutral-threshold 0.1) | tee "$logfile"
   else
-    (cd "$PROJECT_ROOT" && python3 scripts/generate_weak_labels.py \
+    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/generate_weak_labels.py \
       --db "$DB" \
       --output data/weak_labels.csv \
       --threshold 0.5 \
@@ -499,7 +560,7 @@ run_step_3() {
   info "Checking gate: data/weak_labels.csv ≥ 30,000 rows..."
   if gate_3_weak_labels; then
     local count
-    count=$(python3 -c "
+    count=$("$PYTHON" -c "
 import csv
 with open('$PROJECT_ROOT/data/weak_labels.csv') as f:
     print(sum(1 for _ in csv.reader(f)) - 1)
@@ -518,7 +579,7 @@ run_step_4() {
   info "Training sentiment model (20–40 min on MPS, longer on CPU)..."
   printf "  ${DIM}Logs: $logfile${RESET}\n\n"
   if $VERBOSE; then
-    (cd "$PROJECT_ROOT" && python3 - <<'PYEOF'
+    (cd "$PROJECT_ROOT" && "$PYTHON" - <<'PYEOF'
 from src.ml.sentiment import train
 result = train(
     weak_labels_path="data/weak_labels.csv",
@@ -539,7 +600,7 @@ print(f"Model saved to:  {result['model_dir']}")
 PYEOF
 ) | tee "$logfile"
   else
-    (cd "$PROJECT_ROOT" && python3 - <<'PYEOF'
+    (cd "$PROJECT_ROOT" && "$PYTHON" - <<'PYEOF'
 from src.ml.sentiment import train
 result = train(
     weak_labels_path="data/weak_labels.csv",
@@ -568,7 +629,7 @@ PYEOF
   info "Checking gate: val_f1 ≥ 0.70..."
   local f1
   f1=$(grep -oP "(?<=Val F1 \(macro\):\s{2})\d+\.\d+" "$logfile" 2>/dev/null || echo "0")
-  if gate_4_sentiment_model && python3 -c "exit(0 if float('$f1') >= 0.70 else 1)" 2>/dev/null; then
+  if gate_4_sentiment_model && "$PYTHON" -c "exit(0 if float('$f1') >= 0.70 else 1)" 2>/dev/null; then
     success "Gate PASSED — val_f1 = $f1"
     mark_done 4
   elif gate_4_sentiment_model; then
@@ -588,12 +649,12 @@ run_step_5() {
   local logfile="$1"
   info "Running batch inference across all preprocessed records..."
   if $VERBOSE; then
-    (cd "$PROJECT_ROOT" && python3 scripts/batch_inference.py \
+    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/batch_inference.py \
       --db "$DB" \
       --model-dir models/sentiment_v1 \
       --batch-size 1000) | tee "$logfile"
   else
-    (cd "$PROJECT_ROOT" && python3 scripts/batch_inference.py \
+    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/batch_inference.py \
       --db "$DB" \
       --model-dir models/sentiment_v1 \
       --batch-size 1000) > "$logfile" 2>&1 \
@@ -627,7 +688,7 @@ run_step_6() {
   info "Training BERTopic model (this may take several minutes)..."
   dim "Topic params: days=$topic_days min_cluster_size=$topic_min_cluster_size min_topic_size=$topic_min_topic_size n_neighbors=$topic_n_neighbors n_components=$topic_n_components nr_topics=$topic_nr_topics"
   if $VERBOSE; then
-    (cd "$PROJECT_ROOT" && python3 scripts/train_topic_model.py \
+    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/train_topic_model.py \
       --db "$DB" \
       --cache-dir models/ \
       --days "$topic_days" \
@@ -638,7 +699,7 @@ run_step_6() {
       --nr-topics "$topic_nr_topics" \
       --skip-gate) | tee "$logfile"
   else
-    (cd "$PROJECT_ROOT" && python3 scripts/train_topic_model.py \
+    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/train_topic_model.py \
       --db "$DB" \
       --cache-dir models/ \
       --days "$topic_days" \
@@ -672,12 +733,12 @@ run_step_7() {
   local logfile="$1"
   info "Running time series analysis and 14-day forecast..."
   if $VERBOSE; then
-    (cd "$PROJECT_ROOT" && python3 scripts/run_timeseries.py \
+    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/run_timeseries.py \
       --db "$DB" \
       --days 90 \
       --forecast-days 14) | tee "$logfile"
   else
-    (cd "$PROJECT_ROOT" && python3 scripts/run_timeseries.py \
+    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/run_timeseries.py \
       --db "$DB" \
       --days 90 \
       --forecast-days 14) > "$logfile" 2>&1 \
@@ -700,11 +761,62 @@ run_step_7() {
   fi
 }
 
+run_step_8() {
+  local logfile="$1"
+  info "Running analysis artifact backfill..."
+  if $VERBOSE; then
+    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/run_analysis_jobs.py --db "$DB") | tee "$logfile"
+  else
+    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/run_analysis_jobs.py --db "$DB") > "$logfile" 2>&1 \
+      && success "Analysis artifacts generated" \
+      || { error "Analysis artifact jobs failed. Log: $logfile"; tail -20 "$logfile"; return 1; }
+  fi
+
+  printf "\n"
+  info "Checking gate: analysis_artifacts table has succeeded rows..."
+  if gate_8_analysis_artifacts; then
+    local n
+    n=$(python_query "SELECT COUNT(*) FROM analysis_artifacts WHERE status = 'succeeded'")
+    success "Gate PASSED — $n succeeded artifacts"
+    mark_done 8
+  else
+    error "Gate FAILED — no succeeded artifacts found"
+    warn "$(step_hint 8)"
+    return 1
+  fi
+}
+
+run_step_9() {
+  local logfile="$1"
+  info "Running LLM enrichment via Ollama..."
+  dim "Requires OLLAMA_API_KEY and OLLAMA_BASE_URL in .env or environment"
+  if $VERBOSE; then
+    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/run_enrichment.py --db "$DB" --all) | tee "$logfile"
+  else
+    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/run_enrichment.py --db "$DB" --all) > "$logfile" 2>&1 \
+      && success "LLM enrichment complete" \
+      || { error "LLM enrichment failed. Log: $logfile"; tail -20 "$logfile"; return 1; }
+  fi
+
+  printf "\n"
+  info "Checking gate: Ollama artifacts written..."
+  if gate_9_llm_enrichment; then
+    local n
+    n=$(python_query "SELECT COUNT(*) FROM analysis_artifacts WHERE status = 'succeeded' AND provider = 'ollama'")
+    success "Gate PASSED — $n Ollama artifacts"
+    mark_done 9
+  else
+    error "Gate FAILED — no succeeded Ollama artifacts found"
+    warn "$(step_hint 9)"
+    return 1
+  fi
+}
+
 # ── Prompt helper ──────────────────────────────────────────────────────────────
 
 prompt_step() {
   local step="${1:-}"
-  [[ "$step" =~ ^[1-7]$ ]] || die "Invalid step: ${step:-<empty>} (must be 1–7)"
+  [[ "$step" =~ ^[1-9]$ ]] || die "Invalid step: ${step:-<empty>} (must be 1–9)"
   local name
   local ans
   name=$(step_name "$step")
@@ -750,11 +862,11 @@ mode_interactive() {
     printf "\n"
   fi
 
-  printf "  Run which step? [1-7 / a=all / q=quit]  > "
+  printf "  Run which step? [1-9 / a=all / q=quit]  > "
   read -r ans
 
   case "$ans" in
-    [1-7])
+    [1-9])
       if prompt_step "$ans"; then
         run_step "$ans"
       else
@@ -770,7 +882,7 @@ mode_interactive() {
 
 mode_step() {
   local step="${1:-}"
-  [[ "$step" =~ ^[1-7]$ ]] || die "Invalid step: ${step:-<empty>} (must be 1–7)"
+  [[ "$step" =~ ^[1-9]$ ]] || die "Invalid step: ${step:-<empty>} (must be 1–9)"
   header "Selected Pipeline Step"
   dim "DB: $DB"
   printf "\n"
@@ -786,7 +898,7 @@ mode_all() {
   header "Running full pipeline"
   print_status_table true
 
-  for i in 1 2 3 4 5 6 7; do
+  for i in 1 2 3 4 5 6 7 8 9; do
     if prompt_step "$i"; then
       run_step "$i" || {
         error "Step $i failed."
@@ -796,7 +908,7 @@ mode_all() {
       }
     else
       local rc=$?
-      [[ $rc -eq 2 ]] || return "$rc"
+      [[ "$rc" -eq 2 ]] || return "$rc"
     fi
   done
 
@@ -809,7 +921,7 @@ mode_all() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    [1-7])    MODE="step"; TARGET_STEP="$1" ;;
+    [1-9])    MODE="step"; TARGET_STEP="$1" ;;
     step)     MODE="step"; TARGET_STEP="${2:-}"; shift ;;
     --check)   MODE="check" ;;
     --all)     MODE="all" ;;
@@ -821,9 +933,9 @@ while [[ $# -gt 0 ]]; do
     --help|-h)
       printf "\nUsage: %s [options]\n\n" "$(basename "$0")"
       printf "  --check          Show gate + freshness status for all steps\n"
-      printf "  --step N         Run only step N (1–7)\n"
-      printf "  step N           Run only step N (1–7)\n"
-      printf "  N                Run only step N (1–7)\n"
+      printf "  --step N         Run only step N (1–9)\n"
+      printf "  step N           Run only step N (1–9)\n"
+      printf "  N                Run only step N (1–9)\n"
       printf "  --all            Run all steps with confirmation prompts\n"
       printf "  --verbose, -v    Show full command output\n"
       printf "  --db PATH        Override database path (default: historical_reddit_data.db)\n"

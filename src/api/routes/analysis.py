@@ -211,6 +211,24 @@ def latest_brief():
     }
 
 
+@router.get("/briefs", response_model=models.AnalystBriefsResponse)
+def briefs(limit: int = Query(default=10, ge=1, le=50)):
+    with connection(readonly=True) as conn:
+        rows = queries.briefs(conn, limit)
+    state = "ready" if rows else "unpopulated"
+    return {
+        "items": rows,
+        "state": state,
+        "provenance": _provenance(
+            state,
+            "real_data" if rows else "missing_config",
+            "analysis_artifacts",
+            [str(row["brief_id"]) for row in rows[:25]],
+            detail=None if rows else "No analyst brief artifact is available.",
+        ),
+    }
+
+
 @router.post("/enrich")
 def enrich(req: EnrichRequest):
     """Trigger on-demand LLM enrichment for a specific kind."""

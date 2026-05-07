@@ -13,7 +13,7 @@ from src.analysis.db import (
     fail_artifact,
     list_artifacts,
 )
-from src.analysis.jobs import backfill_narrative_events
+from src.analysis.jobs import backfill_embedding_2d, backfill_narrative_events
 
 
 def test_analysis_schema_and_backfill_lifecycle_are_idempotent():
@@ -129,3 +129,29 @@ def test_narrative_aggregate_refreshes_when_event_set_changes():
     assert conn.execute("SELECT COUNT(*) FROM narrative_events").fetchone()[0] == 2
     assert len(aggregate_payloads) == 2
     assert aggregate_payloads[-1]["event_count"] == 2
+
+
+def test_embedding_backfill_falls_back_to_reddit_id_cache_key(tmp_path, monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_analysis_tables(conn)
+    conn.executescript(
+        """
+        CREATE TABLE topic_assignments (id TEXT PRIMARY KEY, topic_id INTEGER);
+        CREATE TABLE preprocessed (id TEXT PRIMARY KEY, embedding_key TEXT);
+        """
+    )
+    conn.execute("INSERT INTO topic_assignments (id, topic_id) VALUES (?, ?)", ("post-1", 3))
+    conn.execute("INSERT INTO preprocessed (id, embedding_key) VALUES (?, ?)", ("post-1", "0"))
+    conn.commit()
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "embeddings_index.json").write_text('{"post-1": 0}')
+    import numpy as np
+
+    np.save(models_dir / "embeddings_cache.npy", np.ones((1, 384), dtype=np.float32))
+    monkeypatch.chdir(tmp_path)
+
+    assert backfill_embedding_2d(conn) == 1
+    assert conn.execute("SELECT COUNT(*) FROM embedding_2d").fetchone()[0] == 1

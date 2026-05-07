@@ -135,6 +135,12 @@ def backfill_embedding_2d(conn, limit: int = 2000) -> int:
         embedding_key = row["embedding_key"] if hasattr(row, "keys") else row[2]
         position = index.get(embedding_key)
         if position is None:
+            position = index.get(rid)
+        if position is None and str(embedding_key).lstrip("-").isdigit():
+            numeric_position = int(embedding_key)
+            if 0 <= numeric_position < len(cache):
+                position = numeric_position
+        if position is None:
             continue
         selected.append((rid, topic_id, np.asarray(cache[int(position)], dtype=np.float64)))
 

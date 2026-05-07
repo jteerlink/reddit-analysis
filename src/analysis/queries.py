@@ -450,26 +450,51 @@ def latest_brief(conn) -> Optional[dict]:
         row = rows[0]
         if row.get("status") != "succeeded":
             return None
-        payload = _loads(row.get("payload"), {})
-        return {
-            "brief_id": payload.get("brief_id", row["artifact_id"]),
-            "period": payload.get("period", "latest"),
-            "headline": payload.get("headline", "Latest Reddit intelligence snapshot"),
-            "sections": payload.get("sections", []),
-            "source_events": payload.get("source_events", []),
-            "generated_at": row.get("freshness_timestamp"),
-            "model_name": row.get("model_name"),
-            "state": "ready",
-            "provenance": _provenance(
-                "ready",
-                "deterministic_fallback",
-                "analysis_artifacts",
-                [row["artifact_id"]],
-                artifact_id=row["artifact_id"],
-                source_input_hash=row.get("source_input_hash"),
-                freshness_timestamp=row.get("freshness_timestamp"),
-                provider=row.get("provider"),
-            ),
-        }
+        return _brief_from_artifact(row, "deterministic_fallback")
     except Exception:
         return None
+
+
+def briefs(conn, limit: int = 10) -> list[dict]:
+    try:
+        rows = [
+            row
+            for kind in ("analyst_brief_llm", "analyst_brief")
+            for row in list_artifacts(conn, kind=kind, limit=limit)
+            if row.get("status") == "succeeded"
+        ]
+        rows.sort(key=lambda row: row.get("freshness_timestamp") or row.get("updated_at") or "", reverse=True)
+        return [
+            _brief_from_artifact(
+                row,
+                "llm_artifact" if row.get("kind") == "analyst_brief_llm" else "deterministic_fallback",
+            )
+            for row in rows[:limit]
+        ]
+    except Exception:
+        logger.exception("analysis_briefs_failed")
+        return []
+
+
+def _brief_from_artifact(row: dict, label: str) -> dict:
+    payload = _loads(row.get("payload"), {})
+    return {
+        "brief_id": payload.get("brief_id", row["artifact_id"]),
+        "period": payload.get("period", "latest"),
+        "headline": payload.get("headline", "Latest Reddit intelligence snapshot"),
+        "sections": payload.get("sections", []),
+        "source_events": payload.get("source_events", []),
+        "generated_at": payload.get("generated_at") or row.get("freshness_timestamp"),
+        "model_name": payload.get("model_name") or row.get("model_name"),
+        "state": "ready",
+        "provenance": _provenance(
+            "ready",
+            label,
+            "analysis_artifacts",
+            [row["artifact_id"]],
+            artifact_id=row["artifact_id"],
+            source_input_hash=row.get("source_input_hash"),
+            freshness_timestamp=row.get("freshness_timestamp"),
+            provider=row.get("provider"),
+        ),
+    }

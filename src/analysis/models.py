@@ -236,3 +236,9 @@ class AnalystBrief(BaseModel):
     model_name: Optional[str] = None
     state: AnalysisState = "ready"
     provenance: Optional[AnalysisProvenance] = None
+
+
+class AnalystBriefsResponse(BaseModel):
+    items: List[AnalystBrief] = Field(default_factory=list)
+    state: AnalysisState = "ready"
+    provenance: Optional[AnalysisProvenance] = None
