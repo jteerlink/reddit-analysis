@@ -339,7 +339,7 @@ step_hint() {
     3) echo "Lower --threshold to 0.4 in the weak labels step to get more labeled rows" ;;
     4) echo "Lower --threshold 0.4 in weak labels step or check models/sentiment_v1/ for partial output" ;;
     5) echo "Reduce --batch-size to 8 if OOM on training; use --batch-size 512 for inference" ;;
-    6) echo "Lower --min-cluster-size to 15, or add --skip-gate to inspect topics manually" ;;
+    6) echo "Try: TOPIC_MIN_CLUSTER_SIZE=15 TOPIC_MIN_TOPIC_SIZE=15 ./scripts/run_pipeline.sh --step 6" ;;
     7) echo "Ensure batch inference ran first to populate sentiment_predictions" ;;
     *) echo "" ;;
   esac
@@ -617,25 +617,39 @@ run_step_5() {
 
 run_step_6() {
   local logfile="$1"
+  local topic_days="${TOPIC_DAYS:-90}"
+  local topic_min_cluster_size="${TOPIC_MIN_CLUSTER_SIZE:-30}"
+  local topic_min_topic_size="${TOPIC_MIN_TOPIC_SIZE:-30}"
+  local topic_n_neighbors="${TOPIC_N_NEIGHBORS:-15}"
+  local topic_n_components="${TOPIC_N_COMPONENTS:-5}"
+  local topic_nr_topics="${TOPIC_NR_TOPICS:-auto}"
+
   info "Training BERTopic model (this may take several minutes)..."
+  dim "Topic params: days=$topic_days min_cluster_size=$topic_min_cluster_size min_topic_size=$topic_min_topic_size n_neighbors=$topic_n_neighbors n_components=$topic_n_components nr_topics=$topic_nr_topics"
   if $VERBOSE; then
     (cd "$PROJECT_ROOT" && python3 scripts/train_topic_model.py \
       --db "$DB" \
       --cache-dir models/ \
-      --days 90 \
-      --min-cluster-size 30 \
-      --min-topic-size 30 \
-      --nr-topics auto) | tee "$logfile"
+      --days "$topic_days" \
+      --min-cluster-size "$topic_min_cluster_size" \
+      --min-topic-size "$topic_min_topic_size" \
+      --n-neighbors "$topic_n_neighbors" \
+      --n-components "$topic_n_components" \
+      --nr-topics "$topic_nr_topics" \
+      --skip-gate) | tee "$logfile"
   else
     (cd "$PROJECT_ROOT" && python3 scripts/train_topic_model.py \
       --db "$DB" \
       --cache-dir models/ \
-      --days 90 \
-      --min-cluster-size 30 \
-      --min-topic-size 30 \
-      --nr-topics auto) > "$logfile" 2>&1 \
+      --days "$topic_days" \
+      --min-cluster-size "$topic_min_cluster_size" \
+      --min-topic-size "$topic_min_topic_size" \
+      --n-neighbors "$topic_n_neighbors" \
+      --n-components "$topic_n_components" \
+      --nr-topics "$topic_nr_topics" \
+      --skip-gate) > "$logfile" 2>&1 \
       && success "Topic modeling complete" \
-      || { error "Topic modeling failed. Log: $logfile"; tail -20 "$logfile"; return 1; }
+      || { error "Topic modeling crashed. Log: $logfile"; tail -20 "$logfile"; return 1; }
   fi
 
   printf "\n"
@@ -648,7 +662,7 @@ run_step_6() {
   else
     local n
     n=$(python_query "SELECT COUNT(*) FROM topics WHERE coherence_score >= 0.50" 2>/dev/null || echo 0)
-    error "Gate FAILED — only $n coherent topics found (need ≥ 20)"
+    error "Gate FAILED — model completed, but only $n coherent topics found (need ≥ 20)"
     warn "$(step_hint 6)"
     return 1
   fi
