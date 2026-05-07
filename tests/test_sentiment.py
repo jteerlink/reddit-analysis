@@ -10,13 +10,14 @@ import os
 import sqlite3
 import sys
 import tempfile
+import types
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.ml.sentiment import LABEL2ID, ID2LABEL, predict_batch, run_batch_inference
+from src.ml.sentiment import LABEL2ID, ID2LABEL, _log_validation_metrics_to_mlflow, predict_batch, run_batch_inference
 from src.ml.db import get_connection
 
 
@@ -202,6 +203,34 @@ def test_predict_batch_logits_length():
 # ---------------------------------------------------------------------------
 # run_batch_inference integration — mocked predict_batch
 # ---------------------------------------------------------------------------
+
+
+def test_mlflow_metric_logging_reuses_active_run(monkeypatch):
+    logged = []
+
+    fake_mlflow = types.SimpleNamespace(
+        active_run=lambda: object(),
+        last_active_run=lambda: pytest.fail("last_active_run should not be needed while a run is active"),
+        start_run=lambda **kwargs: pytest.fail("start_run should not reopen an active run"),
+        log_metrics=lambda metrics: logged.append(metrics),
+    )
+    monkeypatch.setitem(sys.modules, "mlflow", fake_mlflow)
+
+    _log_validation_metrics_to_mlflow(
+        {
+            "val_f1_positive": 0.7,
+            "val_f1_negative": 0.6,
+            "val_f1_neutral": 0.5,
+        }
+    )
+
+    assert logged == [
+        {
+            "val_f1_positive": 0.7,
+            "val_f1_negative": 0.6,
+            "val_f1_neutral": 0.5,
+        }
+    ]
 
 
 def test_run_batch_inference_integration(temp_db):

@@ -64,6 +64,25 @@ def _compute_metrics(eval_pred):
     }
 
 
+def _log_validation_metrics_to_mlflow(summary: Dict) -> None:
+    import mlflow
+
+    metrics_to_log = {
+        "val_f1_positive": summary["val_f1_positive"],
+        "val_f1_negative": summary["val_f1_negative"],
+        "val_f1_neutral": summary["val_f1_neutral"],
+    }
+    active_run = mlflow.active_run()
+    if active_run is not None:
+        mlflow.log_metrics(metrics_to_log)
+        return
+
+    last_run = mlflow.last_active_run()
+    if last_run is not None:
+        with mlflow.start_run(run_id=last_run.info.run_id):
+            mlflow.log_metrics(metrics_to_log)
+
+
 def train(
     weak_labels_path: str,
     model_dir: str,
@@ -196,15 +215,7 @@ def train(
 
     if mlflow_tracking:
         try:
-            import mlflow
-            last_run = mlflow.last_active_run()
-            if last_run is not None:
-                with mlflow.start_run(run_id=last_run.info.run_id):
-                    mlflow.log_metrics({
-                        "val_f1_positive": summary["val_f1_positive"],
-                        "val_f1_negative": summary["val_f1_negative"],
-                        "val_f1_neutral": summary["val_f1_neutral"],
-                    })
+            _log_validation_metrics_to_mlflow(summary)
         except ImportError:
             logger.warning("mlflow not installed; skipping experiment tracking")
 

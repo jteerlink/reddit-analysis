@@ -29,7 +29,7 @@ def main() -> None:
     parser.add_argument(
         "--nr-topics",
         default="auto",
-        help='Max topics cap or "auto" to let HDBSCAN decide (default: auto)',
+        help='Max topics cap, "auto", or "none" for no topic reduction (default: auto)',
     )
     parser.add_argument(
         "--min-cluster-size",
@@ -42,6 +42,18 @@ def main() -> None:
         type=int,
         default=30,
         help="BERTopic min_topic_size (default: 30)",
+    )
+    parser.add_argument(
+        "--n-neighbors",
+        type=int,
+        default=15,
+        help="UMAP n_neighbors (default: 15)",
+    )
+    parser.add_argument(
+        "--n-components",
+        type=int,
+        default=5,
+        help="UMAP n_components (default: 5)",
     )
     parser.add_argument(
         "--skip-gate",
@@ -57,13 +69,18 @@ def main() -> None:
         print(f"Error: database not found at {args.db}", file=sys.stderr)
         sys.exit(1)
 
-    nr_topics: object = args.nr_topics if args.nr_topics == "auto" else int(args.nr_topics)
+    if args.nr_topics in {"auto", "none"}:
+        nr_topics: object = None if args.nr_topics == "none" else args.nr_topics
+    else:
+        nr_topics = int(args.nr_topics)
 
     result = run_topic_modeling(
         db_path=args.db,
         cache_dir=args.cache_dir,
         days=args.days,
         batch_size=args.batch_size,
+        n_neighbors=args.n_neighbors,
+        n_components=args.n_components,
         min_cluster_size=args.min_cluster_size,
         nr_topics=nr_topics,
         min_topic_size=args.min_topic_size,

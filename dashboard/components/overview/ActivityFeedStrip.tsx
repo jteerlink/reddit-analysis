@@ -46,11 +46,12 @@ export function ActivityFeedStrip() {
         </button>
       </div>
       <div className="grid divide-y divide-border md:grid-cols-4 md:divide-x md:divide-y-0">
-        {events.length ? events.map((event) => {
+        {events.length ? events.map((event, index) => {
           const Icon = SEVERITY_ICON[event.severity] ?? Clock3;
           const tone = SEVERITY_TONE[event.severity] ?? "neutral";
+          const key = event.source_ids[0] ?? `${event.timestamp}:${event.type}:${event.title}:${index}`;
           return (
-            <article key={event.title} className="flex min-h-24 gap-3 px-4 py-3">
+            <article key={key} className="flex min-h-24 gap-3 px-4 py-3">
               <div className={`mt-1 grid size-6 shrink-0 place-items-center rounded-full border ${TONE_CLASS[tone]}`}>
                 <Icon className="size-3.5" aria-hidden="true" />
               </div>
