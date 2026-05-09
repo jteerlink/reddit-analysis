@@ -20,6 +20,8 @@ from src.analysis.ollama import (
     OllamaTimeoutError,
     OllamaUnavailableError,
     discover_models,
+    probe_model,
+    select_model,
 )
 from src.analysis.prompts import (
     analyst_brief_prompt,
@@ -46,11 +48,26 @@ def _select_model(conn: Any, config: OllamaConfig) -> Optional[str]:
         logger.warning("Ollama model discovery failed: %s", result.error)
         return None
 
-    registered = {row["model_name"] for row in get_model_registry(conn)}
-    if registered and result.selected_model not in registered:
-        logger.warning("Selected model %s not in registry", result.selected_model)
+    names = [
+        str(item.get("name") or item.get("model"))
+        for item in result.models
+        if item.get("name") or item.get("model")
+    ]
+    selected_model = result.selected_model
+    if names:
+        responsive_model = select_model(names, is_usable=lambda model: probe_model(config, model))
+        if not responsive_model:
+            logger.warning("No discovered Ollama models responded to probe")
+            return None
+        if responsive_model != selected_model:
+            logger.warning("Selected model %s did not respond to probe; using %s", selected_model, responsive_model)
+        selected_model = responsive_model
 
-    return result.selected_model
+    registered = {row["model_name"] for row in get_model_registry(conn)}
+    if registered and selected_model not in registered:
+        logger.warning("Selected model %s not in registry", selected_model)
+
+    return selected_model
 
 
 def _chat_safe(config: OllamaConfig, model: str, messages: list, artifact_id: str, conn: Any) -> Optional[str]:

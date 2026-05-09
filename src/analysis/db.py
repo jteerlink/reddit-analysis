@@ -319,33 +319,43 @@ def enqueue_artifact(
     now = _now()
     payload_text = _json(payload or {})
     checksum = artifact_checksum(payload or {})
-    execute(
-        conn,
-        f"""
-        INSERT INTO analysis_artifacts (
-            artifact_id, kind, status, idempotency_key, payload, checksum,
-            schema_version, provider, model_name, prompt_version, source_input_hash,
-            freshness_timestamp, max_attempts, created_at, updated_at
-        ) VALUES ({",".join([marker] * 15)})
-        """,
-        (
-            artifact_id,
-            kind,
-            "queued",
-            key,
-            payload_text,
-            checksum,
-            schema_version,
-            provider,
-            model_name,
-            prompt_version,
-            source_input_hash,
-            now,
-            max_attempts,
-            now,
-            now,
-        ),
-    )
+    try:
+        execute(
+            conn,
+            f"""
+            INSERT INTO analysis_artifacts (
+                artifact_id, kind, status, idempotency_key, payload, checksum,
+                schema_version, provider, model_name, prompt_version, source_input_hash,
+                freshness_timestamp, max_attempts, created_at, updated_at
+            ) VALUES ({",".join([marker] * 15)})
+            """,
+            (
+                artifact_id,
+                kind,
+                "queued",
+                key,
+                payload_text,
+                checksum,
+                schema_version,
+                provider,
+                model_name,
+                prompt_version,
+                source_input_hash,
+                now,
+                max_attempts,
+                now,
+                now,
+            ),
+        )
+    except Exception:
+        existing = execute(
+            conn,
+            f"SELECT * FROM analysis_artifacts WHERE idempotency_key = {marker}",
+            (key,),
+        ).fetchone()
+        if existing:
+            return _row_dict(existing)
+        raise
     _record_history(conn, artifact_id, None, "queued", "enqueue", None)
     conn.commit()
     logger.info("analysis_artifact_enqueued", extra={"artifact_id": artifact_id, "kind": kind})

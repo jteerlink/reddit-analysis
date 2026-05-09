@@ -5,15 +5,18 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 import requests
 
 SEED_MODEL_PREFERENCES = [
+    "deepseek-v4-pro:cloud",
+    "deepseek-v4-pro",
+    "deepseek-v4-flash:cloud",
+    "deepseek-v4-flash",
     "gemma4:31b-cloud",
     "gpt-oss:20b-cloud",
     "gpt-oss:120b-cloud",
-    "deepseek-v4-flash:cloud",
     "qwen3.5:cloud",
     "qwen3.5:397b-cloud",
 ]
@@ -72,15 +75,26 @@ class DiscoveryResult:
     used_fallback: bool = False
 
 
-def select_model(model_names: list[str]) -> Optional[str]:
+def select_model(model_names: list[str], is_usable: Optional[Callable[[str], bool]] = None) -> Optional[str]:
     available = set(model_names)
     for preferred in SEED_MODEL_PREFERENCES:
-        if preferred in available:
-            return preferred
-        no_cloud = preferred.replace("-cloud", "")
-        if no_cloud in available:
-            return no_cloud
+        for candidate in _model_preference_aliases(preferred):
+            if candidate in available and (is_usable is None or is_usable(candidate)):
+                return candidate
+    if is_usable is not None:
+        for model_name in model_names:
+            if is_usable(model_name):
+                return model_name
+        return None
     return model_names[0] if model_names else None
+
+
+def _model_preference_aliases(preferred: str) -> tuple[str, ...]:
+    aliases = [preferred]
+    for suffix in (":cloud", "-cloud"):
+        if preferred.endswith(suffix):
+            aliases.append(preferred[: -len(suffix)])
+    return tuple(dict.fromkeys(aliases))
 
 
 def discover_models(config: Optional[OllamaConfig] = None) -> DiscoveryResult:

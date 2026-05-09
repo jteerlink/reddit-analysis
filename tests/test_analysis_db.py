@@ -42,6 +42,34 @@ def test_analysis_schema_and_backfill_lifecycle_are_idempotent():
     assert rows[0]["status"] == "succeeded"
 
 
+def test_enqueue_artifact_returns_existing_when_insert_hits_idempotency_race(monkeypatch):
+    from src.analysis import db as analysis_db
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_analysis_tables(conn)
+
+    real_execute = analysis_db.execute
+    injected = False
+
+    def execute_with_race(target_conn, sql, params=()):
+        nonlocal injected
+        if "INSERT INTO analysis_artifacts" in sql and not injected:
+            injected = True
+            real_execute(target_conn, sql, params)
+            target_conn.commit()
+            raise sqlite3.IntegrityError("UNIQUE constraint failed: analysis_artifacts.idempotency_key")
+        return real_execute(target_conn, sql, params)
+
+    monkeypatch.setattr(analysis_db, "execute", execute_with_race)
+
+    artifact = enqueue_artifact(conn, kind="brief", source_input_hash="race", payload={"a": 1})
+
+    assert artifact["kind"] == "brief"
+    assert artifact["source_input_hash"] == "race"
+    assert conn.execute("SELECT COUNT(*) FROM analysis_artifacts").fetchone()[0] == 1
+
+
 def test_analysis_lifecycle_retries_transient_failures_until_terminal():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row

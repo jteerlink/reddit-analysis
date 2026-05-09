@@ -35,6 +35,18 @@ def test_ollama_cloud_requires_api_key_by_default(monkeypatch):
 
 
 def test_ollama_selects_seed_profile_when_discovered():
+    selected = select_model(["llama3", "gpt-oss:120b-cloud", "deepseek-v4-pro", "gemma"])
+
+    assert selected == "deepseek-v4-pro"
+
+
+def test_ollama_cloud_alias_selects_discovered_base_model():
+    selected = select_model(["llama3", "deepseek-v4-pro", "gemma"])
+
+    assert selected == "deepseek-v4-pro"
+
+
+def test_ollama_falls_back_to_next_seed_profile():
     selected = select_model(["llama3", "gpt-oss:120b-cloud", "gemma"])
 
     assert selected == "gpt-oss:120b-cloud"

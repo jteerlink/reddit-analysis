@@ -110,6 +110,23 @@ def test_select_model_returns_model_on_success(conn, local_config):
     assert result == "llama3"
 
 
+def test_select_model_skips_discovered_model_when_probe_fails(conn, local_config):
+    models = [
+        {"name": "deepseek-v4-pro"},
+        {"name": "gpt-oss:120b-cloud"},
+    ]
+    with (
+        patch("src.analysis.enrichment.discover_models") as mock_disc,
+        patch("src.analysis.enrichment.probe_model") as mock_probe,
+    ):
+        mock_disc.return_value = type("R", (), {"error": None, "selected_model": "deepseek-v4-pro", "models": models})()
+        mock_probe.side_effect = lambda _config, model: model == "gpt-oss:120b-cloud"
+
+        result = _select_model(conn, local_config)
+
+    assert result == "gpt-oss:120b-cloud"
+
+
 # ---------------------------------------------------------------------------
 # enrich_thread_analysis
 # ---------------------------------------------------------------------------
