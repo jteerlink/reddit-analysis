@@ -9,7 +9,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useFilterStore } from "@/lib/store";
-import type { EmbeddingMapResponse, EmbeddingPoint } from "@/lib/types";
+import { parentColor } from "@/lib/utils";
+import type { EmbeddingMapResponse, EmbeddingPoint, SubredditCategoriesResponse } from "@/lib/types";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -20,8 +21,20 @@ const SENTIMENT_CLASS: Record<string, string> = {
 };
 
 const SENTIMENT_OPTIONS = ["all", "positive", "neutral", "negative"] as const;
+const COLOR_MODES = ["parent", "cluster", "sentiment"] as const;
+type ColorMode = (typeof COLOR_MODES)[number];
 
-function pointDateInRange(date: string | null, range: [string, string]) {
+const CLUSTER_COLORS = [
+  "#31d38f", "#d97757", "#4285f4", "#a78bfa", "#f59e0b",
+  "#10a37f", "#e26464", "#76b900", "#94a3b8", "#f472b6",
+];
+
+function clusterColor(clusterId: number | null | undefined) {
+  if (clusterId == null || Number.isNaN(clusterId)) return CLUSTER_COLORS[0];
+  return CLUSTER_COLORS[Math.abs(clusterId) % CLUSTER_COLORS.length];
+}
+
+function pointDateInRange(date: string | null | undefined, range: [string, string]) {
   if (!date) return true;
   const [start, end] = range;
   return (!start || date >= start) && (!end || date <= end);
@@ -37,13 +50,25 @@ function pointMatchesSearch(point: EmbeddingPoint, search: string) {
 
 export default function EmbeddingMapPage() {
   const { data } = useSWR<EmbeddingMapResponse>("/api/analysis/embedding-map?limit=1200", fetcher);
-  const { subreddits, setSubreddits, dateRange, setDateRange } = useFilterStore();
+  const { data: categories } = useSWR<SubredditCategoriesResponse>("/api/subreddits/categories", fetcher);
+  const { subreddits, setSubreddits, parents, setParents, dateRange, setDateRange } = useFilterStore();
   const [sentiment, setSentiment] = useState<(typeof SENTIMENT_OPTIONS)[number]>("all");
   const [topicFilter, setTopicFilter] = useState<number | "all">("all");
   const [search, setSearch] = useState("");
+  const [colorMode, setColorMode] = useState<ColorMode>("parent");
   const [hoveredPoint, setHoveredPoint] = useState<EmbeddingPoint | null>(null);
   const [selectedPoint, setSelectedPoint] = useState<EmbeddingPoint | null>(null);
   const points = data?.items ?? [];
+
+  const subredditToParent = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const parent of categories?.parents ?? []) {
+      for (const sub of parent.subreddits) {
+        map.set(sub, parent.id);
+      }
+    }
+    return map;
+  }, [categories]);
 
   const topicOptions = useMemo(() => {
     const counts = new Map<number, number>();
@@ -63,10 +88,14 @@ export default function EmbeddingMapPage() {
       if (sentiment !== "all" && point.sentiment !== sentiment) return false;
       if (topicFilter !== "all" && (point.topic_id ?? point.cluster_id) !== topicFilter) return false;
       if (subreddits.length && (!point.subreddit || !subreddits.includes(point.subreddit))) return false;
+      if (parents.length) {
+        const pid = point.parent_id ?? (point.subreddit ? subredditToParent.get(point.subreddit) : null);
+        if (!pid || !parents.includes(pid)) return false;
+      }
       if (!pointDateInRange(point.date, dateRange)) return false;
       return pointMatchesSearch(point, search);
     });
-  }, [points, sentiment, topicFilter, subreddits, dateRange, search]);
+  }, [points, sentiment, topicFilter, subreddits, parents, dateRange, search, subredditToParent]);
 
   const activePoint = selectedPoint ?? hoveredPoint;
   const xs = filteredPoints.map((point) => point.x);
@@ -75,24 +104,46 @@ export default function EmbeddingMapPage() {
   const maxX = Math.max(...xs, 1);
   const minY = Math.min(...ys, -1);
   const maxY = Math.max(...ys, 1);
-  const hasFilters = sentiment !== "all" || topicFilter !== "all" || !!search.trim() || subreddits.length > 0 || !!dateRange[0] || !!dateRange[1];
+  const hasFilters = sentiment !== "all" || topicFilter !== "all" || !!search.trim() || subreddits.length > 0 || parents.length > 0 || !!dateRange[0] || !!dateRange[1];
 
   const resetLocalFilters = () => {
     setSentiment("all");
     setTopicFilter("all");
     setSearch("");
     setSubreddits([]);
+    setParents([]);
     setDateRange(["", ""]);
     setHoveredPoint(null);
     setSelectedPoint(null);
   };
+
+  function pointFill(point: EmbeddingPoint) {
+    if (colorMode === "sentiment") {
+      return SENTIMENT_CLASS[point.sentiment ?? ""] ?? "bg-signal-copper";
+    }
+    if (colorMode === "cluster") {
+      return null;
+    }
+    return null;
+  }
+
+  function pointStyle(point: EmbeddingPoint): React.CSSProperties | undefined {
+    if (colorMode === "parent") {
+      const pid = point.parent_id ?? (point.subreddit ? subredditToParent.get(point.subreddit) : null);
+      return { background: parentColor(pid) };
+    }
+    if (colorMode === "cluster") {
+      return { background: clusterColor(point.topic_id ?? point.cluster_id) };
+    }
+    return undefined;
+  }
 
   return (
     <div className="space-y-6">
       <SectionHeader
         eyebrow="Semantic Space"
         title="Embedding map"
-        subtitle="Projected MiniLM conversation embeddings by cluster and sentiment."
+        subtitle="Projected MiniLM conversation embeddings — colour by parent, cluster, or sentiment."
       />
 
       <ChartCard
@@ -136,6 +187,18 @@ export default function EmbeddingMapPage() {
               </div>
 
               <div className="flex flex-wrap items-center gap-1">
+                <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">colour</span>
+                {COLOR_MODES.map((mode) => (
+                  <Button
+                    key={mode}
+                    type="button"
+                    size="sm"
+                    variant={colorMode === mode ? "secondary" : "outline"}
+                    onClick={() => setColorMode(mode)}
+                  >
+                    {mode}
+                  </Button>
+                ))}
                 <Button
                   type="button"
                   size="sm"
@@ -161,7 +224,8 @@ export default function EmbeddingMapPage() {
 
             <div className="mb-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
               <Badge variant="outline">{filteredPoints.length.toLocaleString()} visible</Badge>
-              {!!subreddits.length && <Badge variant="outline">{subreddits.length} sidebar subreddit filters</Badge>}
+              {!!parents.length && <Badge variant="outline">{parents.length} parent filters</Badge>}
+              {!!subreddits.length && <Badge variant="outline">{subreddits.length} subreddit filters</Badge>}
               {(dateRange[0] || dateRange[1]) && <Badge variant="outline">{dateRange[0] || "start"} to {dateRange[1] || "end"}</Badge>}
               {selectedPoint && <Badge variant="secondary">Pinned {selectedPoint.id}</Badge>}
             </div>
@@ -173,6 +237,7 @@ export default function EmbeddingMapPage() {
                   const rawLeft = ((point.x - minX) / Math.max(maxX - minX, 0.001)) * 96 + 2;
                   const rawTop = 98 - ((point.y - minY) / Math.max(maxY - minY, 0.001)) * 96;
                   const isActive = activePoint?.id === point.id;
+                  const fallbackClass = pointFill(point);
                   return (
                     <button
                       key={point.id}
@@ -185,8 +250,8 @@ export default function EmbeddingMapPage() {
                       onFocus={() => setHoveredPoint(point)}
                       onBlur={() => setHoveredPoint(null)}
                       onClick={() => setSelectedPoint((current) => current?.id === point.id ? null : point)}
-                      className={`absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-1 ring-black/40 transition-transform hover:z-20 hover:scale-150 focus-visible:z-20 focus-visible:scale-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal-green ${SENTIMENT_CLASS[point.sentiment ?? ""] ?? "bg-signal-copper"} ${isActive ? "z-20 scale-150 opacity-100 ring-2 ring-foreground" : "opacity-72"}`}
-                      style={{ left: `${rawLeft}%`, top: `${rawTop}%` }}
+                      className={`absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-1 ring-black/40 transition-transform hover:z-20 hover:scale-150 focus-visible:z-20 focus-visible:scale-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal-green ${fallbackClass ?? ""} ${isActive ? "z-20 scale-150 opacity-100 ring-2 ring-foreground" : "opacity-72"}`}
+                      style={{ left: `${rawLeft}%`, top: `${rawTop}%`, ...pointStyle(point) }}
                     />
                   );
                 })}
@@ -214,6 +279,7 @@ export default function EmbeddingMapPage() {
                     <div className="flex flex-wrap gap-2">
                       <Badge variant="secondary">{activePoint.sentiment ?? "unscored"}</Badge>
                       <Badge variant="outline">{activePoint.subreddit ?? "unknown"}</Badge>
+                      {activePoint.parent_id && <Badge variant="outline">{activePoint.parent_id}</Badge>}
                       <Badge variant="outline">topic {activePoint.topic_id ?? activePoint.cluster_id}</Badge>
                     </div>
                     <dl className="grid grid-cols-2 gap-3 text-xs">

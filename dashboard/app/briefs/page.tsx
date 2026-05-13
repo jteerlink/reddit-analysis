@@ -1,12 +1,44 @@
 "use client";
 
 import useSWR from "swr";
+import { AlertTriangle, Compass, FileText, Newspaper, TrendingUp } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { SectionHeader } from "@/components/layout/SectionHeader";
 import { ChartCard } from "@/components/shared/ChartCard";
 import { Badge } from "@/components/ui/badge";
-import type { AnalystBrief, AnalystBriefsResponse, FreshnessResponse, ModelRegistryResponse } from "@/lib/types";
+import type { AnalystBrief, AnalystBriefsResponse, BriefSection, FreshnessResponse, ModelRegistryResponse } from "@/lib/types";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
+
+const SECTION_STYLES: Record<string, { icon: LucideIcon; accent: string }> = {
+  "executive summary": { icon: FileText, accent: "text-signal-green border-signal-green/30" },
+  "key findings": { icon: Newspaper, accent: "text-signal-copper border-signal-copper/30" },
+  "notable trends": { icon: TrendingUp, accent: "text-signal-blue border-signal-blue/30" },
+  "risks & anomalies": { icon: AlertTriangle, accent: "text-signal-red border-signal-red/30" },
+  "outlook": { icon: Compass, accent: "text-signal-yellow border-signal-yellow/30" },
+};
+
+function styleForSection(title: string) {
+  const key = title.toLowerCase().trim();
+  return SECTION_STYLES[key];
+}
+
+function BriefSectionRow({ section, index }: { section: BriefSection; index: number }) {
+  const style = styleForSection(String(section.title ?? ""));
+  const Icon = style?.icon ?? FileText;
+  const accent = style?.accent ?? "text-muted-foreground border-border";
+  return (
+    <section className="border-t border-border pt-3 first:border-t-0 first:pt-0">
+      <div className="flex items-center gap-2">
+        <span className={`grid size-6 place-items-center rounded-md border bg-card/70 ${accent}`}>
+          <Icon className="size-3.5" aria-hidden="true" />
+        </span>
+        <h3 className="text-sm font-semibold text-foreground">{String(section.title ?? `Section ${index + 1}`)}</h3>
+      </div>
+      <p className="mt-2 whitespace-pre-line text-sm leading-6 text-muted-foreground">{String(section.body ?? "")}</p>
+    </section>
+  );
+}
 
 export default function BriefsPage() {
   const { data: briefs } = useSWR<AnalystBriefsResponse>("/api/analysis/briefs?limit=10", fetcher);
@@ -20,7 +52,7 @@ export default function BriefsPage() {
       <SectionHeader
         eyebrow="Briefs"
         title="Analyst brief"
-        subtitle="Latest persisted summary from the artifact pipeline. The page renders even when LLM credentials are not configured."
+        subtitle="Structured intelligence brief covering the latest period. Pre-ab-v2 briefs render in single-section fallback styling."
       />
 
       <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
@@ -44,10 +76,7 @@ export default function BriefsPage() {
               </div>
               <div className="space-y-3">
                 {brief.sections?.length ? brief.sections.map((section, index) => (
-                  <section key={index} className="border-t border-border pt-3 first:border-t-0 first:pt-0">
-                    <h3 className="text-sm font-semibold text-foreground">{String(section.title ?? `Section ${index + 1}`)}</h3>
-                    <p className="mt-2 whitespace-pre-line text-sm leading-6 text-muted-foreground">{String(section.body ?? "")}</p>
-                  </section>
+                  <BriefSectionRow key={index} section={section} index={index} />
                 )) : (
                   <div className="grid h-32 place-items-center text-sm text-muted-foreground">
                     Brief artifact has no sections.

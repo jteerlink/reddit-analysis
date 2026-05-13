@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import useSWR from "swr";
 import { useFilterStore } from "@/lib/store";
 import { SectionHeader } from "@/components/layout/SectionHeader";
@@ -8,20 +8,46 @@ import { ChartCard } from "@/components/shared/ChartCard";
 import { SentimentLineChart } from "@/components/charts/SentimentLineChart";
 import { ForecastAreaChart } from "@/components/charts/ForecastAreaChart";
 import { Skeleton } from "@/components/ui/skeleton";
-import type { SentimentDaily, ChangePoint, Forecast } from "@/lib/types";
+import type { ChangePoint, Forecast, SentimentDaily, SubredditCategoriesResponse } from "@/lib/types";
 
 type MAMode = "none" | "7d" | "30d" | "both";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
-function buildQuery(subreddits: string[]) {
-  if (!subreddits.length) return "";
-  return "?" + subreddits.map((s) => `subreddits=${encodeURIComponent(s)}`).join("&");
+function buildQuery(subreddits: string[], parents: string[]) {
+  if (!subreddits.length && !parents.length) return "";
+  const params = new URLSearchParams();
+  subreddits.forEach((s) => params.append("subreddits", s));
+  parents.forEach((p) => params.append("parents", p));
+  return `?${params.toString()}`;
 }
 
 export default function SentimentPage() {
-  const { subreddits } = useFilterStore();
-  const q = buildQuery(subreddits);
+  const { subreddits, parents, setParents } = useFilterStore();
+  const { data: categories } = useSWR<SubredditCategoriesResponse>(
+    "/api/subreddits/categories?days=30",
+    fetcher,
+  );
+  const hasInitializedRef = useRef(false);
+
+  useEffect(() => {
+    if (hasInitializedRef.current) return;
+    if (!categories?.parents?.length) return;
+    if (parents.length > 0) {
+      hasInitializedRef.current = true;
+      return;
+    }
+    const top3 = [...categories.parents]
+      .sort((a, b) => b.volume - a.volume)
+      .slice(0, 3)
+      .map((p) => p.id);
+    if (top3.length) {
+      setParents(top3);
+    }
+    hasInitializedRef.current = true;
+  }, [categories, parents.length, setParents]);
+
+  const q = buildQuery(subreddits, parents);
   const [maMode, setMaMode] = useState<MAMode>("none");
 
   const { data: daily } = useSWR<SentimentDaily[]>(`/api/sentiment/daily${q}`, fetcher);

@@ -32,7 +32,13 @@ def main() -> None:
     parser.add_argument("--db", required=True, help="Path to SQLite DB or postgres:// URL")
     parser.add_argument("--events", action="store_true", help="Enrich narrative events")
     parser.add_argument("--brief", action="store_true", help="Generate analyst brief")
-    parser.add_argument("--topics", action="store_true", help="Improve topic labels")
+    parser.add_argument("--topics", action="store_true", help="Improve topic labels (legacy cluster_labels)")
+    parser.add_argument(
+        "--bertopic-labels",
+        dest="bertopic_labels",
+        action="store_true",
+        help="Generate LLM labels for BERTopic topics.llm_label",
+    )
     parser.add_argument("--thread-id", help="Enrich a specific thread by post_id")
     parser.add_argument("--all", dest="all_jobs", action="store_true", help="Run all enrichment jobs")
     parser.add_argument("--limit", type=int, default=20, help="Max items to enrich per job (default: 20)")
@@ -41,6 +47,7 @@ def main() -> None:
     from src.analysis.enrichment import (
         _select_model,
         enrich_analyst_brief,
+        enrich_bertopic_labels,
         enrich_narrative_events,
         enrich_thread_analysis,
         enrich_topic_labels,
@@ -74,6 +81,7 @@ def main() -> None:
     run_events = args.all_jobs or args.events
     run_brief = args.all_jobs or args.brief
     run_topics = args.all_jobs or args.topics
+    run_bertopic_labels = args.all_jobs or args.bertopic_labels
     run_thread = args.thread_id
 
     if run_events:
@@ -98,7 +106,11 @@ def main() -> None:
         count = enrich_topic_labels(conn, config, model, limit=args.limit)
         print(f"Topic labels enriched: {count}")
 
-    if not any([run_events, run_brief, run_topics, run_thread]):
+    if run_bertopic_labels:
+        count = enrich_bertopic_labels(conn, config, model, limit=max(args.limit, 100))
+        print(f"BERTopic labels enriched: {count}")
+
+    if not any([run_events, run_brief, run_topics, run_bertopic_labels, run_thread]):
         parser.print_help()
 
     conn.close()

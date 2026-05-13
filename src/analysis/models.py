@@ -127,6 +127,7 @@ class EmbeddingPoint(BaseModel):
     cluster_id: int
     topic_id: Optional[int] = None
     subreddit: Optional[str] = None
+    parent_id: Optional[str] = None
     sentiment: Optional[str] = None
     date: Optional[str] = None
     preview: Optional[str] = None
@@ -242,3 +243,47 @@ class AnalystBriefsResponse(BaseModel):
     items: List[AnalystBrief] = Field(default_factory=list)
     state: AnalysisState = "ready"
     provenance: Optional[AnalysisProvenance] = None
+
+
+class SubredditCategory(BaseModel):
+    id: str
+    display_name: str
+    subreddits: List[str] = Field(default_factory=list)
+    volume: int = 0
+    mean_sentiment: Optional[float] = None
+    sort_order: int = 100
+
+
+class SubredditCategoriesResponse(BaseModel):
+    parents: List[SubredditCategory] = Field(default_factory=list)
+
+
+class SubredditTopicShare(BaseModel):
+    topic_id: int
+    share: float
+    label: Optional[str] = None
+
+
+class SubredditGraphNode(BaseModel):
+    subreddit: str
+    parent_id: str
+    display_name: str
+    post_count: int = 0
+    comment_count: int = 0
+    total_volume: int = 0
+    mean_sentiment: Optional[float] = None
+    top_topics: List[SubredditTopicShare] = Field(default_factory=list)
+
+
+class SubredditGraphEdge(BaseModel):
+    source: str
+    target: str
+    author_overlap: float = 0.0
+    topic_overlap: float = 0.0
+    score: float = 0.0
+    shared_topic_ids: List[int] = Field(default_factory=list)
+
+
+class SubredditGraphResponse(BaseModel):
+    nodes: List[SubredditGraphNode] = Field(default_factory=list)
+    edges: List[SubredditGraphEdge] = Field(default_factory=list)

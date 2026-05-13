@@ -53,7 +53,7 @@ function aggregateSentiment(data: SentimentDaily[] | undefined) {
   const byDate = new Map<string, { total: number; count: number }>();
   for (const row of data) {
     const current = byDate.get(row.date) ?? { total: 0, count: 0 };
-    current.total += row.mean_score;
+    current.total += row.mean_score ?? 0;
     current.count += 1;
     byDate.set(row.date, current);
   }

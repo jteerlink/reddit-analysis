@@ -220,7 +220,7 @@ def embedding_map(conn, limit: int = 1000) -> list[dict]:
             conn,
             f"""
             SELECT e.post_id, e.x, e.y, e.cluster_id, ta.topic_id,
-                   src.subreddit, src.date, p.clean_text, sp.label
+                   src.subreddit, sc.parent_id, src.date, p.clean_text, sp.label
             FROM embedding_2d e
             LEFT JOIN topic_assignments ta ON e.post_id = ta.id
             LEFT JOIN preprocessed p ON e.post_id = p.id
@@ -230,6 +230,7 @@ def embedding_map(conn, limit: int = 1000) -> list[dict]:
                 UNION ALL
                 SELECT id, subreddit, DATE(timestamp) AS date FROM comments
             ) src ON e.post_id = src.id
+            LEFT JOIN subreddit_categories sc ON sc.subreddit = src.subreddit
             LIMIT {paramstyle()}
             """,
             (limit,),
@@ -242,6 +243,7 @@ def embedding_map(conn, limit: int = 1000) -> list[dict]:
                 "cluster_id": int(row["cluster_id"]),
                 "topic_id": row["topic_id"],
                 "subreddit": row["subreddit"],
+                "parent_id": row["parent_id"] if "parent_id" in row.keys() else None,
                 "sentiment": row["label"],
                 "date": row["date"],
                 "preview": (row["clean_text"] or "")[:160],

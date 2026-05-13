@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import useSWR from "swr";
-import { Activity, BarChart3, BrainCircuit, FileText, Gauge, GitBranch, Layers3, Network, RadioTower, Zap } from "lucide-react";
+import { Activity, BarChart3, BrainCircuit, ChevronDown, ChevronRight, FileText, Gauge, GitBranch, Layers3, Network, RadioTower, Zap } from "lucide-react";
 import { useFilterStore } from "@/lib/store";
-import { cn } from "@/lib/utils";
+import { cn, parentColor } from "@/lib/utils";
+import type { SubredditCategoriesResponse } from "@/lib/types";
 
 const TABS = [
   { href: "/overview", label: "Overview", icon: Gauge },
@@ -24,10 +25,14 @@ const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
 export function Sidebar() {
   const pathname = usePathname();
-  const { subreddits, setSubreddits, dateRange, setDateRange } = useFilterStore();
+  const { subreddits, setSubreddits, parents, setParents, dateRange, setDateRange } = useFilterStore();
 
-  const { data: allSubreddits = [] } = useSWR<string[]>("/api/subreddits", fetcher);
+  const { data: categories } = useSWR<SubredditCategoriesResponse>("/api/subreddits/categories", fetcher);
   const { data: range } = useSWR<{ start: string; end: string }>("/api/date-range", fetcher);
+
+  const parentGroups = categories?.parents ?? [];
+
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     if (range && !dateRange[0]) {
@@ -35,11 +40,17 @@ export function Sidebar() {
     }
   }, [range, dateRange, setDateRange]);
 
-  const toggleSubreddit = (s: string) => {
-    setSubreddits(
-      subreddits.includes(s) ? subreddits.filter((x) => x !== s) : [...subreddits, s]
-    );
+  const toggleParent = (id: string) => {
+    setParents(parents.includes(id) ? parents.filter((p) => p !== id) : [...parents, id]);
   };
+  const toggleExpanded = (id: string) => {
+    setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
+  };
+  const toggleSubreddit = (s: string) => {
+    setSubreddits(subreddits.includes(s) ? subreddits.filter((x) => x !== s) : [...subreddits, s]);
+  };
+
+  const totalActive = parents.length + subreddits.length;
 
   return (
     <aside className="hidden h-full w-64 shrink-0 flex-col overflow-y-auto border-r border-sidebar-border bg-sidebar/88 backdrop-blur md:flex">
@@ -60,46 +71,84 @@ export function Sidebar() {
         {TABS.map((tab) => {
           const Icon = tab.icon;
           return (
-          <Link
-            key={tab.href}
-            href={tab.href}
-            className={cn(
-              "flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
-              pathname === tab.href
-                ? "bg-signal-green/12 text-signal-green ring-1 ring-signal-green/22"
-                : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
-            )}
-          >
-            <Icon className="size-4" aria-hidden="true" />
-            {tab.label}
-          </Link>
+            <Link
+              key={tab.href}
+              href={tab.href}
+              className={cn(
+                "flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors",
+                pathname === tab.href
+                  ? "bg-signal-green/12 text-signal-green ring-1 ring-signal-green/22"
+                  : "text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground",
+              )}
+            >
+              <Icon className="size-4" aria-hidden="true" />
+              {tab.label}
+            </Link>
           );
         })}
       </nav>
 
       <div className="flex-1 border-t border-sidebar-border px-4 py-4">
-        <p className="command-label mb-2">
-          Subreddits
-        </p>
-        <div className="flex flex-col gap-1 max-h-64 overflow-y-auto">
-          {allSubreddits.map((s) => (
-            <label key={s} className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground">
-              <input
-                type="checkbox"
-                checked={subreddits.includes(s)}
-                onChange={() => toggleSubreddit(s)}
-                className="accent-emerald-400"
-              />
-              {s}
-            </label>
-          ))}
+        <p className="command-label mb-2">Parents</p>
+        <div className="flex flex-col gap-1 max-h-80 overflow-y-auto pr-1">
+          {parentGroups.length === 0 && (
+            <p className="text-xs text-muted-foreground">No parent groups loaded.</p>
+          )}
+          {parentGroups.map((parent) => {
+            const isOpen = !!expanded[parent.id];
+            const selected = parents.includes(parent.id);
+            return (
+              <div key={parent.id} className="rounded">
+                <div className="flex items-center gap-2 rounded px-1.5 py-1 hover:bg-sidebar-accent">
+                  <button
+                    type="button"
+                    onClick={() => toggleExpanded(parent.id)}
+                    aria-label={`Toggle ${parent.display_name}`}
+                    className="grid size-5 place-items-center text-muted-foreground hover:text-foreground"
+                  >
+                    {isOpen ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+                  </button>
+                  <label className="flex flex-1 cursor-pointer items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={selected}
+                      onChange={() => toggleParent(parent.id)}
+                      className="accent-emerald-400"
+                    />
+                    <span
+                      className="size-2 rounded-full"
+                      style={{ background: parentColor(parent.id) }}
+                    />
+                    <span className="flex-1 truncate text-foreground">{parent.display_name}</span>
+                    <span className="font-mono text-[10px] tabular-nums text-muted-foreground">{parent.volume.toLocaleString()}</span>
+                  </label>
+                </div>
+                {isOpen && (
+                  <div className="ml-7 mt-0.5 flex flex-col gap-0.5">
+                    {parent.subreddits.map((s) => (
+                      <label
+                        key={s}
+                        className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-[11px] text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={subreddits.includes(s)}
+                          onChange={() => toggleSubreddit(s)}
+                          className="accent-emerald-400"
+                        />
+                        {s}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
 
         {range && (
           <div className="mt-4">
-            <p className="command-label mb-2">
-              Date range
-            </p>
+            <p className="command-label mb-2">Date range</p>
             <div className="flex flex-col gap-1">
               <input
                 type="date"
@@ -124,7 +173,7 @@ export function Sidebar() {
         <div className="mt-5 rounded-lg border border-signal-copper/20 bg-signal-copper/8 p-3">
           <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-signal-copper">Link state</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            {subreddits.length ? `${subreddits.length} active filters` : "Full network scan"}
+            {totalActive ? `${parents.length} parents / ${subreddits.length} subs` : "Full network scan"}
           </p>
         </div>
       </div>

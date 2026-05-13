@@ -19,8 +19,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.analysis.db import ensure_analysis_tables
 from src.analysis.enrichment import (
+    _parse_brief_json,
     _select_model,
     enrich_analyst_brief,
+    enrich_bertopic_labels,
     enrich_narrative_events,
     enrich_thread_analysis,
     enrich_topic_labels,
@@ -277,3 +279,124 @@ def test_enrich_topic_labels_skips_when_no_model(conn, local_config):
         model = _select_model(conn, local_config)
 
     assert model is None
+
+
+# ---------------------------------------------------------------------------
+# enrich_bertopic_labels
+# ---------------------------------------------------------------------------
+
+
+def _ensure_topics_table(conn):
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS topics (
+            topic_id INTEGER PRIMARY KEY,
+            keywords TEXT NOT NULL,
+            doc_count INTEGER NOT NULL DEFAULT 0,
+            coherence_score REAL,
+            llm_label TEXT,
+            llm_prompt_version TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.commit()
+
+
+def test_enrich_bertopic_labels_writes_topic_llm_label(conn, local_config):
+    _ensure_topics_table(conn)
+    conn.execute(
+        "INSERT INTO topics (topic_id, keywords, doc_count) VALUES (1, '[\"ai\", \"tools\"]', 12)"
+    )
+    conn.commit()
+
+    with patch("src.analysis.enrichment._chat_safe", return_value="AI Tooling"):
+        count = enrich_bertopic_labels(conn, local_config, "llama3", limit=10)
+
+    assert count == 1
+    row = conn.execute("SELECT llm_label, llm_prompt_version FROM topics WHERE topic_id = 1").fetchone()
+    assert row["llm_label"] == "AI Tooling"
+    assert row["llm_prompt_version"] == "tl-v1"
+
+
+def test_enrich_bertopic_labels_is_idempotent(conn, local_config):
+    _ensure_topics_table(conn)
+    conn.execute(
+        "INSERT INTO topics (topic_id, keywords, doc_count) VALUES (1, '[\"ai\", \"tools\"]', 12)"
+    )
+    conn.commit()
+
+    with patch("src.analysis.enrichment._chat_safe", return_value="AI Tooling"):
+        first = enrich_bertopic_labels(conn, local_config, "llama3", limit=10)
+        second = enrich_bertopic_labels(conn, local_config, "llama3", limit=10)
+
+    assert first == 1
+    assert second == 0
+    artifacts = conn.execute(
+        "SELECT COUNT(*) AS n FROM analysis_artifacts WHERE kind = 'bertopic_label_llm'"
+    ).fetchone()
+    assert artifacts["n"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Brief JSON parser
+# ---------------------------------------------------------------------------
+
+
+def test_parse_brief_json_accepts_clean_json():
+    response = (
+        '{"headline": "AI Tools Surge", "sections": ['
+        '{"title": "Executive Summary", "body": "Body."},'
+        '{"title": "Outlook", "body": "Up."}'
+        "]}"
+    )
+    parsed = _parse_brief_json(response)
+    assert parsed is not None
+    assert parsed["headline"] == "AI Tools Surge"
+    assert [s["title"] for s in parsed["sections"]] == ["Executive Summary", "Outlook"]
+
+
+def test_parse_brief_json_strips_code_fences_and_prose():
+    response = (
+        "```json\n"
+        '{"headline": "Headline", "sections": [{"title": "A", "body": "B"}]}'
+        "\n```"
+    )
+    parsed = _parse_brief_json(response)
+    assert parsed is not None
+    assert parsed["sections"] == [{"title": "A", "body": "B"}]
+
+
+def test_parse_brief_json_returns_none_on_garbage():
+    assert _parse_brief_json("not json at all") is None
+    assert _parse_brief_json("") is None
+    assert _parse_brief_json('{"headline":"x"}') is None  # missing sections
+    assert _parse_brief_json('{"headline":"x","sections":[]}') is None  # empty sections
+
+
+def test_enrich_analyst_brief_uses_structured_payload(conn, local_config):
+    response = json.dumps(
+        {
+            "headline": "Five-section brief",
+            "sections": [
+                {"title": "Executive Summary", "body": "Body 1."},
+                {"title": "Key Findings", "body": "Body 2."},
+                {"title": "Notable Trends", "body": "Body 3."},
+                {"title": "Risks & Anomalies", "body": "Body 4."},
+                {"title": "Outlook", "body": "Body 5."},
+            ],
+        }
+    )
+    with patch("src.analysis.enrichment._chat_safe", return_value=response):
+        result = enrich_analyst_brief(conn, local_config, "llama3")
+
+    assert result is not None
+    assert result["headline"] == "Five-section brief"
+    titles = [section["title"] for section in result["sections"]]
+    assert titles == [
+        "Executive Summary",
+        "Key Findings",
+        "Notable Trends",
+        "Risks & Anomalies",
+        "Outlook",
+    ]

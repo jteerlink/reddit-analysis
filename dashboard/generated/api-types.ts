@@ -622,6 +622,17 @@ export const generatedApiSchemas = {
         "title": "Id",
         "type": "string"
       },
+      "parent_id": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Parent Id"
+      },
       "preview": {
         "anyOf": [
           {
@@ -1308,6 +1319,210 @@ export const generatedApiSchemas = {
       "text_preview"
     ],
     "title": "SemanticSearchResult",
+    "type": "object"
+  },
+  "SubredditCategoriesResponse": {
+    "properties": {
+      "parents": {
+        "items": {
+          "$ref": "#/components/schemas/SubredditCategory"
+        },
+        "title": "Parents",
+        "type": "array"
+      }
+    },
+    "title": "SubredditCategoriesResponse",
+    "type": "object"
+  },
+  "SubredditCategory": {
+    "properties": {
+      "display_name": {
+        "title": "Display Name",
+        "type": "string"
+      },
+      "id": {
+        "title": "Id",
+        "type": "string"
+      },
+      "mean_sentiment": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Mean Sentiment"
+      },
+      "sort_order": {
+        "default": 100,
+        "title": "Sort Order",
+        "type": "integer"
+      },
+      "subreddits": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Subreddits",
+        "type": "array"
+      },
+      "volume": {
+        "default": 0,
+        "title": "Volume",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "id",
+      "display_name"
+    ],
+    "title": "SubredditCategory",
+    "type": "object"
+  },
+  "SubredditGraphEdge": {
+    "properties": {
+      "author_overlap": {
+        "default": 0.0,
+        "title": "Author Overlap",
+        "type": "number"
+      },
+      "score": {
+        "default": 0.0,
+        "title": "Score",
+        "type": "number"
+      },
+      "shared_topic_ids": {
+        "items": {
+          "type": "integer"
+        },
+        "title": "Shared Topic Ids",
+        "type": "array"
+      },
+      "source": {
+        "title": "Source",
+        "type": "string"
+      },
+      "target": {
+        "title": "Target",
+        "type": "string"
+      },
+      "topic_overlap": {
+        "default": 0.0,
+        "title": "Topic Overlap",
+        "type": "number"
+      }
+    },
+    "required": [
+      "source",
+      "target"
+    ],
+    "title": "SubredditGraphEdge",
+    "type": "object"
+  },
+  "SubredditGraphNode": {
+    "properties": {
+      "comment_count": {
+        "default": 0,
+        "title": "Comment Count",
+        "type": "integer"
+      },
+      "display_name": {
+        "title": "Display Name",
+        "type": "string"
+      },
+      "mean_sentiment": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Mean Sentiment"
+      },
+      "parent_id": {
+        "title": "Parent Id",
+        "type": "string"
+      },
+      "post_count": {
+        "default": 0,
+        "title": "Post Count",
+        "type": "integer"
+      },
+      "subreddit": {
+        "title": "Subreddit",
+        "type": "string"
+      },
+      "top_topics": {
+        "items": {
+          "$ref": "#/components/schemas/SubredditTopicShare"
+        },
+        "title": "Top Topics",
+        "type": "array"
+      },
+      "total_volume": {
+        "default": 0,
+        "title": "Total Volume",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "subreddit",
+      "parent_id",
+      "display_name"
+    ],
+    "title": "SubredditGraphNode",
+    "type": "object"
+  },
+  "SubredditGraphResponse": {
+    "properties": {
+      "edges": {
+        "items": {
+          "$ref": "#/components/schemas/SubredditGraphEdge"
+        },
+        "title": "Edges",
+        "type": "array"
+      },
+      "nodes": {
+        "items": {
+          "$ref": "#/components/schemas/SubredditGraphNode"
+        },
+        "title": "Nodes",
+        "type": "array"
+      }
+    },
+    "title": "SubredditGraphResponse",
+    "type": "object"
+  },
+  "SubredditTopicShare": {
+    "properties": {
+      "label": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Label"
+      },
+      "share": {
+        "title": "Share",
+        "type": "number"
+      },
+      "topic_id": {
+        "title": "Topic Id",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "topic_id",
+      "share"
+    ],
+    "title": "SubredditTopicShare",
     "type": "object"
   },
   "ThreadAnalysis": {

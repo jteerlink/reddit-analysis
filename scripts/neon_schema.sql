@@ -86,7 +86,16 @@ CREATE TABLE IF NOT EXISTS topics (
     keywords TEXT NOT NULL,
     doc_count INTEGER NOT NULL DEFAULT 0,
     coherence_score DOUBLE PRECISION,
+    llm_label TEXT,
+    llm_prompt_version TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS subreddit_categories (
+    subreddit TEXT PRIMARY KEY,
+    parent_id TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 100
 );
 
 CREATE TABLE IF NOT EXISTS topic_assignments (
@@ -268,3 +277,7 @@ CREATE INDEX IF NOT EXISTS idx_events_peak ON narrative_events(peak_date);
 CREATE INDEX IF NOT EXISTS idx_emb2d_cluster ON embedding_2d(cluster_id);
 CREATE INDEX IF NOT EXISTS idx_batch_collections_subreddit ON batch_collections(subreddit);
 CREATE INDEX IF NOT EXISTS idx_batch_collections_timestamp ON batch_collections(collection_timestamp);
+CREATE INDEX IF NOT EXISTS idx_subreddit_categories_parent ON subreddit_categories(parent_id);
+
+ALTER TABLE topics ADD COLUMN IF NOT EXISTS llm_label TEXT;
+ALTER TABLE topics ADD COLUMN IF NOT EXISTS llm_prompt_version TEXT;

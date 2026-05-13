@@ -18,7 +18,7 @@ const LABEL_COLORS: Record<string, string> = {
 };
 
 export default function DeepDivePage() {
-  const { subreddits, dateRange } = useFilterStore();
+  const { subreddits, parents, dateRange } = useFilterStore();
   const [keyword, setKeyword] = useState("");
   const [label, setLabel] = useState("all");
   const [contentType, setContentType] = useState("both");
@@ -29,6 +29,7 @@ export default function DeepDivePage() {
   const params = new URLSearchParams();
   if (keyword) params.set("keyword", keyword);
   subreddits.forEach((s) => params.append("subreddits", s));
+  parents.forEach((p) => params.append("parents", p));
   if (dateRange[0]) params.set("start", dateRange[0]);
   if (dateRange[1]) params.set("end", dateRange[1]);
   if (label !== "all") params.set("label", label);
