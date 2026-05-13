@@ -83,9 +83,29 @@ def api_db(monkeypatch, tmp_path):
                 keywords TEXT NOT NULL,
                 doc_count INTEGER NOT NULL DEFAULT 0,
                 coherence_score REAL,
+                llm_label TEXT,
+                llm_prompt_version TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
             """
+        )
+        conn.execute(
+            """
+            CREATE TABLE subreddit_categories (
+                subreddit TEXT PRIMARY KEY,
+                parent_id TEXT NOT NULL,
+                display_name TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 100
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO subreddit_categories (subreddit, parent_id, display_name, sort_order) VALUES (?, ?, ?, ?)",
+            ("ChatGPT", "OPENAI", "OpenAI", 20),
+        )
+        conn.execute(
+            "INSERT INTO subreddit_categories (subreddit, parent_id, display_name, sort_order) VALUES (?, ?, ?, ?)",
+            ("LocalLLaMA", "OPEN_SOURCE", "Open Source", 50),
         )
         conn.execute(
             """
@@ -290,6 +310,41 @@ def test_api_db_deep_dive_filters(api_db):
 
     assert len(rows) == 1
     assert rows[0]["clean_text"] == "good ai news"
+
+
+def test_api_db_expand_parents_resolves_to_subreddits(api_db):
+    assert api_db.expand_parents(()) == ()
+    assert set(api_db.expand_parents(("OPENAI",))) == {"ChatGPT"}
+    assert set(api_db.expand_parents(("OPENAI", "OPEN_SOURCE"))) == {"ChatGPT", "LocalLLaMA"}
+
+
+def test_api_db_parents_param_matches_explicit_subreddits(api_db):
+    explicit = api_db.get_daily_volume(("ChatGPT",), 30)
+    via_parent = api_db.get_daily_volume((), 30, parents=("OPENAI",))
+    assert explicit == via_parent
+
+    mixed = api_db.get_daily_volume(("LocalLLaMA",), 30, parents=("OPENAI",))
+    assert {row["subreddit"] for row in mixed} == {"ChatGPT", "LocalLLaMA"}
+
+
+def test_api_db_subreddit_categories_returns_volume(api_db):
+    payload = api_db.get_subreddit_categories(days=30)
+    parents = {p["id"]: p for p in payload["parents"]}
+    assert "OPENAI" in parents and "OPEN_SOURCE" in parents
+    assert "ChatGPT" in parents["OPENAI"]["subreddits"]
+    assert parents["OPENAI"]["volume"] >= 1
+    assert parents["OPENAI"]["mean_sentiment"] is not None
+
+
+def test_api_db_subreddit_graph_emits_nodes_per_universe(api_db):
+    graph = api_db.get_subreddit_graph(days=30, min_edge_score=0.0)
+    names = {node["subreddit"] for node in graph["nodes"]}
+    assert names == {"ChatGPT", "LocalLLaMA"}
+    parents = {node["subreddit"]: node["parent_id"] for node in graph["nodes"]}
+    assert parents["ChatGPT"] == "OPENAI"
+    assert parents["LocalLLaMA"] == "OPEN_SOURCE"
+    # Edges should be a list (empty here because no shared authors or topics across subs).
+    assert isinstance(graph["edges"], list)
 
 
 def test_api_db_empty_date_range_falls_back(monkeypatch, tmp_path):

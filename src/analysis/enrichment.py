@@ -289,12 +289,35 @@ def enrich_analyst_brief(conn: Any, config: OllamaConfig, model: str) -> Optiona
     except Exception:
         model_count = 0
 
-    source_hash = artifact_checksum({"events": [e["event_id"] for e in events], "topic_count": len(topic_labels)})
+    parent_context: list[dict] = []
+    try:
+        from src.api.db import get_subreddit_categories
+
+        parent_context = (get_subreddit_categories(days=30) or {}).get("parents", [])
+    except Exception:
+        logger.exception("Failed to load parent_context for analyst brief")
+        parent_context = []
+
+    parent_fingerprint = [
+        {
+            "id": p.get("id"),
+            "volume": p.get("volume"),
+            "mean_sentiment": round(p["mean_sentiment"], 2) if isinstance(p.get("mean_sentiment"), (int, float)) else None,
+        }
+        for p in parent_context
+    ]
+    source_hash = artifact_checksum(
+        {
+            "events": [e["event_id"] for e in events],
+            "topic_count": len(topic_labels),
+            "parents": parent_fingerprint,
+        }
+    )
     existing = [a for a in list_artifacts(conn, kind="analyst_brief_llm") if a.get("source_input_hash") == source_hash and a.get("status") == "succeeded"]
     if existing:
         return json.loads(existing[0].get("payload") or "{}")
 
-    messages, version = analyst_brief_prompt(events, topic_labels, model_count)
+    messages, version = analyst_brief_prompt(events, topic_labels, model_count, parent_context=parent_context)
     artifact = enqueue_artifact(
         conn,
         kind="analyst_brief_llm",
@@ -312,21 +335,73 @@ def enrich_analyst_brief(conn: Any, config: OllamaConfig, model: str) -> Optiona
     if content is None:
         return None
 
-    lines = [l.strip() for l in content.splitlines() if l.strip()]
-    headline = lines[0] if lines else "Reddit Intelligence Brief"
-    body = "\n".join(lines[1:]) if len(lines) > 1 else content
-
-    payload = {
-        "brief_id": artifact_id[:8],
-        "period": "latest",
-        "headline": headline,
-        "sections": [{"title": "Analysis", "body": body}],
-        "source_events": [e["event_id"] for e in events],
-        "model_name": model,
-    }
+    structured = _parse_brief_json(content)
+    if structured is not None:
+        payload = {
+            "brief_id": artifact_id[:8],
+            "period": "latest",
+            "headline": structured.get("headline") or "Reddit Intelligence Brief",
+            "sections": structured.get("sections") or [],
+            "source_events": [e["event_id"] for e in events],
+            "model_name": model,
+        }
+    else:
+        lines = [l.strip() for l in content.splitlines() if l.strip()]
+        headline = lines[0] if lines else "Reddit Intelligence Brief"
+        body = "\n".join(lines[1:]) if len(lines) > 1 else content
+        payload = {
+            "brief_id": artifact_id[:8],
+            "period": "latest",
+            "headline": headline,
+            "sections": [{"title": "Analysis", "body": body}],
+            "source_events": [e["event_id"] for e in events],
+            "model_name": model,
+        }
     complete_artifact(conn, artifact_id, payload)
     logger.info("Analyst brief enriched via %s", model)
     return payload
+
+
+def _parse_brief_json(content: str) -> Optional[dict]:
+    """Parse an ab-v2 JSON brief response. Returns None when the response isn't valid JSON."""
+    text = content.strip()
+    if not text:
+        return None
+    # Strip optional ```json fences
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json\n"):
+            text = text[5:]
+    # Best-effort isolation of the first JSON object if the model prefixed prose.
+    if not text.startswith("{"):
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            return None
+        text = text[start : end + 1]
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    sections = parsed.get("sections")
+    if not isinstance(sections, list):
+        return None
+    cleaned: list[dict] = []
+    for entry in sections:
+        if not isinstance(entry, dict):
+            continue
+        title = str(entry.get("title") or "").strip()
+        body = str(entry.get("body") or "").strip()
+        if title and body:
+            cleaned.append({"title": title, "body": body})
+    if not cleaned:
+        return None
+    return {
+        "headline": str(parsed.get("headline") or "").strip() or None,
+        "sections": cleaned,
+    }
 
 
 def enrich_topic_labels(
@@ -403,5 +478,97 @@ def enrich_topic_labels(
 
         count += 1
         logger.info("Topic %s relabeled: %s", cluster_id, llm_label)
+
+    return count
+
+
+def enrich_bertopic_labels(
+    conn: Any,
+    config: OllamaConfig,
+    model: str,
+    limit: int = 100,
+) -> int:
+    """Generate LLM labels for BERTopic clusters and write to topics.llm_label.
+
+    Sibling of enrich_topic_labels (which targets the legacy cluster_labels table).
+    """
+    try:
+        rows = execute(
+            conn,
+            f"""
+            SELECT topic_id, keywords, doc_count
+            FROM topics
+            WHERE topic_id != -1
+              AND (llm_label IS NULL OR llm_label = '')
+            ORDER BY doc_count DESC
+            LIMIT {paramstyle()}
+            """,
+            (limit,),
+        ).fetchall()
+    except Exception as exc:
+        logger.warning("enrich_bertopic_labels: could not query topics: %s", exc)
+        return 0
+
+    existing_artifacts = {
+        a["source_input_hash"]: a
+        for a in list_artifacts(conn, kind="bertopic_label_llm")
+        if a.get("status") == "succeeded"
+    }
+
+    marker = paramstyle()
+    count = 0
+    for row in rows:
+        topic_id = row["topic_id"] if hasattr(row, "keys") else row[0]
+        keywords_raw = row["keywords"] if hasattr(row, "keys") else row[1]
+
+        try:
+            keywords = json.loads(keywords_raw) if isinstance(keywords_raw, str) else (keywords_raw or [])
+        except (ValueError, TypeError):
+            keywords = []
+
+        if not isinstance(keywords, list):
+            keywords = []
+
+        source_hash = artifact_checksum({"topic_id": int(topic_id), "keywords": keywords})
+        if source_hash in existing_artifacts:
+            continue
+
+        messages, version = topic_label_prompt(keywords)
+        artifact = enqueue_artifact(
+            conn,
+            kind="bertopic_label_llm",
+            source_input_hash=source_hash,
+            payload={"topic_id": int(topic_id)},
+            provider="ollama",
+            model_name=model,
+            prompt_version=version,
+        )
+        artifact_id = artifact["artifact_id"]
+        if artifact.get("status") == "succeeded":
+            continue
+
+        content = _chat_safe(config, model, messages, artifact_id, conn)
+        if content is None:
+            continue
+
+        llm_label = content.strip().splitlines()[0][:80] if content.strip() else ""
+        complete_artifact(
+            conn,
+            artifact_id,
+            {"topic_id": int(topic_id), "llm_label": llm_label, "prompt_version": version},
+        )
+
+        try:
+            execute(
+                conn,
+                f"UPDATE topics SET llm_label = {marker}, llm_prompt_version = {marker} WHERE topic_id = {marker}",
+                (llm_label, version, int(topic_id)),
+            )
+            conn.commit()
+        except Exception as exc:
+            logger.warning("Could not update topics.llm_label: %s", exc)
+
+        count += 1
+        logger.info("BERTopic topic %s relabeled: %s", topic_id, llm_label)
 
     return count

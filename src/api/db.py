@@ -126,20 +126,62 @@ def _exclusive_end_date(end_date: Optional[str]) -> Optional[str]:
     return (datetime.strptime(end_date, "%Y-%m-%d").date() + timedelta(days=1)).isoformat()
 
 
+@_ttl_cache(seconds=60)
+def expand_parents(parents: Tuple[str, ...] = ()) -> Tuple[str, ...]:
+    """Look up subreddit_categories and return the set of subreddit names for the parents."""
+    if not parents:
+        return ()
+    try:
+        conn = _connect()
+        rows = execute(
+            conn,
+            f"SELECT subreddit FROM subreddit_categories WHERE parent_id IN ({placeholders(len(parents))})",
+            list(parents),
+        ).fetchall()
+        _close(conn)
+        seen: list[str] = []
+        for row in rows:
+            value = row[0] if not hasattr(row, "keys") else row["subreddit"]
+            if value and value not in seen:
+                seen.append(value)
+        return tuple(seen)
+    except Exception:
+        logger.exception("expand_parents failed for %r", parents)
+        return ()
+
+
+def _merge_subreddits(
+    subreddits: Tuple[str, ...] = (),
+    parents: Tuple[str, ...] = (),
+) -> Tuple[str, ...]:
+    if not parents:
+        return tuple(subreddits)
+    expanded = expand_parents(tuple(parents))
+    if not subreddits:
+        return expanded
+    combined: list[str] = list(subreddits)
+    for value in expanded:
+        if value not in combined:
+            combined.append(value)
+    return tuple(combined)
+
+
 def _source_conditions(
     table_alias: str,
     subreddits: Tuple[str, ...] = (),
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     timestamp_column: str = "timestamp",
+    parents: Tuple[str, ...] = (),
 ) -> tuple[str, list]:
     conditions: list[str] = []
     params: list = []
     marker = paramstyle()
 
-    if subreddits:
-        conditions.append(f"{table_alias}.subreddit IN ({placeholders(len(subreddits))})")
-        params.extend(list(subreddits))
+    effective = _merge_subreddits(subreddits, parents)
+    if effective:
+        conditions.append(f"{table_alias}.subreddit IN ({placeholders(len(effective))})")
+        params.extend(list(effective))
     if start_date:
         conditions.append(f"{table_alias}.{timestamp_column} >= {marker}")
         params.append(start_date)
@@ -154,14 +196,16 @@ def _sentiment_source_conditions(
     subreddits: Tuple[str, ...] = (),
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    parents: Tuple[str, ...] = (),
 ) -> tuple[str, list]:
     conditions: list[str] = []
     params: list = []
     marker = paramstyle()
 
-    if subreddits:
-        conditions.append(f"src.subreddit IN ({placeholders(len(subreddits))})")
-        params.extend(list(subreddits))
+    effective = _merge_subreddits(subreddits, parents)
+    if effective:
+        conditions.append(f"src.subreddit IN ({placeholders(len(effective))})")
+        params.extend(list(effective))
     if start_date:
         conditions.append(f"src.timestamp >= {marker}")
         params.append(start_date)
@@ -177,12 +221,13 @@ def get_collection_summary(
     subreddits: Tuple[str, ...] = (),
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    parents: Tuple[str, ...] = (),
 ) -> dict:
     try:
         conn = _connect()
-        posts_where, posts_params = _source_conditions("posts", subreddits, start_date, end_date)
-        comments_where, comments_params = _source_conditions("comments", subreddits, start_date, end_date)
-        sentiment_where, sentiment_params = _sentiment_source_conditions(subreddits, start_date, end_date)
+        posts_where, posts_params = _source_conditions("posts", subreddits, start_date, end_date, parents=parents)
+        comments_where, comments_params = _source_conditions("comments", subreddits, start_date, end_date, parents=parents)
+        sentiment_where, sentiment_params = _sentiment_source_conditions(subreddits, start_date, end_date, parents=parents)
         posts_row = execute(
             conn,
             f"SELECT COUNT(*) AS n, MAX(timestamp) AS last_ts FROM posts {posts_where}",
@@ -193,7 +238,7 @@ def get_collection_summary(
             f"SELECT COUNT(*) AS n FROM comments {comments_where}",
             comments_params,
         ).fetchone()
-        if subreddits:
+        if subreddits or parents:
             ml_row = execute(
                 conn,
                 f"""
@@ -232,7 +277,12 @@ def get_trending_topics(n: int = 3) -> List[dict]:
         conn = _connect()
         df = pd.read_sql_query(
             f"""
-            SELECT t.topic_id, t.keywords, tot.doc_count, tot.week_start
+            SELECT t.topic_id,
+                   t.keywords,
+                   t.llm_label AS llm_label,
+                   COALESCE(NULLIF(t.llm_label, ''), '') AS label,
+                   tot.doc_count,
+                   tot.week_start
             FROM topic_over_time tot
             JOIN topics t ON tot.topic_id = t.topic_id
             WHERE tot.week_start = (SELECT MAX(week_start) FROM topic_over_time)
@@ -243,8 +293,65 @@ def get_trending_topics(n: int = 3) -> List[dict]:
             conn,
             params=[n],
         )
+        topics = df.to_dict(orient="records") if not df.empty else []
+        if topics:
+            topic_ids = tuple(int(row["topic_id"]) for row in topics)
+            weekly = pd.read_sql_query(
+                f"""
+                SELECT topic_id, week_start, doc_count
+                FROM topic_over_time
+                WHERE topic_id IN ({placeholders(len(topic_ids))})
+                ORDER BY topic_id, week_start
+                """,
+                conn,
+                params=list(topic_ids),
+            )
+            by_topic: dict[int, list[int]] = {}
+            for _, row in weekly.iterrows():
+                by_topic.setdefault(int(row["topic_id"]), []).append(int(row["doc_count"] or 0))
+            for row in topics:
+                series = by_topic.get(int(row["topic_id"]), [])
+                row["weekly_counts"] = series[-4:]
+
+            assignments = pd.read_sql_query(
+                f"""
+                SELECT ta.topic_id, src.subreddit, COUNT(*) AS docs
+                FROM topic_assignments ta
+                JOIN preprocessed p ON ta.id = p.id
+                JOIN (
+                    SELECT id, subreddit, 'post' AS content_type FROM posts
+                    UNION ALL
+                    SELECT id, subreddit, 'comment' AS content_type FROM comments
+                ) src ON src.id = ta.id AND src.content_type = p.content_type
+                WHERE ta.topic_id IN ({placeholders(len(topic_ids))})
+                GROUP BY ta.topic_id, src.subreddit
+                """,
+                conn,
+                params=list(topic_ids),
+            )
+            categories = pd.read_sql_query(
+                "SELECT subreddit, parent_id, display_name FROM subreddit_categories",
+                conn,
+            )
+            cat_lookup = {row["subreddit"]: (row["parent_id"], row["display_name"]) for _, row in categories.iterrows()}
+            per_topic: dict[int, dict[str, dict[str, int | str]]] = {}
+            for _, row in assignments.iterrows():
+                cat = cat_lookup.get(row["subreddit"])
+                if not cat:
+                    continue
+                parent_id, display_name = cat
+                bucket = per_topic.setdefault(int(row["topic_id"]), {})
+                entry = bucket.setdefault(parent_id, {"parent_id": parent_id, "display_name": display_name, "doc_count": 0})
+                entry["doc_count"] = int(entry["doc_count"]) + int(row["docs"])  # type: ignore[arg-type]
+            for row in topics:
+                parents = sorted(
+                    per_topic.get(int(row["topic_id"]), {}).values(),
+                    key=lambda d: d["doc_count"],
+                    reverse=True,
+                )
+                row["parents"] = parents
         _close(conn)
-        return df.to_dict(orient="records")
+        return topics
     except Exception:
         logger.exception("Failed to read trending topics")
         return []
@@ -256,6 +363,7 @@ def get_sentiment_summary(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     weighted: bool = False,
+    parents: Tuple[str, ...] = (),
 ) -> List[dict]:
     try:
         conn = _connect()
@@ -265,12 +373,13 @@ def get_sentiment_summary(
         post_params: list = []
         comment_params: list = []
 
-        if subreddits:
-            subreddit_clause = placeholders(len(subreddits))
+        effective = _merge_subreddits(subreddits, parents)
+        if effective:
+            subreddit_clause = placeholders(len(effective))
             post_conditions.append(f"posts.subreddit IN ({subreddit_clause})")
             comment_conditions.append(f"comments.subreddit IN ({subreddit_clause})")
-            post_params.extend(list(subreddits))
-            comment_params.extend(list(subreddits))
+            post_params.extend(list(effective))
+            comment_params.extend(list(effective))
         if start_date:
             post_conditions.append(f"posts.timestamp >= {marker}")
             comment_conditions.append(f"comments.timestamp >= {marker}")
@@ -338,6 +447,7 @@ def get_daily_volume(
     days: int = 30,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    parents: Tuple[str, ...] = (),
 ) -> List[dict]:
     try:
         conn = _connect()
@@ -354,9 +464,10 @@ def get_daily_volume(
         if not start_date and not end_date:
             conditions.append(recent_interval_sql("DATE(timestamp)", days, date_only=True))
             params.extend(recent_interval_params(days))
-        if subreddits:
-            conditions.append(f"subreddit IN ({placeholders(len(subreddits))})")
-            params.extend(list(subreddits))
+        effective = _merge_subreddits(subreddits, parents)
+        if effective:
+            conditions.append(f"subreddit IN ({placeholders(len(effective))})")
+            params.extend(list(effective))
         where_clause = "WHERE " + " AND ".join(conditions)
         sql = f"""
             SELECT DATE(timestamp) AS date, subreddit, COUNT(*) AS count
@@ -383,6 +494,7 @@ def get_sentiment_daily(
     days: int = 90,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
+    parents: Tuple[str, ...] = (),
 ) -> List[dict]:
     try:
         conn = _connect()
@@ -399,9 +511,10 @@ def get_sentiment_daily(
         if not start_date and not end_date:
             conditions.append(recent_interval_sql("sd.date", days, date_only=True))
             params.extend(recent_interval_params(days))
-        if subreddits:
-            conditions.append(f"sd.subreddit IN ({placeholders(len(subreddits))})")
-            params.extend(list(subreddits))
+        effective = _merge_subreddits(subreddits, parents)
+        if effective:
+            conditions.append(f"sd.subreddit IN ({placeholders(len(effective))})")
+            params.extend(list(effective))
         sql = f"""
             SELECT sd.subreddit, sd.date, sd.mean_score,
                    sma.rolling_7d, sma.rolling_30d
@@ -419,13 +532,17 @@ def get_sentiment_daily(
         return []
 
 
-def get_change_points(subreddits: Tuple[str, ...] = ()) -> List[dict]:
+def get_change_points(
+    subreddits: Tuple[str, ...] = (),
+    parents: Tuple[str, ...] = (),
+) -> List[dict]:
     try:
         conn = _connect()
-        if subreddits:
-            subreddit_placeholders = placeholders(len(subreddits))
+        effective = _merge_subreddits(subreddits, parents)
+        if effective:
+            subreddit_placeholders = placeholders(len(effective))
             sql = f"SELECT subreddit, date, magnitude FROM change_points WHERE subreddit IN ({subreddit_placeholders}) ORDER BY date"
-            df = pd.read_sql_query(sql, conn, params=list(subreddits))
+            df = pd.read_sql_query(sql, conn, params=list(effective))
         else:
             df = pd.read_sql_query(
                 "SELECT subreddit, date, magnitude FROM change_points ORDER BY date", conn
@@ -437,13 +554,17 @@ def get_change_points(subreddits: Tuple[str, ...] = ()) -> List[dict]:
         return []
 
 
-def get_forecast(subreddits: Tuple[str, ...] = ()) -> List[dict]:
+def get_forecast(
+    subreddits: Tuple[str, ...] = (),
+    parents: Tuple[str, ...] = (),
+) -> List[dict]:
     try:
         conn = _connect()
-        if subreddits:
-            subreddit_placeholders = placeholders(len(subreddits))
+        effective = _merge_subreddits(subreddits, parents)
+        if effective:
+            subreddit_placeholders = placeholders(len(effective))
             sql = f"SELECT subreddit, date, yhat, yhat_lower, yhat_upper FROM sentiment_forecast WHERE subreddit IN ({subreddit_placeholders}) ORDER BY date"
-            df = pd.read_sql_query(sql, conn, params=list(subreddits))
+            df = pd.read_sql_query(sql, conn, params=list(effective))
         else:
             df = pd.read_sql_query(
                 "SELECT subreddit, date, yhat, yhat_lower, yhat_upper FROM sentiment_forecast ORDER BY date",
@@ -460,7 +581,16 @@ def get_topics() -> List[dict]:
     try:
         conn = _connect()
         df = pd.read_sql_query(
-            "SELECT topic_id, keywords, doc_count, coherence_score FROM topics WHERE topic_id != -1 ORDER BY doc_count DESC",
+            """
+            SELECT topic_id,
+                   keywords,
+                   doc_count,
+                   coherence_score,
+                   llm_label
+            FROM topics
+            WHERE topic_id != -1
+            ORDER BY doc_count DESC
+            """,
             conn,
         )
         _close(conn)
@@ -500,17 +630,20 @@ def get_topic_graph(
     n: int = 50,
     min_similarity: float = 0.15,
     subreddits: Tuple[str, ...] = (),
+    parents: Tuple[str, ...] = (),
 ) -> dict:
     try:
         limit = max(1, min(int(n), 100))
         threshold = max(0.0, min(float(min_similarity), 1.0))
         conn = _connect()
-        if subreddits:
+        effective = _merge_subreddits(subreddits, parents)
+        if effective:
             df = pd.read_sql_query(
                 f"""
                 SELECT
                     t.topic_id,
                     t.keywords,
+                    t.llm_label,
                     COUNT(ta.id) AS doc_count,
                     t.coherence_score,
                     t.created_at
@@ -522,18 +655,18 @@ def get_topic_graph(
                     SELECT id, subreddit FROM comments
                 ) src ON src.id = ta.id
                 WHERE t.topic_id != -1
-                  AND src.subreddit IN ({placeholders(len(subreddits))})
-                GROUP BY t.topic_id, t.keywords, t.coherence_score, t.created_at
+                  AND src.subreddit IN ({placeholders(len(effective))})
+                GROUP BY t.topic_id, t.keywords, t.llm_label, t.coherence_score, t.created_at
                 ORDER BY doc_count DESC, t.topic_id ASC
                 LIMIT {paramstyle()}
                 """,
                 conn,
-                params=[*subreddits, limit],
+                params=[*effective, limit],
             )
         else:
             df = pd.read_sql_query(
                 f"""
-                SELECT topic_id, keywords, doc_count, coherence_score, created_at
+                SELECT topic_id, keywords, llm_label, doc_count, coherence_score, created_at
                 FROM topics
                 WHERE topic_id != -1
                 ORDER BY doc_count DESC, topic_id ASC
@@ -566,6 +699,8 @@ def get_topic_graph(
                     "topic_id": topic_id,
                     "keywords": row.get("keywords") or "",
                     "keyword_terms": keywords,
+                    "llm_label": row.get("llm_label"),
+                    "label": row.get("llm_label"),
                     "doc_count": int(row.get("doc_count") or 0),
                     "coherence_score": row.get("coherence_score"),
                     "emerging": emerging,
@@ -664,6 +799,7 @@ def get_deep_dive(
     content_type_filter: str = "both",
     limit: int = 500,
     offset: int = 0,
+    parents: Tuple[str, ...] = (),
 ) -> List[dict]:
     try:
         conn = _connect()
@@ -674,10 +810,11 @@ def get_deep_dive(
         if keyword:
             conditions.append(f"p.clean_text LIKE {marker}")
             params.append(f"%{keyword}%")
-        if subreddits:
-            subreddit_placeholders = placeholders(len(subreddits))
+        effective = _merge_subreddits(subreddits, parents)
+        if effective:
+            subreddit_placeholders = placeholders(len(effective))
             conditions.append(f"src.subreddit IN ({subreddit_placeholders})")
-            params.extend(list(subreddits))
+            params.extend(list(effective))
         if start_date:
             conditions.append(f"DATE(src.timestamp) >= {marker}")
             params.append(start_date)
@@ -882,6 +1019,272 @@ def get_known_subreddits() -> List[str]:
     except Exception:
         logger.exception("Failed to read known subreddits")
         return []
+
+
+@_ttl_cache(seconds=60)
+def get_subreddit_categories(days: int = 30) -> dict:
+    """Return all parents with member subreddits, window volume, and mean sentiment."""
+    try:
+        conn = _connect()
+        cats = pd.read_sql_query(
+            "SELECT subreddit, parent_id, display_name, sort_order FROM subreddit_categories",
+            conn,
+        )
+        if cats.empty:
+            _close(conn)
+            return {"parents": []}
+
+        volume_sql = f"""
+            SELECT subreddit, COUNT(*) AS volume
+            FROM (
+                SELECT subreddit, timestamp FROM posts
+                UNION ALL
+                SELECT subreddit, timestamp FROM comments
+            ) src
+            WHERE {recent_interval_sql('timestamp', days)}
+            GROUP BY subreddit
+        """
+        volume = pd.read_sql_query(volume_sql, conn, params=recent_interval_params(days))
+
+        sentiment_sql = f"""
+            SELECT subreddit, AVG(mean_score) AS mean_sentiment
+            FROM sentiment_daily
+            WHERE {recent_interval_sql('date', days, date_only=True)}
+            GROUP BY subreddit
+        """
+        sentiment = pd.read_sql_query(sentiment_sql, conn, params=recent_interval_params(days))
+
+        _close(conn)
+
+        vol_lookup = {row["subreddit"]: int(row["volume"] or 0) for _, row in volume.iterrows()}
+        sent_lookup = {row["subreddit"]: row["mean_sentiment"] for _, row in sentiment.iterrows()}
+
+        groups: dict[str, dict] = {}
+        for _, row in cats.iterrows():
+            parent_id = row["parent_id"]
+            bucket = groups.setdefault(
+                parent_id,
+                {
+                    "id": parent_id,
+                    "display_name": row["display_name"],
+                    "subreddits": [],
+                    "_volumes": [],
+                    "_sentiments": [],
+                    "sort_order": int(row.get("sort_order") or 100),
+                },
+            )
+            sub = row["subreddit"]
+            bucket["subreddits"].append(sub)
+            bucket["_volumes"].append(vol_lookup.get(sub, 0))
+            sentiment_val = sent_lookup.get(sub)
+            if sentiment_val is not None and not pd.isna(sentiment_val):
+                bucket["_sentiments"].append(float(sentiment_val))
+
+        parents: list[dict] = []
+        for bucket in groups.values():
+            total = sum(bucket.pop("_volumes"))
+            sentiments = bucket.pop("_sentiments")
+            mean_sentiment = sum(sentiments) / len(sentiments) if sentiments else None
+            parents.append(
+                {
+                    "id": bucket["id"],
+                    "display_name": bucket["display_name"],
+                    "subreddits": sorted(bucket["subreddits"]),
+                    "volume": total,
+                    "mean_sentiment": mean_sentiment,
+                    "sort_order": bucket["sort_order"],
+                }
+            )
+        parents.sort(key=lambda p: (p["sort_order"], -p["volume"], p["id"]))
+        return {"parents": parents}
+    except Exception:
+        logger.exception("Failed to read subreddit categories")
+        return {"parents": []}
+
+
+@_ttl_cache(seconds=60)
+def get_subreddit_graph(
+    parents: Tuple[str, ...] = (),
+    subreddits: Tuple[str, ...] = (),
+    days: int = 30,
+    min_edge_score: float = 0.05,
+) -> dict:
+    """Build a subreddit-level co-occurrence graph (author + topic overlap)."""
+    try:
+        conn = _connect()
+        cats = pd.read_sql_query(
+            "SELECT subreddit, parent_id, display_name FROM subreddit_categories",
+            conn,
+        )
+        if cats.empty:
+            _close(conn)
+            return {"nodes": [], "edges": []}
+
+        cat_lookup = {row["subreddit"]: (row["parent_id"], row["display_name"]) for _, row in cats.iterrows()}
+        universe = set(cat_lookup.keys())
+
+        # Filter universe if parents/subreddits supplied
+        effective = _merge_subreddits(subreddits, parents)
+        if effective:
+            universe = universe & set(effective)
+        if not universe:
+            _close(conn)
+            return {"nodes": [], "edges": []}
+
+        # Volume/author per subreddit in window
+        vol = pd.read_sql_query(
+            f"""
+            SELECT subreddit,
+                   SUM(CASE WHEN content_type = 'post' THEN 1 ELSE 0 END) AS post_count,
+                   SUM(CASE WHEN content_type = 'comment' THEN 1 ELSE 0 END) AS comment_count
+            FROM (
+                SELECT subreddit, 'post' AS content_type, timestamp FROM posts
+                UNION ALL
+                SELECT subreddit, 'comment' AS content_type, timestamp FROM comments
+            ) src
+            WHERE {recent_interval_sql('timestamp', days)}
+            GROUP BY subreddit
+            """,
+            conn,
+            params=recent_interval_params(days),
+        )
+        vol_lookup = {
+            row["subreddit"]: (int(row["post_count"] or 0), int(row["comment_count"] or 0))
+            for _, row in vol.iterrows()
+        }
+
+        sent = pd.read_sql_query(
+            f"""
+            SELECT subreddit, AVG(mean_score) AS mean_sentiment
+            FROM sentiment_daily
+            WHERE {recent_interval_sql('date', days, date_only=True)}
+            GROUP BY subreddit
+            """,
+            conn,
+            params=recent_interval_params(days),
+        )
+        sent_lookup = {
+            row["subreddit"]: (None if pd.isna(row["mean_sentiment"]) else float(row["mean_sentiment"]))
+            for _, row in sent.iterrows()
+        }
+
+        # Author membership per subreddit in window
+        authors_df = pd.read_sql_query(
+            f"""
+            SELECT subreddit, author FROM (
+                SELECT subreddit, author, timestamp FROM posts
+                UNION ALL
+                SELECT subreddit, author, timestamp FROM comments
+            ) src
+            WHERE author IS NOT NULL
+              AND author NOT IN ('[deleted]', '[removed]', '')
+              AND {recent_interval_sql('timestamp', days)}
+            """,
+            conn,
+            params=recent_interval_params(days),
+        )
+        authors_by_sub: dict[str, set[str]] = {}
+        for _, row in authors_df.iterrows():
+            if row["subreddit"] not in universe:
+                continue
+            authors_by_sub.setdefault(row["subreddit"], set()).add(row["author"])
+
+        # Topic share per subreddit in window
+        topic_df = pd.read_sql_query(
+            f"""
+            SELECT src.subreddit, ta.topic_id, COUNT(*) AS docs
+            FROM topic_assignments ta
+            JOIN preprocessed p ON ta.id = p.id
+            JOIN (
+                SELECT id, subreddit, 'post' AS content_type, timestamp FROM posts
+                UNION ALL
+                SELECT id, subreddit, 'comment' AS content_type, timestamp FROM comments
+            ) src ON src.id = ta.id AND src.content_type = p.content_type
+            WHERE ta.topic_id != -1
+              AND {recent_interval_sql('src.timestamp', days)}
+            GROUP BY src.subreddit, ta.topic_id
+            """,
+            conn,
+            params=recent_interval_params(days),
+        )
+
+        topic_labels_df = pd.read_sql_query(
+            "SELECT topic_id, llm_label FROM topics",
+            conn,
+        )
+        label_lookup = {int(row["topic_id"]): row["llm_label"] for _, row in topic_labels_df.iterrows()}
+
+        _close(conn)
+
+        topic_share: dict[str, dict[int, float]] = {}
+        topic_docs: dict[str, dict[int, int]] = {}
+        for sub, group in topic_df.groupby("subreddit"):
+            if sub not in universe:
+                continue
+            total = int(group["docs"].sum())
+            if total <= 0:
+                continue
+            share = {int(row["topic_id"]): int(row["docs"]) / total for _, row in group.iterrows()}
+            topic_share[sub] = share
+            topic_docs[sub] = {int(row["topic_id"]): int(row["docs"]) for _, row in group.iterrows()}
+
+        # Build nodes
+        nodes: list[dict] = []
+        for sub in sorted(universe):
+            parent_id, display = cat_lookup[sub]
+            post_count, comment_count = vol_lookup.get(sub, (0, 0))
+            shares = topic_share.get(sub, {})
+            top_topics = sorted(shares.items(), key=lambda kv: -kv[1])[:5]
+            nodes.append({
+                "subreddit": sub,
+                "parent_id": parent_id,
+                "display_name": display,
+                "post_count": post_count,
+                "comment_count": comment_count,
+                "total_volume": post_count + comment_count,
+                "mean_sentiment": sent_lookup.get(sub),
+                "top_topics": [
+                    {"topic_id": tid, "share": round(share, 4), "label": label_lookup.get(tid)}
+                    for tid, share in top_topics
+                ],
+            })
+
+        # Build edges (unordered pairs)
+        edges: list[dict] = []
+        sub_list = sorted(universe)
+        threshold = max(0.0, float(min_edge_score))
+        for i in range(len(sub_list)):
+            for j in range(i + 1, len(sub_list)):
+                a, b = sub_list[i], sub_list[j]
+                aa, ba = authors_by_sub.get(a, set()), authors_by_sub.get(b, set())
+                if aa and ba:
+                    union = aa | ba
+                    author_overlap = len(aa & ba) / len(union) if union else 0.0
+                else:
+                    author_overlap = 0.0
+                share_a, share_b = topic_share.get(a, {}), topic_share.get(b, {})
+                shared_topics = set(share_a.keys()) & set(share_b.keys())
+                topic_overlap = sum(min(share_a[t], share_b[t]) for t in shared_topics)
+                score = 0.5 * author_overlap + 0.5 * topic_overlap
+                if score < threshold:
+                    continue
+                shared_sorted = sorted(
+                    shared_topics,
+                    key=lambda t: -(share_a.get(t, 0) + share_b.get(t, 0)),
+                )[:5]
+                edges.append({
+                    "source": a,
+                    "target": b,
+                    "author_overlap": round(author_overlap, 4),
+                    "topic_overlap": round(topic_overlap, 4),
+                    "score": round(score, 4),
+                    "shared_topic_ids": [int(t) for t in shared_sorted],
+                })
+        edges.sort(key=lambda e: -e["score"])
+        return {"nodes": nodes, "edges": edges}
+    except Exception:
+        logger.exception("Failed to build subreddit graph")
+        return {"nodes": [], "edges": []}
 
 
 @_ttl_cache(seconds=60)

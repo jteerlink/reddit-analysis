@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 Messages = List[dict]
 _SYSTEM = "system"
@@ -89,9 +89,11 @@ def analyst_brief_prompt(
     events: List[dict],
     topic_labels: List[str],
     model_count: int,
+    parent_context: Optional[List[dict]] = None,
 ) -> Tuple[Messages, str]:
     """
-    Prompt to generate a structured analyst brief.
+    Prompt to generate a structured analyst brief as JSON.
+
     Returns (messages, prompt_version).
     """
     event_lines = []
@@ -103,26 +105,48 @@ def analyst_brief_prompt(
     events_block = "\n".join(event_lines) if event_lines else "No recent events."
     topics_block = ", ".join(topic_labels[:10]) if topic_labels else "No topics labeled yet."
 
+    parent_lines: List[str] = []
+    for parent in (parent_context or [])[:10]:
+        pid = parent.get("display_name") or parent.get("id") or "Unknown"
+        volume = parent.get("volume") or 0
+        mean = parent.get("mean_sentiment")
+        mean_str = f"{mean:+.2f}" if isinstance(mean, (int, float)) else "n/a"
+        parent_lines.append(f"- {pid}: {volume:,} docs, mean sentiment {mean_str}")
+    parents_block = "\n".join(parent_lines) if parent_lines else "No parent context."
+
+    schema = (
+        '{"headline": "...",'
+        ' "sections": ['
+        '{"title": "Executive Summary", "body": "..."},'
+        '{"title": "Key Findings", "body": "..."},'
+        '{"title": "Notable Trends", "body": "..."},'
+        '{"title": "Risks & Anomalies", "body": "..."},'
+        '{"title": "Outlook", "body": "..."}'
+        "]}"
+    )
+
     messages: Messages = [
         {
             "role": _SYSTEM,
             "content": (
-                "You are an intelligence analyst summarizing trends from Reddit data. "
-                "Write a brief with: a headline (1 line), a key findings section (2-3 bullets), "
-                "and a 1-sentence outlook. Be concise and factual."
+                "You are an intelligence analyst summarizing trends from Reddit AI-community data. "
+                "Respond with a single JSON object only. No markdown, no preamble. "
+                f"The object MUST match this schema: {schema}. "
+                "The headline is one sentence. Each section body is 2-4 sentences, concrete and factual."
             ),
         },
         {
             "role": _USER,
             "content": (
                 f"Recent sentiment events:\n{events_block}\n\n"
-                f"Active discussion topics: {topics_block}\n"
+                f"Active discussion topics: {topics_block}\n\n"
+                f"Parent community context (last 30 days):\n{parents_block}\n\n"
                 f"Configured LLM models: {model_count}\n\n"
-                "Generate the analyst brief."
+                "Generate the analyst brief JSON."
             ),
         },
     ]
-    return messages, "ab-v1"
+    return messages, "ab-v2"
 
 
 def topic_label_prompt(keywords: List[str]) -> Tuple[Messages, str]:

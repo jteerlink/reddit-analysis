@@ -16,7 +16,7 @@ def test_dashboard_routes_forward_to_db_layer(monkeypatch):
         "get_collection_summary",
         lambda: {"total_posts": 1, "total_comments": 2, "last_timestamp": "now"},
     )
-    monkeypatch.setattr(db, "get_trending_topics", lambda n=3: [{"topic_id": 1}])
+    monkeypatch.setattr(db, "get_trending_topics", lambda n=5: [{"topic_id": 1}])
     monkeypatch.setattr(
         db,
         "get_sentiment_summary",
@@ -25,17 +25,17 @@ def test_dashboard_routes_forward_to_db_layer(monkeypatch):
     monkeypatch.setattr(
         db,
         "get_sentiment_daily",
-        lambda subreddits=(), days=90: [
+        lambda subreddits=(), days=90, parents=(): [
             {"subreddit": subreddits[0] if subreddits else "all", "mean_score": 0.2}
         ],
     )
-    monkeypatch.setattr(db, "get_change_points", lambda subreddits=(): [])
-    monkeypatch.setattr(db, "get_forecast", lambda subreddits=(): [])
-    monkeypatch.setattr(db, "get_daily_volume", lambda subreddits=(), days=30: [])
+    monkeypatch.setattr(db, "get_change_points", lambda subreddits=(), parents=(): [])
+    monkeypatch.setattr(db, "get_forecast", lambda subreddits=(), parents=(): [])
+    monkeypatch.setattr(db, "get_daily_volume", lambda subreddits=(), days=30, parents=(): [])
     monkeypatch.setattr(
         db,
         "get_topic_graph",
-        lambda n=50, min_similarity=0.15, subreddits=(): {
+        lambda n=50, min_similarity=0.15, subreddits=(), parents=(): {
             "nodes": [{"topic_id": 1, "keywords": "ai, policy"}],
             "edges": [{"source": 1, "target": 2, "similarity": 0.5, "shared_keywords": ["ai"]}],
             "subreddits": list(subreddits),
