@@ -40,7 +40,7 @@ export function ActivityFeedStrip() {
   return (
     <section className="command-panel overflow-hidden">
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
-        <h3 className="text-sm font-semibold text-foreground">Activity feed</h3>
+        <h3 className="text-[14px] font-semibold tracking-[-0.012em] text-foreground">Activity feed</h3>
         <Link href="/events" className="flex items-center gap-1 text-[11px] text-muted-foreground transition-colors hover:text-foreground">
           View all
           <ArrowRight className="size-3" aria-hidden="true" />

@@ -70,7 +70,7 @@ export function TopicExplorerPanel({ topics }: Props) {
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="command-label">Topic Explorer</p>
-          <h3 className="mt-1 text-sm font-semibold text-foreground">Signal clusters</h3>
+          <h3 className="mt-1 text-[14px] font-semibold tracking-[-0.012em] text-foreground">Signal clusters</h3>
         </div>
         <div className="flex items-center gap-2 text-muted-foreground">
           <Sparkles className="size-3.5" aria-hidden="true" />

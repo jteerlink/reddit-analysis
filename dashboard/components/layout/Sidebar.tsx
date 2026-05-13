@@ -50,10 +50,10 @@ export function Sidebar() {
           </div>
           <div className="min-w-0">
             <p className="command-label">Analytics</p>
-            <h1 className="mt-0.5 truncate text-base font-semibold text-sidebar-foreground">Signal Command</h1>
+            <h1 className="mt-0.5 truncate text-[15px] font-semibold leading-tight tracking-[-0.015em] text-sidebar-foreground">Signal Command</h1>
           </div>
         </div>
-        <p className="mt-3 text-xs leading-5 text-muted-foreground">Subreddit intelligence, live from the stream.</p>
+        <p className="mt-3 text-[13px] leading-[1.55] text-muted-foreground">Subreddit intelligence, live from the stream.</p>
       </div>
 
       <nav className="flex flex-col gap-0.5 px-2 py-3">

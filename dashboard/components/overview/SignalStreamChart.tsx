@@ -138,8 +138,8 @@ export function SignalStreamChart({ volumeData, sentimentData, sentimentDaily }:
       <div className="relative flex items-start justify-between gap-4">
         <div>
           <p className="command-label">Sentiment Stream</p>
-          <h2 className="mt-1 text-xl font-semibold tracking-normal text-foreground">Signal Command</h2>
-          <p className="mt-1 max-w-lg text-xs leading-5 text-muted-foreground">
+          <h2 className="mt-1.5 text-[1.55rem] font-semibold leading-[1.1] tracking-[-0.015em] text-foreground">Signal Command</h2>
+          <p className="mt-1.5 max-w-lg text-[13px] leading-[1.55] text-muted-foreground">
             Subreddit intelligence, live from the stream.
           </p>
         </div>

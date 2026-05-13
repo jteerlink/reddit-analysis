@@ -32,7 +32,7 @@ export function CommandBar({
         </div>
         <div className="min-w-0">
           <p className="command-label">Overview</p>
-          <h1 className="truncate text-lg font-semibold text-foreground">Signal Command</h1>
+          <h1 className="truncate text-[1.75rem] font-semibold leading-[1.05] tracking-[-0.015em] text-foreground">Signal Command</h1>
         </div>
       </div>
 

@@ -62,7 +62,7 @@ export function PipelineHealthCard() {
       <div className="flex items-center justify-between">
         <div>
           <p className="command-label">Pipeline</p>
-          <h3 className="mt-1 text-sm font-semibold text-foreground">Operational health</h3>
+          <h3 className="mt-1 text-[14px] font-semibold tracking-[-0.012em] text-foreground">Operational health</h3>
         </div>
         <GitBranch className="size-4 text-signal-copper" aria-hidden="true" />
       </div>
