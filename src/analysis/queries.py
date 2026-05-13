@@ -36,8 +36,7 @@ def _loads(value: Any, fallback):
 def _provenance(
     state: str = "ready",
     label: str = "real_data",
-    source_table: Optional[str] = None,
-    source_ids: Optional[list[str]] = None,
+    source_table: Optional[str] = None, source_ids: Optional[list[str]] = None,
     **extra,
 ) -> dict:
     return {
