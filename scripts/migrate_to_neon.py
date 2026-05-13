@@ -17,6 +17,7 @@ from dateutil import parser as date_parser
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = PROJECT_ROOT / "scripts" / "neon_schema.sql"
+SEED_PATH = PROJECT_ROOT / "scripts" / "seed_subreddit_categories.sql"
 
 MIGRATION_ORDER = [
     "posts",
@@ -236,10 +237,13 @@ def run(args: argparse.Namespace) -> int:
         try:
             if args.create_schema:
                 schema_sql = Path(args.schema).read_text()
+                seed_sql = Path(args.seed).read_text()
                 with pg_conn.cursor() as cursor:
                     cursor.execute(schema_sql)
+                    cursor.execute(seed_sql)
                 pg_conn.commit()
                 print(f"Schema applied from {args.schema}")
+                print(f"Subreddit categories seeded from {args.seed}")
 
             for table in MIGRATION_ORDER:
                 if not _table_exists(sqlite_conn, table):
@@ -264,6 +268,7 @@ def main() -> None:
     parser.add_argument("--source", default="historical_reddit_data.db")
     parser.add_argument("--database-url", default=None)
     parser.add_argument("--schema", default=str(SCHEMA_PATH))
+    parser.add_argument("--seed", default=str(SEED_PATH))
     parser.add_argument("--batch-size", type=int, default=1000)
     parser.add_argument("--create-schema", action="store_true", default=False)
     parser.add_argument("--dry-run", action="store_true", default=False)

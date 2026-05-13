@@ -8,7 +8,7 @@ import { ActivityFeedStrip } from "@/components/overview/ActivityFeedStrip";
 import { CommandBar } from "@/components/overview/CommandBar";
 import { PipelineHealthCard } from "@/components/overview/PipelineHealthCard";
 import { SignalStreamChart } from "@/components/overview/SignalStreamChart";
-import { TopicExplorerPanel } from "@/components/overview/TopicExplorerPanel";
+import { ParentSummaryPanel } from "@/components/overview/ParentSummaryPanel";
 import { TrendingSignalHero } from "@/components/overview/TrendingSignalHero";
 import type {
   CollectionSummary,
@@ -101,7 +101,7 @@ export default function OverviewPage() {
 
         <div className="grid gap-4">
           <PipelineHealthCard />
-          <TopicExplorerPanel topics={summary?.trending_topics} />
+          <ParentSummaryPanel parents={categories?.parents ?? []} />
         </div>
       </div>
 
