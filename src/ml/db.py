@@ -271,6 +271,11 @@ def ensure_topics_tables(conn) -> None:
     _execute(conn, "CREATE INDEX IF NOT EXISTS idx_topics_coherence ON topics(coherence_score)")
     _execute(conn, "CREATE INDEX IF NOT EXISTS idx_topic_assignments_topic ON topic_assignments(topic_id)")
     _execute(conn, "CREATE INDEX IF NOT EXISTS idx_tot_week ON topic_over_time(week_start)")
+    for col, col_type in [("llm_label", "TEXT"), ("llm_prompt_version", "TEXT")]:
+        try:
+            _execute(conn, f"ALTER TABLE topics ADD COLUMN {col} {col_type}")
+        except Exception:
+            pass
     conn.commit()
 
 

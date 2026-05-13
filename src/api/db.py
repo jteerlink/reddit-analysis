@@ -120,6 +120,153 @@ def get_table_state(required_tables: Tuple[str, ...]) -> dict:
         return {"state": "error", "missing_tables": [], "reason": str(exc)}
 
 
+def _table_exists(conn, table: str) -> bool:
+    marker = paramstyle()
+    if is_postgres_connection(conn):
+        row = execute(
+            conn,
+            f"""
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = {marker}
+            LIMIT 1
+            """,
+            (table,),
+        ).fetchone()
+    else:
+        row = execute(
+            conn,
+            f"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = {marker}",
+            (table,),
+        ).fetchone()
+    return row is not None
+
+
+def _column_exists(conn, table: str, column: str) -> bool:
+    if is_postgres_connection(conn):
+        marker = paramstyle()
+        row = execute(
+            conn,
+            f"""
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = {marker}
+              AND column_name = {marker}
+            LIMIT 1
+            """,
+            (table, column),
+        ).fetchone()
+        return row is not None
+    rows = execute(conn, f"PRAGMA table_info({table})").fetchall()
+    return any((row["name"] if hasattr(row, "keys") else row[1]) == column for row in rows)
+
+
+def _topic_llm_label_expr(conn, alias: str = "") -> str:
+    prefix = f"{alias}." if alias else ""
+    return f"{prefix}llm_label" if _column_exists(conn, "topics", "llm_label") else "NULL"
+
+
+DEFAULT_SUBREDDIT_CATEGORIES: tuple[tuple[str, str, str, int], ...] = (
+    ("AnthropicAI", "ANTHROPIC", "Anthropic", 10),
+    ("ClaudeAI", "ANTHROPIC", "Anthropic", 10),
+    ("ChatGPT", "OPENAI", "OpenAI", 20),
+    ("OpenAI", "OPENAI", "OpenAI", 20),
+    ("Gemini", "GOOGLE", "Google AI", 30),
+    ("DeepMind", "GOOGLE", "Google AI", 30),
+    ("nvidia", "AI_INFRA", "AI Infrastructure", 40),
+    ("technology", "AI_INFRA", "AI Infrastructure", 40),
+    ("huggingface", "AI_INFRA", "AI Infrastructure", 40),
+    ("LocalLLaMA", "OPEN_SOURCE", "Open Source", 50),
+    ("StableDiffusion", "OPEN_SOURCE", "Open Source", 50),
+    ("MachineLearning", "ML_RESEARCH", "ML & Research", 60),
+    ("DeepLearning", "ML_RESEARCH", "ML & Research", 60),
+    ("datascience", "ML_RESEARCH", "ML & Research", 60),
+    ("learnmachinelearning", "ML_RESEARCH", "ML & Research", 60),
+    ("artificial", "ML_RESEARCH", "ML & Research", 60),
+    ("ArtificialIntelligence", "ML_RESEARCH", "ML & Research", 60),
+    ("AITA", "OTHER", "Other", 70),
+    ("AGI", "OTHER", "Other", 70),
+    ("Singularity", "OTHER", "Other", 70),
+    ("AItools", "OTHER", "Other", 70),
+    ("aiNews", "OTHER", "Other", 70),
+    ("AIStartups", "OTHER", "Other", 70),
+    ("AIArt", "OTHER", "Other", 70),
+    ("AutoGPT", "OTHER", "Other", 70),
+    ("LLMDevs", "OTHER", "Other", 70),
+    ("PromptEngineering", "OTHER", "Other", 70),
+)
+
+
+def _known_subreddits(conn) -> list[str]:
+    rows = execute(
+        conn,
+        """
+        SELECT subreddit FROM (
+            SELECT DISTINCT subreddit FROM posts WHERE subreddit IS NOT NULL AND subreddit != ''
+            UNION
+            SELECT DISTINCT subreddit FROM comments WHERE subreddit IS NOT NULL AND subreddit != ''
+        )
+        ORDER BY subreddit
+        """,
+    ).fetchall()
+    return [row["subreddit"] if hasattr(row, "keys") else row[0] for row in rows]
+
+
+def _subreddit_category_frame(conn) -> pd.DataFrame:
+    known_subreddits = _known_subreddits(conn)
+    known_by_key = {sub.casefold(): sub for sub in known_subreddits}
+
+    if _table_exists(conn, "subreddit_categories"):
+        base = pd.read_sql_query(
+            "SELECT subreddit, parent_id, display_name, sort_order FROM subreddit_categories",
+            conn,
+        )
+        if base.empty:
+            base = pd.DataFrame(
+                DEFAULT_SUBREDDIT_CATEGORIES,
+                columns=["subreddit", "parent_id", "display_name", "sort_order"],
+            )
+    else:
+        base = pd.DataFrame(
+            DEFAULT_SUBREDDIT_CATEGORIES,
+            columns=["subreddit", "parent_id", "display_name", "sort_order"],
+        )
+
+    records: list[dict] = []
+    assigned_keys: set[str] = set()
+    for _, row in base.iterrows():
+        source_sub = str(row["subreddit"])
+        source_key = source_sub.casefold()
+        if known_by_key and source_key not in known_by_key:
+            continue
+        sub = known_by_key.get(source_key, source_sub)
+        assigned_keys.add(sub.casefold())
+        records.append(
+            {
+                "subreddit": sub,
+                "parent_id": row["parent_id"],
+                "display_name": row["display_name"],
+                "sort_order": int(row.get("sort_order") or 100),
+            }
+        )
+
+    for sub in known_subreddits:
+        if sub.casefold() in assigned_keys:
+            continue
+        records.append(
+            {
+                "subreddit": sub,
+                "parent_id": "OTHER",
+                "display_name": "Other",
+                "sort_order": 100,
+            }
+        )
+
+    return pd.DataFrame.from_records(records, columns=["subreddit", "parent_id", "display_name", "sort_order"])
+
+
+
 def _exclusive_end_date(end_date: Optional[str]) -> Optional[str]:
     if not end_date:
         return None
@@ -133,15 +280,11 @@ def expand_parents(parents: Tuple[str, ...] = ()) -> Tuple[str, ...]:
         return ()
     try:
         conn = _connect()
-        rows = execute(
-            conn,
-            f"SELECT subreddit FROM subreddit_categories WHERE parent_id IN ({placeholders(len(parents))})",
-            list(parents),
-        ).fetchall()
+        categories = _subreddit_category_frame(conn)
         _close(conn)
         seen: list[str] = []
-        for row in rows:
-            value = row[0] if not hasattr(row, "keys") else row["subreddit"]
+        for _, row in categories[categories["parent_id"].isin(parents)].iterrows():
+            value = row["subreddit"]
             if value and value not in seen:
                 seen.append(value)
         return tuple(seen)
@@ -275,12 +418,13 @@ def get_collection_summary(
 def get_trending_topics(n: int = 3) -> List[dict]:
     try:
         conn = _connect()
+        label_expr = _topic_llm_label_expr(conn, "t")
         df = pd.read_sql_query(
             f"""
             SELECT t.topic_id,
                    t.keywords,
-                   t.llm_label AS llm_label,
-                   COALESCE(NULLIF(t.llm_label, ''), '') AS label,
+                   {label_expr} AS llm_label,
+                   COALESCE(NULLIF({label_expr}, ''), '') AS label,
                    tot.doc_count,
                    tot.week_start
             FROM topic_over_time tot
@@ -329,10 +473,7 @@ def get_trending_topics(n: int = 3) -> List[dict]:
                 conn,
                 params=list(topic_ids),
             )
-            categories = pd.read_sql_query(
-                "SELECT subreddit, parent_id, display_name FROM subreddit_categories",
-                conn,
-            )
+            categories = _subreddit_category_frame(conn)
             cat_lookup = {row["subreddit"]: (row["parent_id"], row["display_name"]) for _, row in categories.iterrows()}
             per_topic: dict[int, dict[str, dict[str, int | str]]] = {}
             for _, row in assignments.iterrows():
@@ -580,13 +721,14 @@ def get_forecast(
 def get_topics() -> List[dict]:
     try:
         conn = _connect()
+        label_expr = _topic_llm_label_expr(conn)
         df = pd.read_sql_query(
-            """
+            f"""
             SELECT topic_id,
                    keywords,
                    doc_count,
                    coherence_score,
-                   llm_label
+                   {label_expr} AS llm_label
             FROM topics
             WHERE topic_id != -1
             ORDER BY doc_count DESC
@@ -637,13 +779,14 @@ def get_topic_graph(
         threshold = max(0.0, min(float(min_similarity), 1.0))
         conn = _connect()
         effective = _merge_subreddits(subreddits, parents)
+        label_expr = _topic_llm_label_expr(conn, "t")
         if effective:
             df = pd.read_sql_query(
                 f"""
                 SELECT
                     t.topic_id,
                     t.keywords,
-                    t.llm_label,
+                    {label_expr} AS llm_label,
                     COUNT(ta.id) AS doc_count,
                     t.coherence_score,
                     t.created_at
@@ -656,7 +799,7 @@ def get_topic_graph(
                 ) src ON src.id = ta.id
                 WHERE t.topic_id != -1
                   AND src.subreddit IN ({placeholders(len(effective))})
-                GROUP BY t.topic_id, t.keywords, t.llm_label, t.coherence_score, t.created_at
+                GROUP BY t.topic_id, t.keywords, {label_expr}, t.coherence_score, t.created_at
                 ORDER BY doc_count DESC, t.topic_id ASC
                 LIMIT {paramstyle()}
                 """,
@@ -666,9 +809,9 @@ def get_topic_graph(
         else:
             df = pd.read_sql_query(
                 f"""
-                SELECT topic_id, keywords, llm_label, doc_count, coherence_score, created_at
-                FROM topics
-                WHERE topic_id != -1
+                SELECT t.topic_id, t.keywords, {label_expr} AS llm_label, t.doc_count, t.coherence_score, t.created_at
+                FROM topics t
+                WHERE t.topic_id != -1
                 ORDER BY doc_count DESC, topic_id ASC
                 LIMIT {paramstyle()}
                 """,
@@ -1026,10 +1169,7 @@ def get_subreddit_categories(days: int = 30) -> dict:
     """Return all parents with member subreddits, window volume, and mean sentiment."""
     try:
         conn = _connect()
-        cats = pd.read_sql_query(
-            "SELECT subreddit, parent_id, display_name, sort_order FROM subreddit_categories",
-            conn,
-        )
+        cats = _subreddit_category_frame(conn)
         if cats.empty:
             _close(conn)
             return {"parents": []}
@@ -1112,10 +1252,7 @@ def get_subreddit_graph(
     """Build a subreddit-level co-occurrence graph (author + topic overlap)."""
     try:
         conn = _connect()
-        cats = pd.read_sql_query(
-            "SELECT subreddit, parent_id, display_name FROM subreddit_categories",
-            conn,
-        )
+        cats = _subreddit_category_frame(conn)
         if cats.empty:
             _close(conn)
             return {"nodes": [], "edges": []}
@@ -1208,8 +1345,9 @@ def get_subreddit_graph(
             params=recent_interval_params(days),
         )
 
+        label_expr = _topic_llm_label_expr(conn)
         topic_labels_df = pd.read_sql_query(
-            "SELECT topic_id, llm_label FROM topics",
+            f"SELECT topic_id, {label_expr} AS llm_label FROM topics",
             conn,
         )
         label_lookup = {int(row["topic_id"]): row["llm_label"] for _, row in topic_labels_df.iterrows()}

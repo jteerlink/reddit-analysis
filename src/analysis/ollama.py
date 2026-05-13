@@ -136,7 +136,7 @@ def chat(
     auth failure, timeout, or any other HTTP/connection error.
     """
     if timeout is None:
-        timeout = config.timeout_seconds
+        timeout = max(config.timeout_seconds, 60.0)
 
     payload = {
         "model": model,
@@ -173,8 +173,9 @@ def chat(
     return content.strip()
 
 
-def probe_model(config: OllamaConfig, model: str, timeout: float = 10.0) -> bool:
+def probe_model(config: OllamaConfig, model: str, timeout: Optional[float] = None) -> bool:
     """Return True if the model responds to a minimal ping message."""
+    timeout = timeout if timeout is not None else max(config.timeout_seconds, 10.0)
     try:
         chat(config, model, [{"role": "user", "content": "ping"}], timeout=timeout)
         return True

@@ -101,6 +101,37 @@ def test_latest_brief_prefers_llm_and_preserves_section_metadata():
     assert result["sections"][0]["evidence"][0]["anchor_id"] == "1"
 
 
+def test_latest_brief_skips_newer_queued_llm_artifact():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_analysis_tables(conn)
+    succeeded = enqueue_artifact(
+        conn,
+        kind="analyst_brief_llm",
+        source_input_hash="llm-success",
+        payload={"brief_id": "llm-success", "headline": "Succeeded LLM brief", "sections": []},
+        provider="ollama",
+    )
+    complete_artifact(conn, succeeded["artifact_id"], {"brief_id": "llm-success", "headline": "Succeeded LLM brief", "sections": []})
+    queued = enqueue_artifact(
+        conn,
+        kind="analyst_brief_llm",
+        source_input_hash="llm-queued",
+        payload={"brief_id": "llm-queued", "headline": "Queued LLM brief", "sections": []},
+        provider="ollama",
+    )
+    conn.execute(
+        "UPDATE analysis_artifacts SET freshness_timestamp = '2099-01-01T00:00:00Z', updated_at = '2099-01-01T00:00:00Z' WHERE artifact_id = ?",
+        (queued["artifact_id"],),
+    )
+    conn.commit()
+
+    result = queries.latest_brief(conn)
+
+    assert result["brief_id"] == "llm-success"
+    assert result["provenance"]["label"] == "llm_artifact"
+
+
 def test_briefs_returns_llm_and_deterministic_artifacts():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -126,6 +157,38 @@ def test_briefs_returns_llm_and_deterministic_artifacts():
 
     assert {brief["brief_id"] for brief in result} == {"det", "llm"}
     assert {brief["provenance"]["label"] for brief in result} == {"deterministic_fallback", "llm_artifact"}
+
+
+def test_briefs_prioritizes_succeeded_llm_over_newer_deterministic_artifact():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_analysis_tables(conn)
+    llm = enqueue_artifact(
+        conn,
+        kind="analyst_brief_llm",
+        source_input_hash="llm",
+        payload={"brief_id": "llm", "headline": "LLM brief", "sections": []},
+        provider="ollama",
+    )
+    complete_artifact(conn, llm["artifact_id"], {"brief_id": "llm", "headline": "LLM brief", "sections": []})
+    deterministic = enqueue_artifact(
+        conn,
+        kind="analyst_brief",
+        source_input_hash="deterministic",
+        payload={"brief_id": "det", "headline": "Deterministic brief", "sections": []},
+        provider="deterministic",
+    )
+    complete_artifact(conn, deterministic["artifact_id"], {"brief_id": "det", "headline": "Deterministic brief", "sections": []})
+    conn.execute(
+        "UPDATE analysis_artifacts SET freshness_timestamp = '2099-01-01T00:00:00Z', updated_at = '2099-01-01T00:00:00Z' WHERE artifact_id = ?",
+        (deterministic["artifact_id"],),
+    )
+    conn.commit()
+
+    result = queries.briefs(conn)
+
+    assert [brief["brief_id"] for brief in result] == ["llm", "det"]
+    assert result[0]["provenance"]["label"] == "llm_artifact"
 
 
 def test_semantic_search_uses_nonconstant_lexical_fallback_scores():

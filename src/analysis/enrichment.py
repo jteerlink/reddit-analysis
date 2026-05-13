@@ -348,6 +348,11 @@ def enrich_bertopic_labels(
 
     Sibling of enrich_topic_labels (which targets the legacy cluster_labels table).
     """
+    for col in ("llm_label", "llm_prompt_version"):
+        try:
+            execute(conn, f"ALTER TABLE topics ADD COLUMN {col} TEXT")
+        except Exception:
+            pass
     try:
         rows = execute(
             conn,

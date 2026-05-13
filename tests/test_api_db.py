@@ -1,4 +1,5 @@
 import importlib
+import os
 import sqlite3
 import sys
 from datetime import datetime, timedelta
@@ -345,6 +346,59 @@ def test_api_db_subreddit_graph_emits_nodes_per_universe(api_db):
     assert parents["LocalLLaMA"] == "OPEN_SOURCE"
     # Edges should be a list (empty here because no shared authors or topics across subs).
     assert isinstance(graph["edges"], list)
+
+
+def test_api_db_topic_queries_tolerate_missing_llm_label_column(api_db):
+    conn = sqlite3.connect(os.environ["REDDIT_DB_PATH"])
+    conn.execute("ALTER TABLE topics RENAME TO topics_old")
+    conn.execute(
+        """
+        CREATE TABLE topics (
+            topic_id INTEGER PRIMARY KEY,
+            keywords TEXT NOT NULL,
+            doc_count INTEGER NOT NULL DEFAULT 0,
+            coherence_score REAL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO topics (topic_id, keywords, doc_count, coherence_score, created_at)
+        SELECT topic_id, keywords, doc_count, coherence_score, created_at FROM topics_old
+        """
+    )
+    conn.execute("DROP TABLE topics_old")
+    conn.commit()
+    conn.close()
+
+    topics = api_db.get_topics()
+    assert topics[0]["topic_id"] == 1
+    assert topics[0]["llm_label"] is None
+    assert api_db.get_trending_topics(1)[0]["topic_id"] == 1
+    assert api_db.get_topic_graph(n=3, min_similarity=0.1)["nodes"][0]["llm_label"] is None
+
+
+def test_api_db_uses_default_subreddit_groups_without_category_table(api_db):
+    conn = sqlite3.connect(os.environ["REDDIT_DB_PATH"])
+    conn.execute("DROP TABLE subreddit_categories")
+    conn.commit()
+    conn.close()
+
+    categories = api_db.get_subreddit_categories(days=30)
+    parents = {parent["id"]: parent for parent in categories["parents"]}
+    assert "OPENAI" in parents
+    assert "OPEN_SOURCE" in parents
+    assert "ChatGPT" in parents["OPENAI"]["subreddits"]
+    assert "LocalLLaMA" in parents["OPEN_SOURCE"]["subreddits"]
+    assert set(api_db.expand_parents(("OPENAI",))) >= {"ChatGPT"}
+    assert set(api_db.expand_parents(("OPEN_SOURCE",))) >= {"LocalLLaMA"}
+
+    graph = api_db.get_subreddit_graph(days=30, min_edge_score=0.0)
+    assert {node["subreddit"] for node in graph["nodes"]} == {"ChatGPT", "LocalLLaMA"}
+    parents_by_subreddit = {node["subreddit"]: node["parent_id"] for node in graph["nodes"]}
+    assert parents_by_subreddit["ChatGPT"] == "OPENAI"
+    assert parents_by_subreddit["LocalLLaMA"] == "OPEN_SOURCE"
 
 
 def test_api_db_empty_date_range_falls_back(monkeypatch, tmp_path):

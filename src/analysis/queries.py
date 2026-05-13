@@ -446,7 +446,7 @@ def thread_analysis(conn, post_id: str) -> dict:
 def latest_brief(conn) -> Optional[dict]:
     try:
         for kind, label in (("analyst_brief_llm", "llm_artifact"), ("analyst_brief", "deterministic_fallback")):
-            rows = [row for row in list_artifacts(conn, kind=kind, limit=1) if row.get("status") == "succeeded"]
+            rows = [row for row in list_artifacts(conn, kind=kind, limit=25) if row.get("status") == "succeeded"]
             if rows:
                 return _brief_from_artifact(rows[0], label)
         return None
@@ -462,7 +462,14 @@ def briefs(conn, limit: int = 10) -> list[dict]:
             for row in list_artifacts(conn, kind=kind, limit=limit)
             if row.get("status") == "succeeded"
         ]
-        rows.sort(key=lambda row: row.get("freshness_timestamp") or row.get("updated_at") or "", reverse=True)
+        llm_rows = [row for row in rows if row.get("kind") == "analyst_brief_llm"]
+        deterministic_rows = [row for row in rows if row.get("kind") != "analyst_brief_llm"]
+        llm_rows.sort(key=lambda row: row.get("freshness_timestamp") or row.get("updated_at") or "", reverse=True)
+        deterministic_rows.sort(
+            key=lambda row: row.get("freshness_timestamp") or row.get("updated_at") or "",
+            reverse=True,
+        )
+        rows = llm_rows + deterministic_rows
         return [
             _brief_from_artifact(
                 row,
