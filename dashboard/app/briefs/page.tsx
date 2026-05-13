@@ -23,6 +23,73 @@ function styleForSection(title: string) {
   return SECTION_STYLES[key];
 }
 
+function asStringList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item ?? "").trim()).filter(Boolean);
+  }
+  const text = String(value ?? "").trim();
+  return text ? [text] : [];
+}
+
+function EvidenceList({ section }: { section: BriefSection }) {
+  const claims = asStringList(section.claims);
+  const drivers = asStringList(section.drivers);
+  const implications = asStringList(section.implications);
+  const evidence = Array.isArray(section.evidence) ? section.evidence : [];
+  const delta = String(section.delta ?? "").trim();
+  const evidenceGap = String(section.evidence_gap ?? "").trim();
+  const hasExtras = claims.length || drivers.length || implications.length || evidence.length || delta || evidenceGap;
+
+  if (!hasExtras) {
+    return null;
+  }
+
+  return (
+    <div className="mt-3 space-y-2 rounded-md border border-border/70 bg-muted/20 p-3 text-xs text-muted-foreground">
+      {delta && (
+        <div>
+          <span className="font-semibold text-foreground">Delta: </span>
+          <span>{delta}</span>
+          {section.delta_source ? <Badge variant="outline" className="ml-2">{String(section.delta_source)}</Badge> : null}
+        </div>
+      )}
+      {claims.length ? <MetadataList label="Claims" items={claims} /> : null}
+      {drivers.length ? <MetadataList label="Drivers" items={drivers} /> : null}
+      {implications.length ? <MetadataList label="Implications" items={implications} /> : null}
+      {evidence.length ? (
+        <div>
+          <p className="mb-1 font-semibold text-foreground">Evidence</p>
+          <ul className="space-y-1">
+            {evidence.map((item, index) => (
+              <li key={`${item.anchor_type}-${item.anchor_id}-${index}`} className="rounded border border-border/60 bg-card/60 px-2 py-1">
+                <span className="font-mono text-[11px] text-foreground">{item.anchor_type}:{item.anchor_id}</span>
+                {item.label ? <span> — {item.label}</span> : null}
+                {item.snippet ? <span className="block">{item.snippet}</span> : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {evidenceGap ? (
+        <div className="rounded border border-signal-yellow/20 bg-signal-yellow/10 px-2 py-1 text-signal-yellow">
+          Evidence gap: {evidenceGap}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MetadataList({ label, items }: { label: string; items: string[] }) {
+  return (
+    <div>
+      <p className="mb-1 font-semibold text-foreground">{label}</p>
+      <ul className="list-disc space-y-1 pl-4">
+        {items.map((item, index) => <li key={`${label}-${index}`}>{item}</li>)}
+      </ul>
+    </div>
+  );
+}
+
 function BriefSectionRow({ section, index }: { section: BriefSection; index: number }) {
   const style = styleForSection(String(section.title ?? ""));
   const Icon = style?.icon ?? FileText;
@@ -36,6 +103,7 @@ function BriefSectionRow({ section, index }: { section: BriefSection; index: num
         <h3 className="text-sm font-semibold text-foreground">{String(section.title ?? `Section ${index + 1}`)}</h3>
       </div>
       <p className="mt-2 whitespace-pre-line text-sm leading-6 text-muted-foreground">{String(section.body ?? "")}</p>
+      <EvidenceList section={section} />
     </section>
   );
 }

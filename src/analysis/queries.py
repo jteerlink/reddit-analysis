@@ -446,13 +446,11 @@ def thread_analysis(conn, post_id: str) -> dict:
 
 def latest_brief(conn) -> Optional[dict]:
     try:
-        rows = list_artifacts(conn, kind="analyst_brief", limit=1)
-        if not rows:
-            return None
-        row = rows[0]
-        if row.get("status") != "succeeded":
-            return None
-        return _brief_from_artifact(row, "deterministic_fallback")
+        for kind, label in (("analyst_brief_llm", "llm_artifact"), ("analyst_brief", "deterministic_fallback")):
+            rows = [row for row in list_artifacts(conn, kind=kind, limit=1) if row.get("status") == "succeeded"]
+            if rows:
+                return _brief_from_artifact(rows[0], label)
+        return None
     except Exception:
         return None
 

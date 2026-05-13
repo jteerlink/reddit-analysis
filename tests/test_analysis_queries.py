@@ -58,6 +58,49 @@ def test_latest_brief_requires_succeeded_artifact():
     assert queries.latest_brief(conn) is None
 
 
+def test_latest_brief_prefers_llm_and_preserves_section_metadata():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_analysis_tables(conn)
+    deterministic = enqueue_artifact(
+        conn,
+        kind="analyst_brief",
+        source_input_hash="deterministic",
+        payload={"brief_id": "det", "headline": "Deterministic brief", "sections": []},
+        provider="deterministic",
+    )
+    complete_artifact(conn, deterministic["artifact_id"], {"brief_id": "det", "headline": "Deterministic brief", "sections": []})
+    llm = enqueue_artifact(
+        conn,
+        kind="analyst_brief_llm",
+        source_input_hash="llm",
+        payload={"brief_id": "llm", "headline": "LLM brief", "sections": []},
+        provider="ollama",
+        schema_version=2,
+    )
+    complete_artifact(
+        conn,
+        llm["artifact_id"],
+        {
+            "brief_id": "llm",
+            "headline": "LLM brief",
+            "sections": [
+                {
+                    "title": "Key Findings",
+                    "body": "Body",
+                    "evidence": [{"anchor_type": "event_id", "anchor_id": "1", "label": "Known event"}],
+                }
+            ],
+        },
+    )
+
+    result = queries.latest_brief(conn)
+
+    assert result["brief_id"] == "llm"
+    assert result["provenance"]["label"] == "llm_artifact"
+    assert result["sections"][0]["evidence"][0]["anchor_id"] == "1"
+
+
 def test_briefs_returns_llm_and_deterministic_artifacts():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row

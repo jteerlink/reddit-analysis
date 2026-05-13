@@ -213,7 +213,24 @@ export interface SemanticSearchResponse {
 export interface BriefSection {
   title: string;
   body: string;
+  claims?: string[];
+  evidence?: BriefEvidence[];
+  drivers?: string[];
+  implications?: string[];
+  delta?: string;
+  delta_source?: string;
+  current_window?: string;
+  comparison_window?: string;
+  evidence_gap?: string;
   [key: string]: unknown;
+}
+
+export interface BriefEvidence {
+  anchor_type: string;
+  anchor_id: string;
+  label?: string;
+  snippet?: string;
+  relevance?: string;
 }
 
 export interface AnalystBrief {

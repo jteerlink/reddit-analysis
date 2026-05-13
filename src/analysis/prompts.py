@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import List, Optional, Tuple
 
 Messages = List[dict]
@@ -90,6 +91,7 @@ def analyst_brief_prompt(
     topic_labels: List[str],
     model_count: int,
     parent_context: Optional[List[dict]] = None,
+    evidence_context: Optional[dict] = None,
 ) -> Tuple[Messages, str]:
     """
     Prompt to generate a structured analyst brief as JSON.
@@ -100,7 +102,9 @@ def analyst_brief_prompt(
     for e in events[:5]:
         label = e.get("label") or e.get("auto_label") or "Unnamed event"
         date = e.get("peak_date") or e.get("date") or ""
-        event_lines.append(f"- {date}: {label}")
+        event_id = e.get("event_id")
+        event_prefix = f"event_id={event_id} " if event_id is not None else ""
+        event_lines.append(f"- {event_prefix}{date}: {label}")
 
     events_block = "\n".join(event_lines) if event_lines else "No recent events."
     topics_block = ", ".join(topic_labels[:10]) if topic_labels else "No topics labeled yet."
@@ -114,14 +118,21 @@ def analyst_brief_prompt(
         parent_lines.append(f"- {pid}: {volume:,} docs, mean sentiment {mean_str}")
     parents_block = "\n".join(parent_lines) if parent_lines else "No parent context."
 
+    evidence_block = json.dumps(evidence_context or {}, sort_keys=True, default=str, indent=2)
+
     schema = (
         '{"headline": "...",'
         ' "sections": ['
-        '{"title": "Executive Summary", "body": "..."},'
-        '{"title": "Key Findings", "body": "..."},'
-        '{"title": "Notable Trends", "body": "..."},'
-        '{"title": "Risks & Anomalies", "body": "..."},'
-        '{"title": "Outlook", "body": "..."}'
+        '{"title": "Executive Summary", "body": "...",'
+        ' "claims": ["..."],'
+        ' "evidence": [{"anchor_type": "event_id|post_id|comment_id|topic_label", "anchor_id": "...", "label": "...", "snippet": "..."}],'
+        ' "drivers": ["..."],'
+        ' "implications": ["..."],'
+        ' "delta": "...",'
+        ' "delta_source": "latest_30_vs_prior_30|narrative_events.sentiment_delta|proxy",'
+        ' "current_window": "...",'
+        ' "comparison_window": "...",'
+        ' "evidence_gap": "..."}'
         "]}"
     )
 
@@ -132,7 +143,9 @@ def analyst_brief_prompt(
                 "You are an intelligence analyst summarizing trends from Reddit AI-community data. "
                 "Respond with a single JSON object only. No markdown, no preamble. "
                 f"The object MUST match this schema: {schema}. "
-                "The headline is one sentence. Each section body is 2-4 sentences, concrete and factual."
+                "The headline is one sentence. Each section body is 2-4 sentences, concrete and factual. "
+                "Every major claim must use only evidence anchors supplied in the evidence context. "
+                "If evidence is thin or conflicting, say so in evidence_gap instead of inventing support."
             ),
         },
         {
@@ -141,12 +154,14 @@ def analyst_brief_prompt(
                 f"Recent sentiment events:\n{events_block}\n\n"
                 f"Active discussion topics: {topics_block}\n\n"
                 f"Parent community context (last 30 days):\n{parents_block}\n\n"
+                f"Evidence context and allowed anchors:\n{evidence_block}\n\n"
                 f"Configured LLM models: {model_count}\n\n"
-                "Generate the analyst brief JSON."
+                "Generate the analyst brief JSON. Include drivers/causes, implications, evidence anchors/snippets, "
+                "and delta fields with delta_source/current_window/comparison_window when available."
             ),
         },
     ]
-    return messages, "ab-v2"
+    return messages, "ab-v3"
 
 
 def topic_label_prompt(keywords: List[str]) -> Tuple[Messages, str]:

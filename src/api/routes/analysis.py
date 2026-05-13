@@ -174,25 +174,6 @@ def thread_analysis(post_id: str):
 @router.get("/briefs/latest", response_model=models.AnalystBrief)
 def latest_brief():
     with connection(readonly=True) as conn:
-        # Prefer LLM-generated brief over deterministic one
-        llm_briefs = [
-            a for a in list_artifacts(conn, kind="analyst_brief_llm")
-            if a.get("status") == "succeeded"
-        ]
-        if llm_briefs:
-            payload = json.loads(llm_briefs[0].get("payload") or "{}")
-            return {
-                **payload,
-                "state": "ready",
-                "provenance": _provenance(
-                    "ready",
-                    "llm_artifact",
-                    "analysis_artifacts",
-                    [llm_briefs[0]["artifact_id"]],
-                    provider=llm_briefs[0].get("provider"),
-                    freshness_timestamp=llm_briefs[0].get("freshness_timestamp"),
-                ),
-            }
         brief = queries.latest_brief(conn)
     return brief or {
         "brief_id": "none",
