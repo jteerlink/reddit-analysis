@@ -17,7 +17,7 @@ export function TopicBarChart({ data }: Props) {
         <XAxis dataKey="week_start" {...CHART_AXIS_PROPS} tickFormatter={(v) => v.slice(5)} />
         <YAxis {...CHART_AXIS_PROPS} width={40} />
         <Tooltip {...CHART_TOOLTIP_PROPS} />
-        <Bar dataKey="doc_count" fill={CHART_COLORS.copper} radius={[4, 4, 1, 1]} name="Docs" isAnimationActive={false} activeBar={{ stroke: CHART_COLORS.cursor, strokeWidth: 1 }} />
+        <Bar dataKey="doc_count" fill={CHART_COLORS.copper} radius={[4, 4, 1, 1]} name="Comments" isAnimationActive={false} activeBar={{ stroke: CHART_COLORS.cursor, strokeWidth: 1 }} />
       </BarChart>
       </ResponsiveContainer>
     </div>

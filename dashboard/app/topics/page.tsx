@@ -157,7 +157,7 @@ export default function TopicsPage() {
         </ChartCard>
 
         <div className="space-y-4">
-          <ChartCard title="Topics" subtitle="Ordered by document count">
+          <ChartCard title="Topics" subtitle="Ordered by comment count">
             <div className="flex max-h-[520px] flex-col gap-1 overflow-y-auto pr-1">
               {topicRows.length ? topicRows.map((t) => {
                 const label = (t as Topic).label || (t as Topic).llm_label;
@@ -187,7 +187,7 @@ export default function TopicsPage() {
             <>
               <ChartCard
                 title={selectedTopic.label || selectedTopic.llm_label || `Topic #${selectedTopic.topic_id}`}
-                subtitle="Weekly document count"
+                subtitle="Weekly comment count"
               >
                 {overTime ? <TopicBarChart data={overTime} /> : <Skeleton className="h-52 w-full" />}
               </ChartCard>

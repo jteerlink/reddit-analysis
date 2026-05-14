@@ -221,7 +221,7 @@ export function SubredditNetworkGraph({ nodes, edges, selectedParent, onSelectPa
           <p className="font-mono text-signal-copper">{hovered.display_name}</p>
           <p className="mt-1 text-sm font-medium text-foreground">{hovered.subreddit}</p>
           <p className="mt-1 font-mono text-muted-foreground">
-            {hovered.total_volume.toLocaleString()} docs / sentiment{" "}
+            {hovered.total_volume.toLocaleString()} comments / sentiment{" "}
             {hovered.mean_sentiment == null ? "n/a" : hovered.mean_sentiment.toFixed(2)}
           </p>
           {!!hovered.top_topics.length && (

@@ -3,11 +3,65 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import List, Optional, Tuple
 
 Messages = List[dict]
 _SYSTEM = "system"
 _USER = "user"
+_TOPIC_WORD = re.compile(r"[a-z0-9]+(?:['_-][a-z0-9]+)?", re.IGNORECASE)
+_TOPIC_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "been",
+    "being",
+    "but",
+    "by",
+    "for",
+    "from",
+    "had",
+    "has",
+    "have",
+    "in",
+    "is",
+    "it",
+    "its",
+    "of",
+    "on",
+    "or",
+    "that",
+    "the",
+    "their",
+    "them",
+    "these",
+    "they",
+    "this",
+    "those",
+    "to",
+    "was",
+    "were",
+    "with",
+    "you",
+    "your",
+}
+
+
+def clean_topic_keywords(keywords: List[str]) -> List[str]:
+    """Normalize topic keywords before deterministic or LLM labeling."""
+    seen: set[str] = set()
+    cleaned: List[str] = []
+    for raw in keywords:
+        for token in _TOPIC_WORD.findall(str(raw).lower()):
+            if len(token) <= 1 or token in _TOPIC_STOPWORDS or token in seen:
+                continue
+            seen.add(token)
+            cleaned.append(token)
+    return cleaned
 
 
 def thread_analysis_prompt(
@@ -115,7 +169,7 @@ def analyst_brief_prompt(
         volume = parent.get("volume") or 0
         mean = parent.get("mean_sentiment")
         mean_str = f"{mean:+.2f}" if isinstance(mean, (int, float)) else "n/a"
-        parent_lines.append(f"- {pid}: {volume:,} docs, mean sentiment {mean_str}")
+        parent_lines.append(f"- {pid}: {volume:,} Reddit items/comments, mean sentiment {mean_str}")
     parents_block = "\n".join(parent_lines) if parent_lines else "No parent context."
 
     evidence_block = json.dumps(evidence_context or {}, sort_keys=True, default=str, indent=2)
@@ -143,7 +197,9 @@ def analyst_brief_prompt(
                 "You are an intelligence analyst summarizing trends from Reddit AI-community data. "
                 "Respond with a single JSON object only. No markdown, no preamble. "
                 f"The object MUST match this schema: {schema}. "
-                "The headline is one sentence. Each section body is 2-4 sentences, concrete and factual. "
+                "The headline is one sentence. Include five sections named Executive Summary, Key Findings, "
+                "Notable Trends, Risks & Anomalies, and Outlook. "
+                "Each section body is 2-4 sentences, concrete, factual, and comprehensive enough to stand alone. "
                 "Every major claim must use only evidence anchors supplied in the evidence context. "
                 "If evidence is thin or conflicting, say so in evidence_gap instead of inventing support."
             ),
@@ -169,15 +225,18 @@ def topic_label_prompt(keywords: List[str]) -> Tuple[Messages, str]:
     Prompt to generate a short human-readable label for a BERTopic cluster.
     Returns (messages, prompt_version).
     """
-    kw_str = ", ".join(keywords[:12]) if keywords else "(no keywords)"
+    clean_keywords = clean_topic_keywords(keywords)
+    kw_str = ", ".join(clean_keywords[:12]) if clean_keywords else "(no keywords)"
 
     messages: Messages = [
         {
             "role": _SYSTEM,
             "content": (
                 "You label Reddit discussion clusters. "
-                "Given a list of keywords from a topic cluster, respond with only a short label "
-                "(2-5 words, title case). No explanation."
+                "Given cleaned keywords from a topic cluster, infer the underlying discussion theme. "
+                "Respond with only one concise, insightful topic headline "
+                "(2-5 words, Title Case). Do not echo a comma-separated keyword list, do not use markdown, "
+                "and avoid generic labels such as Discussion, Topic, Reddit, General, or Miscellaneous."
             ),
         },
         {
@@ -185,4 +244,4 @@ def topic_label_prompt(keywords: List[str]) -> Tuple[Messages, str]:
             "content": f"Keywords: {kw_str}\n\nLabel:",
         },
     ]
-    return messages, "tl-v1"
+    return messages, "tl-v2"

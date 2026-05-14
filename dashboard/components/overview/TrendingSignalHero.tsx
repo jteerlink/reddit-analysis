@@ -91,13 +91,13 @@ export function TrendingSignalHero({ topics }: Props) {
                 )}
                 <div className="mt-auto flex flex-wrap items-center gap-1">
                   <span className="rounded border border-signal-green/25 bg-signal-green/10 px-2 py-0.5 font-mono text-[10px] text-signal-green">
-                    {topic.doc_count.toLocaleString()} docs
+                    {topic.doc_count.toLocaleString()} comments
                   </span>
                   {parents.slice(0, 3).map((p) => (
                     <span
                       key={p.parent_id}
                       className="flex items-center gap-1 rounded border border-border bg-card/80 px-1.5 py-0.5 text-[10px] text-muted-foreground"
-                      title={`${p.doc_count} docs from ${p.display_name}`}
+                      title={`${p.doc_count} comments from ${p.display_name}`}
                     >
                       <span className="size-1.5 rounded-full" style={{ background: parentColor(p.parent_id) }} />
                       {p.display_name}

@@ -105,9 +105,6 @@ export function SignalStreamChart({ volumeData, sentimentData, sentimentDaily }:
   const sentimentRows = aggregateSentiment(sentimentDaily);
   const volumeRows = aggregateVolume(volumeData);
   const sentimentPoints = toPoints(sentimentRows, (row) => row.score, -1, 1);
-  const positivePoints = sentimentPoints.map((point) => ({ ...point, y: point.y - 18 - positive * 0.18 }));
-  const neutralPoints = sentimentPoints.map((point, index) => ({ ...point, y: 125 + Math.sin(index * 0.9) * (16 + neutral * 0.08) }));
-  const negativePoints = sentimentPoints.map((point) => ({ ...point, y: 250 - point.y + 34 - negative * 0.14 }));
   const maxVolume = Math.max(...volumeRows.map((row) => row.count), 1);
   const volumePoints = toPoints(volumeRows, (row) => row.count, 0, maxVolume, 58, 218);
   const volumeByDate = new Map(volumeRows.map((row) => [row.date, row.count]));
@@ -115,8 +112,8 @@ export function SignalStreamChart({ volumeData, sentimentData, sentimentDaily }:
     .sort((a, b) => b.value - a.value)
     .slice(0, 6)
     .sort((a, b) => a.x - b.x);
-  const anomaly = negativePoints.reduce((lowest, point) => (point.y > lowest.y ? point : lowest), negativePoints[0]);
-  const nearestSignal = (clientX: number, clientY: number, rect: DOMRect) => {
+  const anomaly = sentimentPoints.reduce((lowest, point) => (point.y > lowest.y ? point : lowest), sentimentPoints[0]);
+  const nearestSignal = (clientX: number, rect: DOMRect) => {
     const svgX = ((clientX - rect.left) / rect.width) * 560;
     const nearest = sentimentPoints.reduce((best, point) => {
       return Math.abs(point.x - svgX) < Math.abs(best.x - svgX) ? point : best;
@@ -172,7 +169,7 @@ export function SignalStreamChart({ volumeData, sentimentData, sentimentDaily }:
           viewBox="0 0 560 250"
           role="img"
           aria-label="Layered sentiment signal stream"
-          onMouseMove={(event) => setHoverSignal(nearestSignal(event.clientX, event.clientY, event.currentTarget.getBoundingClientRect()))}
+          onMouseMove={(event) => setHoverSignal(nearestSignal(event.clientX, event.currentTarget.getBoundingClientRect()))}
           onMouseLeave={() => setHoverSignal(null)}
         >
           <defs>
@@ -191,9 +188,8 @@ export function SignalStreamChart({ volumeData, sentimentData, sentimentDaily }:
           </defs>
           <path d="M 22 44 H 542 M 22 96 H 542 M 22 148 H 542 M 22 200 H 542" stroke="rgba(255,255,255,0.06)" strokeDasharray="3 8" />
           <path d={pathFromPoints(volumePoints)} fill="none" stroke="url(#streamGlow)" strokeWidth="42" strokeLinecap="round" strokeLinejoin="round" opacity="0.35" />
-          <path d={pathFromPoints(positivePoints)} fill="none" stroke="#31d38f" strokeWidth="2.5" strokeLinejoin="round" filter="url(#softGlow)" />
-          <path d={pathFromPoints(neutralPoints)} fill="none" stroke="#c07a45" strokeWidth="1.8" strokeDasharray="7 7" strokeLinejoin="round" opacity="0.9" />
-          <path d={pathFromPoints(negativePoints)} fill="none" stroke="#ef5f54" strokeWidth="1.6" strokeLinejoin="round" opacity="0.78" />
+          <path d={pathFromPoints(sentimentPoints)} fill="none" stroke="#31d38f" strokeWidth="2.8" strokeLinejoin="round" filter="url(#softGlow)" />
+          <path d="M 22 125 H 542" fill="none" stroke="#c07a45" strokeWidth="1.4" strokeDasharray="7 7" opacity="0.62" />
           {highVolumeMarkers.map((point, index) => (
             <g key={`${point.x}-${point.value}`}>
               <line x1={point.x} x2={point.x} y1="34" y2="218" stroke={index % 2 ? "#c07a45" : "#31d38f"} strokeOpacity="0.32" strokeDasharray="2 10" />
@@ -218,8 +214,8 @@ export function SignalStreamChart({ volumeData, sentimentData, sentimentDaily }:
           <div
             className="pointer-events-none absolute z-20 min-w-36 rounded-lg border border-signal-copper/35 bg-[#081816]/95 px-3 py-2 text-[11px] text-foreground shadow-2xl"
             style={{
-              left: `calc(2rem + ${(hoverSignal.x / 560) * (100 - 0)}%)`,
-              top: `${Math.max(8, hoverSignal.y * 0.92)}px`,
+              left: `calc(2rem + ${(hoverSignal.x / 560) * 100}% - ${(hoverSignal.x / 560) * 4}rem)`,
+              top: `calc(0.75rem + ${(hoverSignal.y / 250) * 260}px)`,
               transform: hoverSignal.x > 420 ? "translateX(-105%)" : "translateX(10px)",
             }}
           >

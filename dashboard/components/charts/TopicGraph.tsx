@@ -309,7 +309,7 @@ export function TopicGraph({ nodes, edges, selectedTopicId, onSelectTopic, compa
           <p className="font-mono text-signal-copper">topic #{hoveredNode.topic_id}</p>
           <p className="mt-1 text-sm font-medium text-foreground">{topicName(hoveredNode.keywords)}</p>
           <p className="mt-1 font-mono text-muted-foreground">
-            {hoveredNode.doc_count.toLocaleString()} docs / coherence {(hoveredNode.coherence_score ?? 0).toFixed(2)}
+            {hoveredNode.doc_count.toLocaleString()} comments / coherence {(hoveredNode.coherence_score ?? 0).toFixed(2)}
           </p>
           {!!hoveredNode.keyword_terms.length && (
             <p className="mt-1 truncate font-mono text-signal-green">{hoveredNode.keyword_terms.slice(0, 6).join(", ")}</p>

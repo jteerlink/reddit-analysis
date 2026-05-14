@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 
 from src.analysis.db import artifact_checksum, complete_artifact, enqueue_artifact, ensure_analysis_tables
+from src.analysis.prompts import clean_topic_keywords
 from src.db.connection import execute, is_postgres_connection
 
 
@@ -26,25 +27,7 @@ def _keywords(value: Any) -> list[str]:
 
 
 def _label_from_keywords(keywords: list[str]) -> str:
-    stopwords = {
-        "the",
-        "and",
-        "for",
-        "that",
-        "with",
-        "this",
-        "you",
-        "are",
-        "from",
-        "have",
-        "was",
-        "but",
-        "not",
-        "can",
-        "all",
-        "just",
-    }
-    useful = [word for word in keywords if word.lower() not in stopwords and len(word) > 2]
+    useful = clean_topic_keywords(keywords)
     return " / ".join(useful[:3]) if useful else "Unlabeled cluster"
 
 
@@ -405,7 +388,7 @@ def backfill_brief(conn) -> int:
             }
         )
     topic_claims = [
-        f"{(row['label'] if hasattr(row, 'keys') else row[1])} ({int((row['doc_count'] if hasattr(row, 'keys') else row[2]) or 0)} docs)"
+        f"{(row['label'] if hasattr(row, 'keys') else row[1])} ({int((row['doc_count'] if hasattr(row, 'keys') else row[2]) or 0)} comments)"
         for row in top_topics
     ]
     payload = {

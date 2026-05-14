@@ -90,6 +90,65 @@ function MetadataList({ label, items }: { label: string; items: string[] }) {
   );
 }
 
+type BriefBodyBlock =
+  | { type: "paragraph"; text: string }
+  | { type: "list"; items: string[] };
+
+function parseBriefBody(body: string): BriefBodyBlock[] {
+  const blocks: BriefBodyBlock[] = [];
+  const lines = body.replace(/\r\n/g, "\n").split("\n");
+  let paragraph: string[] = [];
+  let listItems: string[] = [];
+
+  const flushParagraph = () => {
+    const text = paragraph.join(" ").trim();
+    if (text) blocks.push({ type: "paragraph", text });
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (listItems.length) blocks.push({ type: "list", items: listItems });
+    listItems = [];
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+    const bullet = line.match(/^(?:[-*•]|\d+[.)])\s+(.+)$/);
+    if (bullet) {
+      flushParagraph();
+      listItems.push(bullet[1].trim());
+      continue;
+    }
+    flushList();
+    paragraph.push(line.replace(/^#{1,6}\s+/, ""));
+  }
+  flushParagraph();
+  flushList();
+  return blocks;
+}
+
+function BriefBody({ body }: { body: string }) {
+  const blocks = parseBriefBody(body);
+  if (!blocks.length) return null;
+  return (
+    <div className="mt-2 space-y-2 text-sm leading-6 text-muted-foreground">
+      {blocks.map((block, index) => (
+        block.type === "list" ? (
+          <ul key={`list-${index}`} className="list-disc space-y-1 pl-5">
+            {block.items.map((item, itemIndex) => <li key={`${index}-${itemIndex}`}>{item}</li>)}
+          </ul>
+        ) : (
+          <p key={`paragraph-${index}`}>{block.text}</p>
+        )
+      ))}
+    </div>
+  );
+}
+
 function BriefSectionRow({ section, index }: { section: BriefSection; index: number }) {
   const style = styleForSection(String(section.title ?? ""));
   const Icon = style?.icon ?? FileText;
@@ -102,7 +161,7 @@ function BriefSectionRow({ section, index }: { section: BriefSection; index: num
         </span>
         <h3 className="text-sm font-semibold text-foreground">{String(section.title ?? `Section ${index + 1}`)}</h3>
       </div>
-      <p className="mt-2 whitespace-pre-line text-sm leading-6 text-muted-foreground">{String(section.body ?? "")}</p>
+      <BriefBody body={String(section.body ?? "")} />
       <EvidenceList section={section} />
     </section>
   );

@@ -272,6 +272,7 @@ def test_api_db_returns_expected_shapes(api_db):
     assert api_db.get_topics()[0]["topic_id"] == 1
     assert api_db.get_topics()[0]["label"] == "ai label"
     assert api_db.get_topics()[0]["label_source"] == "deterministic_fallback"
+    assert api_db.get_trending_topics(1)[0]["label"] == "ai label"
     assert api_db.get_topic_over_time(1)[0]["doc_count"] == 5
     assert api_db.get_topic_heatmap(30)[0]["topic_id"] == 1
     assert api_db.get_known_subreddits() == ["ChatGPT", "LocalLLaMA"]

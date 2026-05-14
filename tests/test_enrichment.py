@@ -270,6 +270,25 @@ def test_enrich_topic_labels_updates_labels(conn, local_config):
     assert row["label"] == "AI Tooling"
 
 
+def test_enrich_topic_labels_strips_stopwords_before_llm_prompt(conn, local_config):
+    conn.execute(
+        "INSERT INTO cluster_labels (cluster_id, label, keywords, doc_count) VALUES (3, 'old label', '[\"the\", \"ai\", \"and\", \"tools\", \"for\", \"teams\"]', 20)"
+    )
+    conn.commit()
+    prompt_texts = []
+
+    def fake_chat_safe(config, model, messages, artifact_id, c):
+        prompt_texts.append(messages[-1]["content"])
+        return "Team AI Tooling"
+
+    with patch("src.analysis.enrichment._chat_safe", side_effect=fake_chat_safe):
+        count = enrich_topic_labels(conn, local_config, "llama3", limit=10)
+
+    assert count == 1
+    assert "Keywords: ai, tools, teams" in prompt_texts[0]
+    assert "the" not in prompt_texts[0].lower()
+
+
 def test_enrich_topic_labels_skips_when_no_model(conn, local_config):
     conn.execute(
         "INSERT INTO cluster_labels (cluster_id, label, keywords, doc_count) VALUES (2, 'test', '[\"x\"]', 10)"
@@ -318,7 +337,7 @@ def test_enrich_bertopic_labels_writes_topic_llm_label(conn, local_config):
     assert count == 1
     row = conn.execute("SELECT llm_label, llm_prompt_version FROM topics WHERE topic_id = 1").fetchone()
     assert row["llm_label"] == "AI Tooling"
-    assert row["llm_prompt_version"] == "tl-v1"
+    assert row["llm_prompt_version"] == "tl-v2"
 
 
 def test_enrich_bertopic_labels_is_idempotent(conn, local_config):

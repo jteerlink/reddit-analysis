@@ -269,3 +269,5 @@ def test_deterministic_brief_includes_evidence_sections():
     titles = {section["title"] for section in payload["sections"]}
     assert {"Executive Summary", "Narrative Events", "Topic Labels", "Model Health", "Risks & Anomalies"} <= titles
     assert payload["sections"][1]["evidence"][0]["anchor_type"] == "event_id"
+    assert "10 comments" in payload["sections"][2]["body"]
+    assert "docs" not in payload["sections"][2]["body"]

@@ -30,6 +30,7 @@ from src.analysis.ollama import (
     select_model,
 )
 from src.analysis.prompts import (
+    clean_topic_keywords,
     narrative_summary_prompt,
     thread_analysis_prompt,
     topic_label_prompt,
@@ -37,6 +38,14 @@ from src.analysis.prompts import (
 from src.db.connection import execute, is_postgres_connection, paramstyle
 
 logger = logging.getLogger(__name__)
+
+
+def _clean_llm_label(content: str) -> str:
+    """Return a single UI-safe topic label from a model response."""
+    first_line = next((line.strip() for line in content.splitlines() if line.strip()), "")
+    label = first_line.strip("`*_#-–— \t\"'")
+    label = " ".join(label.split())
+    return label[:80]
 
 def _select_model(conn: Any, config: OllamaConfig) -> Optional[str]:
     """
@@ -296,11 +305,14 @@ def enrich_topic_labels(
         except (ValueError, TypeError):
             keywords = []
 
-        source_hash = artifact_checksum({"cluster_id": cluster_id, "keywords": keywords})
+        clean_keywords = clean_topic_keywords(keywords)
+        messages, version = topic_label_prompt(clean_keywords)
+        source_hash = artifact_checksum(
+            {"cluster_id": cluster_id, "keywords": clean_keywords, "prompt_version": version}
+        )
         if source_hash in existing_artifacts:
             continue
 
-        messages, version = topic_label_prompt(keywords)
         artifact = enqueue_artifact(
             conn,
             kind="topic_label_llm",
@@ -318,7 +330,7 @@ def enrich_topic_labels(
         if content is None:
             continue
 
-        llm_label = content.strip().splitlines()[0][:80]
+        llm_label = _clean_llm_label(content)
         complete_artifact(conn, artifact_id, {"cluster_id": cluster_id, "llm_label": llm_label})
 
         try:
@@ -390,11 +402,14 @@ def enrich_bertopic_labels(
         if not isinstance(keywords, list):
             keywords = []
 
-        source_hash = artifact_checksum({"topic_id": int(topic_id), "keywords": keywords})
+        clean_keywords = clean_topic_keywords(keywords)
+        messages, version = topic_label_prompt(clean_keywords)
+        source_hash = artifact_checksum(
+            {"topic_id": int(topic_id), "keywords": clean_keywords, "prompt_version": version}
+        )
         if source_hash in existing_artifacts:
             continue
 
-        messages, version = topic_label_prompt(keywords)
         artifact = enqueue_artifact(
             conn,
             kind="bertopic_label_llm",
@@ -412,7 +427,7 @@ def enrich_bertopic_labels(
         if content is None:
             continue
 
-        llm_label = content.strip().splitlines()[0][:80] if content.strip() else ""
+        llm_label = _clean_llm_label(content) if content.strip() else ""
         complete_artifact(
             conn,
             artifact_id,

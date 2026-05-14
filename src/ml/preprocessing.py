@@ -31,6 +31,59 @@ _RE_INLINE_CODE = re.compile(r"`([^`]+)`")
 _RE_CODE_BLOCK = re.compile(r"```[\s\S]*?```")
 _RE_HEADING = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 _RE_WHITESPACE = re.compile(r"\s+")
+_RE_WORD = re.compile(r"[a-z0-9]+(?:['_-][a-z0-9]+)?")
+
+_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "been",
+    "being",
+    "but",
+    "by",
+    "for",
+    "from",
+    "had",
+    "has",
+    "have",
+    "he",
+    "her",
+    "hers",
+    "him",
+    "his",
+    "i",
+    "in",
+    "is",
+    "it",
+    "its",
+    "of",
+    "on",
+    "or",
+    "our",
+    "ours",
+    "she",
+    "that",
+    "the",
+    "their",
+    "theirs",
+    "them",
+    "these",
+    "they",
+    "this",
+    "those",
+    "to",
+    "was",
+    "we",
+    "were",
+    "with",
+    "you",
+    "your",
+    "yours",
+}
 
 
 def _detect_device() -> str:
@@ -59,7 +112,7 @@ class TextCleaner:
             self._nlp = spacy.load("en_core_web_sm", disable=["parser", "ner"])
         return self._nlp
 
-    def clean(self, text: str) -> str:
+    def clean(self, text: str, strip_stopwords: bool = True) -> str:
         if not text:
             return ""
         text = _RE_CODE_BLOCK.sub(" ", text)
@@ -77,6 +130,11 @@ class TextCleaner:
             nlp = self._get_nlp()
             doc = nlp(text)
             text = " ".join(token.lemma_ for token in doc if not token.is_space)
+
+        tokens = _RE_WORD.findall(text)
+        if strip_stopwords:
+            tokens = [token for token in tokens if token not in _STOPWORDS]
+        text = " ".join(tokens)
 
         return text
 
@@ -223,7 +281,7 @@ def run_preprocessing(
 
                 raw_text = cleaner.build_raw_text(title, content)
                 clean_text = cleaner.clean(raw_text)
-                tokens = cleaner.token_count(clean_text)
+                tokens = cleaner.token_count(cleaner.clean(raw_text, strip_stopwords=False))
 
                 is_filtered = 0
                 filter_reason = None

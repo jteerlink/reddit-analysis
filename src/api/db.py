@@ -419,16 +419,20 @@ def get_trending_topics(n: int = 3) -> List[dict]:
     try:
         conn = _connect()
         label_expr = _topic_llm_label_expr(conn, "t")
+        has_cluster_labels = _table_exists(conn, "cluster_labels")
+        cluster_join = "LEFT JOIN cluster_labels cl ON cl.cluster_id = t.topic_id" if has_cluster_labels else ""
+        cluster_label_expr = "cl.label" if has_cluster_labels else "NULL"
         df = pd.read_sql_query(
             f"""
             SELECT t.topic_id,
                    t.keywords,
                    {label_expr} AS llm_label,
-                   COALESCE(NULLIF({label_expr}, ''), '') AS label,
+                   COALESCE(NULLIF({label_expr}, ''), NULLIF({cluster_label_expr}, ''), '') AS label,
                    tot.doc_count,
                    tot.week_start
             FROM topic_over_time tot
             JOIN topics t ON tot.topic_id = t.topic_id
+            {cluster_join}
             WHERE tot.week_start = (SELECT MAX(week_start) FROM topic_over_time)
               AND t.topic_id != -1
             ORDER BY tot.doc_count DESC

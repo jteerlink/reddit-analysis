@@ -84,7 +84,7 @@ def test_clean_strips_urls(cleaner):
     result = cleaner.clean("Check this out https://reddit.com/r/test and www.example.com")
     assert "https://" not in result
     assert "www." not in result
-    assert "check this out" in result
+    assert "check" in result
 
 
 def test_clean_strips_markdown_bold_italic(cleaner):
@@ -136,6 +136,18 @@ def test_clean_collapses_whitespace(cleaner):
     result = cleaner.clean("too   many    spaces\n\n\nnewlines")
     assert "  " not in result
     assert "\n" not in result
+
+
+def test_clean_strips_stopwords_but_keeps_negation(cleaner):
+    result = cleaner.clean("This is the AI model, but it is not ready for users.")
+    tokens = result.split()
+
+    assert "this" not in tokens
+    assert "the" not in tokens
+    assert "for" not in tokens
+    assert "not" in tokens
+    assert "ai" in tokens
+    assert "model" in tokens
 
 
 def test_clean_empty_string(cleaner):
