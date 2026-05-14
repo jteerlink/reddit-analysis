@@ -29,6 +29,29 @@ def test_activity_reports_unpopulated_state():
     assert events[0]["provenance"]["producer_job"] == "run_analysis_backfill"
 
 
+def test_activity_includes_operational_events_when_artifacts_are_empty():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_analysis_tables(conn)
+    conn.executescript(
+        """
+        CREATE TABLE posts (id TEXT PRIMARY KEY, timestamp TEXT);
+        CREATE TABLE sentiment_predictions (id TEXT PRIMARY KEY, predicted_at TEXT);
+        CREATE TABLE sentiment_forecast (subreddit TEXT, date TEXT, yhat REAL);
+        CREATE TABLE change_points (subreddit TEXT, date TEXT, magnitude REAL);
+        """
+    )
+    conn.execute("INSERT INTO posts (id, timestamp) VALUES ('p1', '2026-05-01T00:00:00Z')")
+    conn.execute("INSERT INTO sentiment_predictions (id, predicted_at) VALUES ('p1', '2026-05-02T00:00:00Z')")
+    conn.execute("INSERT INTO sentiment_forecast (subreddit, date, yhat) VALUES ('ChatGPT', '2026-05-03', 0.2)")
+    conn.commit()
+
+    events = queries.activity(conn)
+
+    assert {event["type"] for event in events} >= {"collection", "ml_run", "forecast"}
+    assert all(event["state"] == "ready" for event in events)
+
+
 def test_freshness_tracks_latest_success_separately_from_latest_artifact():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
@@ -238,3 +261,74 @@ def test_semantic_search_uses_nonconstant_lexical_fallback_scores():
     assert [row["id"] for row in results] == ["p1", "p2"]
     assert results[0]["score"] > results[1]["score"]
     assert results[0]["provenance"]["algorithm"] == "lexical_overlap_fallback"
+
+
+def test_semantic_search_uses_vector_cache_when_available(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    import numpy as np
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE preprocessed (
+            id TEXT PRIMARY KEY,
+            content_type TEXT,
+            clean_text TEXT,
+            embedding_key TEXT
+        );
+        CREATE TABLE sentiment_predictions (
+            id TEXT PRIMARY KEY,
+            label TEXT,
+            confidence REAL
+        );
+        CREATE TABLE posts (
+            id TEXT PRIMARY KEY,
+            subreddit TEXT,
+            timestamp TEXT
+        );
+        CREATE TABLE comments (
+            id TEXT PRIMARY KEY,
+            subreddit TEXT,
+            timestamp TEXT
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO preprocessed (id, content_type, clean_text, embedding_key) VALUES (?, ?, ?, ?)",
+        ("p1", "post", "alpha aligned result", "p1"),
+    )
+    conn.execute(
+        "INSERT INTO preprocessed (id, content_type, clean_text, embedding_key) VALUES (?, ?, ?, ?)",
+        ("p2", "post", "orthogonal result", "p2"),
+    )
+    conn.execute("INSERT INTO sentiment_predictions (id, label, confidence) VALUES (?, ?, ?)", ("p1", "positive", 0.8))
+    conn.execute("INSERT INTO sentiment_predictions (id, label, confidence) VALUES (?, ?, ?)", ("p2", "neutral", 0.5))
+    conn.execute("INSERT INTO posts (id, subreddit, timestamp) VALUES (?, ?, ?)", ("p1", "LocalLLaMA", "2026-05-01"))
+    conn.execute("INSERT INTO posts (id, subreddit, timestamp) VALUES (?, ?, ?)", ("p2", "ChatGPT", "2026-05-01"))
+    conn.commit()
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "embeddings_index.json").write_text('{"p1": 0, "p2": 1}')
+    np.save(models_dir / "embeddings_cache.npy", np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32))
+
+    class FakeSentenceTransformer:
+        def __init__(self, model_name):
+            self.model_name = model_name
+
+        def encode(self, texts, normalize_embeddings=True):
+            return np.array([[1.0, 0.0]], dtype=np.float32)
+
+    module = types.ModuleType("sentence_transformers")
+    module.SentenceTransformer = FakeSentenceTransformer
+    monkeypatch.setitem(sys.modules, "sentence_transformers", module)
+    monkeypatch.chdir(tmp_path)
+
+    results = queries.semantic_search(conn, "alpha", limit=2)
+
+    assert [row["id"] for row in results] == ["p1", "p2"]
+    assert results[0]["score"] > results[1]["score"]
+    assert results[0]["provenance"]["algorithm"] == "minilm_cosine"

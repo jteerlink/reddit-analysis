@@ -131,6 +131,16 @@ def api_db(monkeypatch, tmp_path):
         )
         conn.execute(
             """
+            CREATE TABLE cluster_labels (
+                cluster_id INTEGER PRIMARY KEY,
+                label TEXT NOT NULL,
+                keywords TEXT NOT NULL,
+                doc_count INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE sentiment_daily (
                 subreddit TEXT NOT NULL,
                 date TEXT NOT NULL,
@@ -214,6 +224,10 @@ def api_db(monkeypatch, tmp_path):
             ("p2", 3, 0.8),
         )
         conn.execute(
+            "INSERT INTO cluster_labels (cluster_id, label, keywords, doc_count) VALUES (?, ?, ?, ?)",
+            (1, "ai label", '["ai"]', 10),
+        )
+        conn.execute(
             "INSERT INTO topic_over_time (topic_id, week_start, doc_count, avg_sentiment) VALUES (?, ?, ?, ?)",
             (1, "2026-04-27", 5, 0.4),
         )
@@ -256,6 +270,8 @@ def test_api_db_returns_expected_shapes(api_db):
     assert api_db.get_change_points(("ChatGPT",))[0]["magnitude"] == 0.2
     assert api_db.get_forecast(("ChatGPT",))[0]["yhat"] == 0.5
     assert api_db.get_topics()[0]["topic_id"] == 1
+    assert api_db.get_topics()[0]["label"] == "ai label"
+    assert api_db.get_topics()[0]["label_source"] == "deterministic_fallback"
     assert api_db.get_topic_over_time(1)[0]["doc_count"] == 5
     assert api_db.get_topic_heatmap(30)[0]["topic_id"] == 1
     assert api_db.get_known_subreddits() == ["ChatGPT", "LocalLLaMA"]

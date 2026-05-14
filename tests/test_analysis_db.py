@@ -13,7 +13,7 @@ from src.analysis.db import (
     fail_artifact,
     list_artifacts,
 )
-from src.analysis.jobs import backfill_embedding_2d, backfill_narrative_events
+from src.analysis.jobs import backfill_brief, backfill_embedding_2d, backfill_narrative_events
 
 
 def test_analysis_schema_and_backfill_lifecycle_are_idempotent():
@@ -183,3 +183,89 @@ def test_embedding_backfill_falls_back_to_reddit_id_cache_key(tmp_path, monkeypa
 
     assert backfill_embedding_2d(conn) == 1
     assert conn.execute("SELECT COUNT(*) FROM embedding_2d").fetchone()[0] == 1
+
+
+def test_embedding_backfill_projects_real_vectors_deterministically(tmp_path, monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_analysis_tables(conn)
+    conn.executescript(
+        """
+        CREATE TABLE topic_assignments (id TEXT PRIMARY KEY, topic_id INTEGER);
+        CREATE TABLE preprocessed (id TEXT PRIMARY KEY, embedding_key TEXT);
+        """
+    )
+    for idx, topic_id in (("post-1", 1), ("post-2", 1), ("post-3", 2)):
+        conn.execute("INSERT INTO topic_assignments (id, topic_id) VALUES (?, ?)", (idx, topic_id))
+        conn.execute("INSERT INTO preprocessed (id, embedding_key) VALUES (?, ?)", (idx, idx))
+    conn.commit()
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "embeddings_index.json").write_text('{"post-1": 0, "post-2": 1, "post-3": 2}')
+    import numpy as np
+
+    np.save(models_dir / "embeddings_cache.npy", np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]], dtype=np.float32))
+    monkeypatch.chdir(tmp_path)
+
+    assert backfill_embedding_2d(conn) == 3
+    first_coords = [
+        tuple(row)
+        for row in conn.execute("SELECT post_id, ROUND(x, 6), ROUND(y, 6), cluster_id FROM embedding_2d ORDER BY post_id")
+    ]
+    assert len({(row[1], row[2]) for row in first_coords}) > 1
+
+    assert backfill_embedding_2d(conn) == 3
+    second_coords = [
+        tuple(row)
+        for row in conn.execute("SELECT post_id, ROUND(x, 6), ROUND(y, 6), cluster_id FROM embedding_2d ORDER BY post_id")
+    ]
+    assert second_coords == first_coords
+
+
+def test_deterministic_brief_includes_evidence_sections():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_analysis_tables(conn)
+    conn.execute(
+        """
+        CREATE TABLE sentiment_predictions (
+            id TEXT PRIMARY KEY,
+            label TEXT,
+            confidence REAL
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO narrative_events (
+            start_date, end_date, peak_date, peak_anomaly_score,
+            sentiment_delta, dominant_subreddits, top_terms, top_post_ids, auto_label
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "2026-05-01",
+            "2026-05-01",
+            "2026-05-01",
+            0.9,
+            0.75,
+            '["ChatGPT"]',
+            '["model", "release"]',
+            '["p1"]',
+            "Positive sentiment shift in r/ChatGPT",
+        ),
+    )
+    conn.execute(
+        "INSERT INTO cluster_labels (cluster_id, label, keywords, doc_count) VALUES (?, ?, ?, ?)",
+        (1, "model release", '["model", "release"]', 10),
+    )
+    conn.execute("INSERT INTO sentiment_predictions (id, label, confidence) VALUES (?, ?, ?)", ("p1", "positive", 0.55))
+    conn.commit()
+
+    assert backfill_brief(conn) == 1
+    row = conn.execute("SELECT payload FROM analysis_artifacts WHERE kind = 'analyst_brief'").fetchone()
+    payload = json.loads(row[0])
+
+    titles = {section["title"] for section in payload["sections"]}
+    assert {"Executive Summary", "Narrative Events", "Topic Labels", "Model Health", "Risks & Anomalies"} <= titles
+    assert payload["sections"][1]["evidence"][0]["anchor_type"] == "event_id"

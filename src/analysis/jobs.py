@@ -52,6 +52,13 @@ def _insert_or_replace(conn, sql: str, params: tuple) -> None:
     execute(conn, sql.replace("INSERT OR REPLACE", "INSERT") if is_postgres_connection(conn) else sql, params)
 
 
+def _scalar_count(conn, sql: str) -> int:
+    try:
+        return int(execute(conn, sql).fetchone()[0] or 0)
+    except Exception:
+        return 0
+
+
 def backfill_cluster_labels(conn) -> int:
     rows = execute(
         conn,
@@ -346,9 +353,35 @@ def backfill_narrative_events(conn, limit: int = 20) -> int:
 
 
 def backfill_brief(conn) -> int:
-    event_count = execute(conn, "SELECT COUNT(*) FROM narrative_events").fetchone()[0]
-    topic_count = execute(conn, "SELECT COUNT(*) FROM cluster_labels").fetchone()[0]
-    model_count = execute(conn, "SELECT COUNT(*) FROM llm_model_registry WHERE available = 1").fetchone()[0]
+    event_count = _scalar_count(conn, "SELECT COUNT(*) FROM narrative_events")
+    topic_count = _scalar_count(conn, "SELECT COUNT(*) FROM cluster_labels")
+    model_count = _scalar_count(conn, "SELECT COUNT(*) FROM llm_model_registry WHERE available = 1")
+    prediction_count = _scalar_count(conn, "SELECT COUNT(*) FROM sentiment_predictions")
+    low_confidence_count = _scalar_count(conn, "SELECT COUNT(*) FROM sentiment_predictions WHERE confidence < 0.6")
+    try:
+        top_events = execute(
+            conn,
+            """
+            SELECT event_id, peak_date, auto_label, sentiment_delta, top_terms, top_post_ids
+            FROM narrative_events
+            ORDER BY peak_date DESC, event_id DESC
+            LIMIT 3
+            """,
+        ).fetchall()
+    except Exception:
+        top_events = []
+    try:
+        top_topics = execute(
+            conn,
+            """
+            SELECT cluster_id, label, doc_count, keywords
+            FROM cluster_labels
+            ORDER BY doc_count DESC, cluster_id
+            LIMIT 5
+            """,
+        ).fetchall()
+    except Exception:
+        top_topics = []
     source_events = [
         row["event_id"] if hasattr(row, "keys") else row[0]
         for row in execute(
@@ -356,14 +389,85 @@ def backfill_brief(conn) -> int:
             "SELECT event_id FROM narrative_events ORDER BY peak_date DESC, event_id DESC LIMIT 5",
         ).fetchall()
     ]
+    event_claims = []
+    event_evidence = []
+    for row in top_events:
+        event_id = row["event_id"] if hasattr(row, "keys") else row[0]
+        label = row["auto_label"] if hasattr(row, "keys") else row[2]
+        delta = row["sentiment_delta"] if hasattr(row, "keys") else row[3]
+        event_claims.append(f"{label or 'Narrative event'} ({delta:+.2f} sentiment delta)" if delta is not None else label or "Narrative event")
+        event_evidence.append(
+            {
+                "anchor_type": "event_id",
+                "anchor_id": str(event_id),
+                "label": label or "Narrative event",
+                "relevance": "recent narrative signal",
+            }
+        )
+    topic_claims = [
+        f"{(row['label'] if hasattr(row, 'keys') else row[1])} ({int((row['doc_count'] if hasattr(row, 'keys') else row[2]) or 0)} docs)"
+        for row in top_topics
+    ]
     payload = {
         "brief_id": "latest",
         "period": "latest",
         "headline": "Latest Reddit intelligence snapshot",
         "sections": [
-            {"title": "Narrative events", "body": f"{int(event_count)} persisted event signals are available."},
-            {"title": "Topic labels", "body": f"{int(topic_count)} topic labels are available."},
-            {"title": "Model enrichment", "body": f"{int(model_count)} configured LLM models are currently registered."},
+            {
+                "title": "Executive Summary",
+                "body": (
+                    f"The deterministic pipeline currently has {int(event_count)} narrative events, "
+                    f"{int(topic_count)} labeled topics, and {int(prediction_count)} sentiment predictions available."
+                ),
+                "claims": [
+                    f"{int(event_count)} persisted narrative events",
+                    f"{int(topic_count)} deterministic topic labels",
+                    f"{int(prediction_count)} sentiment predictions",
+                ],
+                "evidence": event_evidence[:2],
+            },
+            {
+                "title": "Narrative Events",
+                "body": "; ".join(event_claims) if event_claims else "No narrative events have been generated yet.",
+                "claims": event_claims,
+                "evidence": event_evidence,
+                "delta_source": "narrative_events.sentiment_delta",
+                "evidence_gap": None if event_claims else "Run narrative event backfill to populate event evidence.",
+            },
+            {
+                "title": "Topic Labels",
+                "body": "; ".join(topic_claims) if topic_claims else "No topic labels have been generated yet.",
+                "claims": topic_claims,
+                "evidence": [
+                    {
+                        "anchor_type": "cluster_id",
+                        "anchor_id": str(row["cluster_id"] if hasattr(row, "keys") else row[0]),
+                        "label": row["label"] if hasattr(row, "keys") else row[1],
+                        "relevance": "deterministic topic label",
+                    }
+                    for row in top_topics
+                ],
+            },
+            {
+                "title": "Model Health",
+                "body": (
+                    f"{int(low_confidence_count)} of {int(prediction_count)} predictions are below 0.60 confidence. "
+                    f"{int(model_count)} optional LLM models are registered as available."
+                ),
+                "claims": [
+                    f"{int(low_confidence_count)} low-confidence predictions",
+                    f"{int(model_count)} available LLM models",
+                ],
+                "delta_source": "sentiment_predictions.confidence",
+            },
+            {
+                "title": "Risks & Anomalies",
+                "body": (
+                    "LLM enrichment is optional; deterministic evidence is used when provider configuration is missing. "
+                    "Treat empty sections as unpopulated source data, not as evidence that no activity occurred."
+                ),
+                "evidence_gap": "Live Neon and optional LLM provider checks require explicit environment configuration.",
+            },
         ],
         "source_events": source_events,
     }

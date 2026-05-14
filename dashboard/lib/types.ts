@@ -5,6 +5,9 @@ export interface Topic {
   coherence_score?: number | null;
   label?: string | null;
   llm_label?: string | null;
+  deterministic_label?: string | null;
+  label_keywords?: string | null;
+  label_source?: "llm_artifact" | "deterministic_fallback" | "unlabeled" | string;
   weekly_counts?: number[];
 }
 

@@ -60,3 +60,57 @@ def test_analysis_routes_are_read_only_and_typed(monkeypatch):
     assert client.get("/analysis/thread-analysis/p1").json()["post_id"] == "p1"
     assert client.get("/analysis/briefs/latest").json()["brief_id"] == "none"
     assert client.get("/analysis/briefs").json()["items"] == []
+
+
+def test_analysis_routes_report_query_errors_as_error_state(monkeypatch):
+    from src.api.routes import analysis
+
+    monkeypatch.setattr(analysis, "connection", fake_connection)
+    monkeypatch.setattr(analysis, "missing_analysis_tables", lambda conn, tables: [])
+
+    def raise_query_error(conn, limit=1000):
+        raise analysis.queries.AnalysisQueryError("bad projection")
+
+    monkeypatch.setattr(analysis.queries, "embedding_map", raise_query_error)
+
+    client = TestClient(app)
+    response = client.get("/analysis/embedding-map")
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "error"
+    assert response.json()["provenance"]["detail"] == "bad projection"
+
+
+def test_semantic_route_reports_degraded_rows_as_missing_config(monkeypatch):
+    from src.api.routes import analysis
+
+    monkeypatch.setattr(analysis, "connection", fake_connection)
+    monkeypatch.setattr(analysis, "missing_analysis_tables", lambda conn, tables: [])
+    monkeypatch.setattr(
+        analysis.queries,
+        "semantic_search",
+        lambda conn, q, limit: [
+            {
+                "id": "p1",
+                "score": 0.25,
+                "date": "2026-05-01",
+                "subreddit": "ChatGPT",
+                "content_type": "post",
+                "label": "neutral",
+                "confidence": 0.5,
+                "text_preview": "lexical match",
+                "state": "missing_config",
+                "provenance": {"algorithm": "lexical_overlap_fallback"},
+            }
+        ],
+    )
+    monkeypatch.setattr(analysis.queries, "semantic_vector_backend_ready", lambda: True)
+
+    client = TestClient(app)
+    response = client.get("/analysis/semantic-search?q=ai")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["state"] == "missing_config"
+    assert payload["provenance"]["algorithm"] == "lexical_overlap_fallback"
+    assert "degraded" in payload["provenance"]["detail"]

@@ -169,6 +169,11 @@ export default function TopicsPage() {
                   >
                     <span className="truncate">{label || t.keywords.replace(/[[\]"]/g, "").slice(0, 48)}</span>
                     <span className="flex shrink-0 items-center gap-1">
+                      {t.label_source && t.label_source !== "unlabeled" && (
+                        <Badge variant="outline" className="h-4 text-[9px]">
+                          {t.label_source === "llm_artifact" ? "LLM" : "det"}
+                        </Badge>
+                      )}
                       {emergingIds.has(t.topic_id) && <Badge variant="secondary" className="h-4 border-signal-copper/25 bg-signal-copper/10 text-[9px] text-signal-copper">new</Badge>}
                       <span className="font-mono text-xs tabular-nums">{t.doc_count.toLocaleString()}</span>
                     </span>

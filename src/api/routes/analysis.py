@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -75,13 +74,19 @@ def _provenance(state: str, label: str, source_table: str, source_ids: list[str]
 @router.get("/narrative-events", response_model=models.NarrativeEventsResponse)
 def narrative_events(limit: int = Query(default=50, ge=1, le=200)):
     with connection(readonly=True) as conn:
-        rows = queries.narrative_events(conn, limit)
         missing = missing_analysis_tables(conn, ["narrative_events"])
-        llm_summaries = {
-            json.loads(a.get("payload") or "{}").get("event_id"): a
-            for a in list_artifacts(conn, kind="narrative_event_summary")
-            if a.get("status") == "succeeded"
-        }
+        try:
+            rows = [] if missing else queries.narrative_events(conn, limit)
+            query_error = None
+            llm_summaries = {
+                json.loads(a.get("payload") or "{}").get("event_id"): a
+                for a in list_artifacts(conn, kind="narrative_event_summary")
+                if a.get("status") == "succeeded"
+            }
+        except queries.AnalysisQueryError as exc:
+            rows = []
+            query_error = str(exc)
+            llm_summaries = {}
     # Merge LLM-generated titles/summaries where available
     for row in rows:
         artifact = llm_summaries.get(row.get("event_id"))
@@ -93,7 +98,7 @@ def narrative_events(limit: int = Query(default=50, ge=1, le=200)):
                 row["summary"] = payload["llm_summary"]
             if row.get("provenance"):
                 row["provenance"]["label"] = "llm_artifact"
-    state = "missing_schema" if missing else ("ready" if rows else "unpopulated")
+    state = "missing_schema" if missing else ("error" if query_error else ("ready" if rows else "unpopulated"))
     return {
         "items": rows,
         "state": state,
@@ -103,7 +108,7 @@ def narrative_events(limit: int = Query(default=50, ge=1, le=200)):
             "narrative_events",
             [str(row["event_id"]) for row in rows[:25]],
             algorithm="change_point_ranker",
-            detail=f"Missing tables: {', '.join(missing)}" if missing else None,
+            detail=f"Missing tables: {', '.join(missing)}" if missing else query_error,
         ),
     }
 
@@ -115,8 +120,13 @@ def embedding_map(limit: int = Query(default=1000, ge=1, le=5000)):
             conn,
             ["embedding_2d", "topic_assignments", "preprocessed", "sentiment_predictions", "posts", "comments"],
         )
-        rows = [] if missing else queries.embedding_map(conn, limit)
-    state = "missing_schema" if missing else ("ready" if rows else "unpopulated")
+        try:
+            rows = [] if missing else queries.embedding_map(conn, limit)
+            query_error = None
+        except queries.AnalysisQueryError as exc:
+            rows = []
+            query_error = str(exc)
+    state = "missing_schema" if missing else ("error" if query_error else ("ready" if rows else "unpopulated"))
     return {
         "items": rows,
         "state": state,
@@ -126,7 +136,7 @@ def embedding_map(limit: int = Query(default=1000, ge=1, le=5000)):
             "embedding_2d",
             [row["id"] for row in rows[:25]],
             algorithm="minilm_svd_projection",
-            detail=f"Missing tables: {', '.join(missing)}" if missing else None,
+            detail=f"Missing tables: {', '.join(missing)}" if missing else query_error,
         ),
     }
 
@@ -136,8 +146,21 @@ def semantic_search(q: str = Query(default="", max_length=200), limit: int = Que
     with connection(readonly=True) as conn:
         missing = missing_analysis_tables(conn, ["preprocessed", "sentiment_predictions", "posts", "comments"])
         rows = [] if missing else queries.semantic_search(conn, q, limit)
-    vector_ready = Path("models/embeddings_index.json").exists() and Path("models/embeddings_cache.npy").exists()
-    state = "missing_schema" if missing else ("ready" if rows and all(row.get("state") == "ready" for row in rows) else ("missing_config" if q.strip() and not vector_ready else ("ready" if rows else "unpopulated")))
+    vector_ready = queries.semantic_vector_backend_ready()
+    row_states = {str(row.get("state") or "ready") for row in rows}
+    if missing:
+        state = "missing_schema"
+    elif "error" in row_states:
+        state = "error"
+    elif rows and row_states <= {"ready"}:
+        state = "ready"
+    elif rows and row_states:
+        state = "missing_config"
+    elif q.strip() and not vector_ready:
+        state = "missing_config"
+    else:
+        state = "unpopulated"
+    algorithm = rows[0].get("provenance", {}).get("algorithm") if rows else None
     return {
         "items": rows,
         "state": state,
@@ -146,7 +169,7 @@ def semantic_search(q: str = Query(default="", max_length=200), limit: int = Que
             "real_data" if state == "ready" else "missing_config",
             "preprocessed",
             [row["id"] for row in rows[:25]],
-            algorithm="minilm_cosine" if state == "ready" else "lexical_overlap_fallback",
+            algorithm=algorithm or ("minilm_cosine" if state == "ready" else "lexical_overlap_fallback"),
             detail=f"Missing tables: {', '.join(missing)}" if missing else (None if state == "ready" else "Semantic vectors or query embedding model were unavailable; lexical fallback results are degraded."),
         ),
     }

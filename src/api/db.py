@@ -722,16 +722,33 @@ def get_topics() -> List[dict]:
     try:
         conn = _connect()
         label_expr = _topic_llm_label_expr(conn)
+        has_cluster_labels = _table_exists(conn, "cluster_labels")
+        cluster_join = "LEFT JOIN cluster_labels cl ON cl.cluster_id = t.topic_id" if has_cluster_labels else ""
+        cluster_label_expr = "cl.label" if has_cluster_labels else "NULL"
+        cluster_keywords_expr = "cl.keywords" if has_cluster_labels else "NULL"
         df = pd.read_sql_query(
             f"""
-            SELECT topic_id,
-                   keywords,
-                   doc_count,
-                   coherence_score,
+            SELECT t.topic_id,
+                   t.keywords,
+                   t.doc_count,
+                   t.coherence_score,
                    {label_expr} AS llm_label
-            FROM topics
-            WHERE topic_id != -1
-            ORDER BY doc_count DESC
+                   , {cluster_label_expr} AS deterministic_label
+                   , {cluster_keywords_expr} AS label_keywords
+                   , CASE
+                        WHEN {label_expr} IS NOT NULL AND {label_expr} != '' THEN {label_expr}
+                        WHEN {cluster_label_expr} IS NOT NULL AND {cluster_label_expr} != '' THEN {cluster_label_expr}
+                        ELSE t.keywords
+                     END AS label
+                   , CASE
+                        WHEN {label_expr} IS NOT NULL AND {label_expr} != '' THEN 'llm_artifact'
+                        WHEN {cluster_label_expr} IS NOT NULL AND {cluster_label_expr} != '' THEN 'deterministic_fallback'
+                        ELSE 'unlabeled'
+                     END AS label_source
+            FROM topics t
+            {cluster_join}
+            WHERE t.topic_id != -1
+            ORDER BY t.doc_count DESC
             """,
             conn,
         )

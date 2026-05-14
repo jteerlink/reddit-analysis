@@ -24,6 +24,10 @@ from src.db.connection import execute, paramstyle
 logger = logging.getLogger(__name__)
 
 
+class AnalysisQueryError(RuntimeError):
+    """Raised when an analysis query cannot distinguish error from empty data."""
+
+
 def _loads(value: Any, fallback):
     if value is None:
         return fallback
@@ -31,6 +35,10 @@ def _loads(value: Any, fallback):
         return json.loads(value) if isinstance(value, str) else value
     except json.JSONDecodeError:
         return fallback
+
+
+def _row_dict(row: Any) -> dict:
+    return dict(row) if hasattr(row, "keys") else {}
 
 
 def _provenance(
@@ -92,7 +100,10 @@ def activity(conn, limit: int = 20) -> list[dict]:
             """,
             (limit,),
         ).fetchall()
-        if not rows:
+        events = []
+        for row in _operational_activity(conn):
+            events.append(row)
+        if not rows and not events:
             return [
                 {
                     "timestamp": "",
@@ -110,7 +121,6 @@ def activity(conn, limit: int = 20) -> list[dict]:
                     ),
                 }
             ]
-        events = []
         for row in rows:
             status = row["status"]
             severity = "success" if status == "succeeded" else ("error" if status == "failed" else "info")
@@ -149,6 +159,69 @@ def activity(conn, limit: int = 20) -> list[dict]:
                 "provenance": _provenance("error", "missing_config", "analysis_artifacts", detail=str(exc)),
             }
         ]
+
+
+def _optional_table_event(
+    conn: Any,
+    table_name: str,
+    event_type: str,
+    title: str,
+    detail_template: str,
+    timestamp_column: Optional[str] = None,
+) -> Optional[dict]:
+    if missing_analysis_tables(conn, [table_name]):
+        return None
+    try:
+        count_row = execute(conn, f"SELECT COUNT(*) AS count FROM {table_name}").fetchone()
+        count = int((_row_dict(count_row).get("count") if hasattr(count_row, "keys") else count_row[0]) or 0)
+        if count == 0:
+            return None
+        timestamp = ""
+        if timestamp_column:
+            latest = execute(conn, f"SELECT MAX({timestamp_column}) AS latest FROM {table_name}").fetchone()
+            timestamp = (_row_dict(latest).get("latest") if hasattr(latest, "keys") else latest[0]) or ""
+        return {
+            "timestamp": str(timestamp),
+            "type": event_type,
+            "severity": "success",
+            "title": title,
+            "detail": detail_template.format(count=count),
+            "source_ids": [table_name],
+            "state": "ready",
+            "provenance": _provenance("ready", "real_data", table_name, producer_job="operational_activity"),
+        }
+    except Exception as exc:
+        logger.exception("analysis_operational_activity_failed", extra={"table": table_name})
+        return {
+            "timestamp": "",
+            "type": event_type,
+            "severity": "error",
+            "title": f"{title} unavailable",
+            "detail": str(exc),
+            "source_ids": [table_name],
+            "state": "error",
+            "provenance": _provenance("error", "missing_config", table_name, detail=str(exc)),
+        }
+
+
+def _operational_activity(conn: Any) -> list[dict]:
+    candidates = [
+        ("posts", "collection", "Collection data indexed", "{count} posts are available.", "timestamp"),
+        ("comments", "collection", "Comment data indexed", "{count} comments are available.", "timestamp"),
+        ("sentiment_predictions", "ml_run", "Sentiment predictions available", "{count} model predictions are available.", "predicted_at"),
+        ("sentiment_forecast", "forecast", "Sentiment forecast available", "{count} forecast rows are available.", "date"),
+        ("change_points", "drift_readiness", "Change-point signals available", "{count} drift/readiness signals are available.", "date"),
+        ("narrative_events", "narrative_event", "Narrative events available", "{count} persisted narrative events are available.", "peak_date"),
+    ]
+    events = [
+        event
+        for event in (
+            _optional_table_event(conn, table, event_type, title, detail, timestamp)
+            for table, event_type, title, detail, timestamp in candidates
+        )
+        if event is not None
+    ]
+    return sorted(events, key=lambda item: item.get("timestamp") or "", reverse=True)[:8]
 
 
 def freshness(conn) -> dict:
@@ -207,19 +280,23 @@ def narrative_events(conn, limit: int = 50) -> list[dict]:
                 }
             )
         return result
-    except Exception:
-        return []
+    except Exception as exc:
+        logger.exception("narrative_events_failed")
+        raise AnalysisQueryError(str(exc)) from exc
 
 
 def embedding_map(conn, limit: int = 1000) -> list[dict]:
     if missing_analysis_tables(conn, ["embedding_2d"]):
         return []
     try:
+        has_categories = not missing_analysis_tables(conn, ["subreddit_categories"])
+        category_join = "LEFT JOIN subreddit_categories sc ON sc.subreddit = src.subreddit" if has_categories else ""
+        parent_col = "sc.parent_id," if has_categories else "NULL AS parent_id,"
         rows = execute(
             conn,
             f"""
             SELECT e.post_id, e.x, e.y, e.cluster_id, ta.topic_id,
-                   src.subreddit, sc.parent_id, src.date, p.clean_text, sp.label
+                   src.subreddit, {parent_col} src.date, p.clean_text, sp.label
             FROM embedding_2d e
             LEFT JOIN topic_assignments ta ON e.post_id = ta.id
             LEFT JOIN preprocessed p ON e.post_id = p.id
@@ -229,7 +306,7 @@ def embedding_map(conn, limit: int = 1000) -> list[dict]:
                 UNION ALL
                 SELECT id, subreddit, DATE(timestamp) AS date FROM comments
             ) src ON e.post_id = src.id
-            LEFT JOIN subreddit_categories sc ON sc.subreddit = src.subreddit
+            {category_join}
             LIMIT {paramstyle()}
             """,
             (limit,),
@@ -242,7 +319,7 @@ def embedding_map(conn, limit: int = 1000) -> list[dict]:
                 "cluster_id": int(row["cluster_id"]),
                 "topic_id": row["topic_id"],
                 "subreddit": row["subreddit"],
-                "parent_id": row["parent_id"] if "parent_id" in row.keys() else None,
+                "parent_id": row["parent_id"],
                 "sentiment": row["label"],
                 "date": row["date"],
                 "preview": (row["clean_text"] or "")[:160],
@@ -258,8 +335,9 @@ def embedding_map(conn, limit: int = 1000) -> list[dict]:
             }
             for row in rows
         ]
-    except Exception:
-        return []
+    except Exception as exc:
+        logger.exception("embedding_map_failed")
+        raise AnalysisQueryError(str(exc)) from exc
 
 
 def semantic_search(conn, query: str, limit: int = 50) -> list[dict]:
@@ -335,7 +413,7 @@ def semantic_search(conn, query: str, limit: int = 50) -> list[dict]:
 def _semantic_vector_results(rows: list[Any], query: str, limit: int) -> Optional[list[dict]]:
     index_path = Path("models/embeddings_index.json")
     cache_path = Path("models/embeddings_cache.npy")
-    if not index_path.exists() or not cache_path.exists():
+    if not semantic_vector_backend_ready():
         return None
     try:
         from sentence_transformers import SentenceTransformer
@@ -358,6 +436,17 @@ def _semantic_vector_results(rows: list[Any], query: str, limit: int) -> Optiona
     except Exception:
         logger.exception("semantic_vector_search_unavailable")
         return None
+
+
+def semantic_vector_backend_ready() -> bool:
+    if not Path("models/embeddings_index.json").exists() or not Path("models/embeddings_cache.npy").exists():
+        return False
+    try:
+        from sentence_transformers import SentenceTransformer  # noqa: F401
+    except Exception as exc:
+        logger.warning("semantic_vector_backend_unavailable: %s", exc)
+        return False
+    return True
 
 
 def _semantic_result(row: Any, score: float, state: str, algorithm: str) -> dict:
