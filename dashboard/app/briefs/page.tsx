@@ -23,6 +23,15 @@ function styleForSection(title: string) {
   return SECTION_STYLES[key];
 }
 
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/\*{1,3}([^*]+)\*{1,3}/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/~~([^~]+)~~/g, "$1")
+    .trim();
+}
+
 function asStringList(value: unknown): string[] {
   if (Array.isArray(value)) {
     return value.map((item) => String(item ?? "").trim()).filter(Boolean);
@@ -90,6 +99,39 @@ function MetadataList({ label, items }: { label: string; items: string[] }) {
   );
 }
 
+type InlineToken = { kind: "text"; content: string } | { kind: "bold" | "em" | "code"; content: string };
+
+function parseInline(text: string): InlineToken[] {
+  const tokens: InlineToken[] = [];
+  const re = /(\*\*[^*\n]+\*\*|\*[^*\n]+\*|`[^`\n]+`)/g;
+  let last = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    if (match.index > last) tokens.push({ kind: "text", content: text.slice(last, match.index) });
+    const raw = match[0];
+    if (raw.startsWith("**")) tokens.push({ kind: "bold", content: raw.slice(2, -2) });
+    else if (raw.startsWith("*")) tokens.push({ kind: "em", content: raw.slice(1, -1) });
+    else tokens.push({ kind: "code", content: raw.slice(1, -1) });
+    last = re.lastIndex;
+  }
+  if (last < text.length) tokens.push({ kind: "text", content: text.slice(last) });
+  return tokens;
+}
+
+function InlineText({ text }: { text: string }) {
+  const tokens = parseInline(text);
+  return (
+    <>
+      {tokens.map((t, i) => {
+        if (t.kind === "bold") return <strong key={i} className="font-semibold text-foreground">{t.content}</strong>;
+        if (t.kind === "em") return <em key={i} className="italic">{t.content}</em>;
+        if (t.kind === "code") return <code key={i} className="rounded bg-muted px-1 font-mono text-[10px]">{t.content}</code>;
+        return <span key={i}>{t.content}</span>;
+      })}
+    </>
+  );
+}
+
 type BriefBodyBlock =
   | { type: "paragraph"; text: string }
   | { type: "list"; items: string[] };
@@ -139,10 +181,10 @@ function BriefBody({ body }: { body: string }) {
       {blocks.map((block, index) => (
         block.type === "list" ? (
           <ul key={`list-${index}`} className="list-disc space-y-1 pl-5">
-            {block.items.map((item, itemIndex) => <li key={`${index}-${itemIndex}`}>{item}</li>)}
+            {block.items.map((item, itemIndex) => <li key={`${index}-${itemIndex}`}><InlineText text={item} /></li>)}
           </ul>
         ) : (
-          <p key={`paragraph-${index}`}>{block.text}</p>
+          <p key={`paragraph-${index}`}><InlineText text={block.text} /></p>
         )
       ))}
     </div>
@@ -159,7 +201,7 @@ function BriefSectionRow({ section, index }: { section: BriefSection; index: num
         <span className={`grid size-6 place-items-center rounded-md border bg-card/70 ${accent}`}>
           <Icon className="size-3.5" aria-hidden="true" />
         </span>
-        <h3 className="text-sm font-semibold text-foreground">{String(section.title ?? `Section ${index + 1}`)}</h3>
+        <h3 className="text-sm font-semibold text-foreground">{stripMarkdown(String(section.title ?? `Section ${index + 1}`))}</h3>
       </div>
       <BriefBody body={String(section.body ?? "")} />
       <EvidenceList section={section} />
@@ -193,7 +235,7 @@ export default function BriefsPage() {
           {items.length ? items.map((brief) => (
             <ChartCard
               key={`${brief.provenance?.artifact_id ?? brief.brief_id}-${brief.provenance?.label ?? "brief"}`}
-              title={brief.headline}
+              title={stripMarkdown(brief.headline ?? "")}
               subtitle={brief.generated_at ?? "artifact timestamp unavailable"}
             >
               <div className="mb-4 flex flex-wrap gap-2">

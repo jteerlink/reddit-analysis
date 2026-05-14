@@ -14,7 +14,7 @@ from src.db.connection import execute
 logger = logging.getLogger(__name__)
 
 ANALYST_BRIEF_EVIDENCE_SCHEMA_VERSION = 2
-ANALYST_BRIEF_PROMPT_VERSION = "ab-v3"
+ANALYST_BRIEF_PROMPT_VERSION = "ab-v4"
 BRIEF_SECTION_EXTRA_KEYS = {
     "claims",
     "evidence",
@@ -47,7 +47,7 @@ def generate_analyst_brief(
                    dominant_subreddits, top_terms, top_post_ids, llm_label, auto_label
             FROM narrative_events
             ORDER BY peak_date DESC, ABS(COALESCE(sentiment_delta, 0)) DESC
-            LIMIT 5
+            LIMIT 8
             """,
         ).fetchall()
     except Exception:
@@ -70,7 +70,7 @@ def generate_analyst_brief(
     ]
 
     try:
-        label_rows = execute(conn, "SELECT label FROM cluster_labels ORDER BY doc_count DESC LIMIT 10").fetchall()
+        label_rows = execute(conn, "SELECT label FROM cluster_labels ORDER BY doc_count DESC LIMIT 15").fetchall()
         topic_labels: list[str] = [
             (row["label"] if hasattr(row, "keys") else row[0]) for row in label_rows
         ]

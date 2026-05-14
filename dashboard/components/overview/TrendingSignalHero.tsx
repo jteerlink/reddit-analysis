@@ -6,19 +6,34 @@ import { ChartCard } from "@/components/shared/ChartCard";
 import type { TrendingTopic } from "@/lib/types";
 import { parentColor } from "@/lib/utils";
 
+const HERO_STOPWORDS = new Set([
+  "a","an","and","are","as","at","be","been","being","but","by","do","for","from",
+  "had","has","have","he","her","him","his","i","in","is","it","its","just","me",
+  "my","no","not","of","on","or","our","she","so","that","the","their","them",
+  "these","they","this","those","to","too","up","us","was","we","were","with",
+  "you","your","very","get","got","can","also","like","more","what","when",
+  "would","could","should","will","about","just","there","really",
+]);
+
+function stripStopwords(words: string[]): string[] {
+  return words.filter((w) => w.length > 1 && !HERO_STOPWORDS.has(w.toLowerCase()));
+}
+
 function topicHeadline(topic: TrendingTopic): string {
   const llmLabel = topic.label || topic.llm_label;
   if (llmLabel) return llmLabel;
-  return topic.keywords.replace(/[[\]"]/g, "").split(",").slice(0, 3).join(", ").trim() || `Topic #${topic.topic_id}`;
+  const words = stripStopwords(
+    topic.keywords.replace(/[[\]"]/g, "").split(/[,\s]+/).filter(Boolean)
+  ).slice(0, 4);
+  return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ") || `Topic #${topic.topic_id}`;
 }
 
 function keywordSubtitle(topic: TrendingTopic): string {
-  return topic.keywords
-    .replace(/[[\]"]/g, "")
-    .split(/[,\s]+/)
-    .filter(Boolean)
+  return stripStopwords(
+    topic.keywords.replace(/[[\]"]/g, "").split(/[,\s]+/).filter(Boolean)
+  )
     .slice(0, 6)
-    .join(" / ");
+    .join(" · ");
 }
 
 function Sparkline({ values }: { values: number[] }) {

@@ -175,7 +175,7 @@ export default function TopicsPage() {
                         </Badge>
                       )}
                       {emergingIds.has(t.topic_id) && <Badge variant="secondary" className="h-4 border-signal-copper/25 bg-signal-copper/10 text-[9px] text-signal-copper">new</Badge>}
-                      <span className="font-mono text-xs tabular-nums">{t.doc_count.toLocaleString()}</span>
+                      <span className="font-mono text-xs tabular-nums">{t.doc_count.toLocaleString()} comments</span>
                     </span>
                   </button>
                 );

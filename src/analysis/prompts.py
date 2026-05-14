@@ -197,10 +197,13 @@ def analyst_brief_prompt(
                 "You are an intelligence analyst summarizing trends from Reddit AI-community data. "
                 "Respond with a single JSON object only. No markdown, no preamble. "
                 f"The object MUST match this schema: {schema}. "
-                "The headline is one sentence. Include five sections named Executive Summary, Key Findings, "
-                "Notable Trends, Risks & Anomalies, and Outlook. "
-                "Each section body is 2-4 sentences, concrete, factual, and comprehensive enough to stand alone. "
-                "Every major claim must use only evidence anchors supplied in the evidence context. "
+                "The headline is one punchy, specific sentence that names the dominant trend. "
+                "Include five sections: Executive Summary, Key Findings, Notable Trends, Risks & Anomalies, Outlook. "
+                "Each section body MUST be 4-6 sentences, rich with named subreddits, topics, dates, and magnitudes "
+                "drawn from the provided context. Do not pad with generic statements — every sentence must assert "
+                "something specific. "
+                "Every major claim must cite only evidence anchors supplied in the evidence context; "
+                "populate claims[], drivers[], and implications[] with at least 2 concrete items each. "
                 "If evidence is thin or conflicting, say so in evidence_gap instead of inventing support."
             ),
         },
@@ -212,12 +215,12 @@ def analyst_brief_prompt(
                 f"Parent community context (last 30 days):\n{parents_block}\n\n"
                 f"Evidence context and allowed anchors:\n{evidence_block}\n\n"
                 f"Configured LLM models: {model_count}\n\n"
-                "Generate the analyst brief JSON. Include drivers/causes, implications, evidence anchors/snippets, "
-                "and delta fields with delta_source/current_window/comparison_window when available."
+                "Generate the analyst brief JSON. Populate all fields: drivers/causes, implications, "
+                "evidence anchors with snippets, delta values with delta_source/current_window/comparison_window."
             ),
         },
     ]
-    return messages, "ab-v3"
+    return messages, "ab-v4"
 
 
 def topic_label_prompt(keywords: List[str]) -> Tuple[Messages, str]:
@@ -232,11 +235,14 @@ def topic_label_prompt(keywords: List[str]) -> Tuple[Messages, str]:
         {
             "role": _SYSTEM,
             "content": (
-                "You label Reddit discussion clusters. "
-                "Given cleaned keywords from a topic cluster, infer the underlying discussion theme. "
-                "Respond with only one concise, insightful topic headline "
-                "(2-5 words, Title Case). Do not echo a comma-separated keyword list, do not use markdown, "
-                "and avoid generic labels such as Discussion, Topic, Reddit, General, or Miscellaneous."
+                "You label Reddit discussion clusters for an AI-community analytics dashboard. "
+                "Given cleaned keywords from a BERTopic cluster, infer the specific underlying discussion theme "
+                "and express it as a short, meaningful headline (2-5 words, Title Case). "
+                "The label should name the subject, not describe the act of discussing it. "
+                "Prefer noun phrases that a reader would immediately understand (e.g. 'Model Context Window Limits', "
+                "'Open-Source Fine-Tuning', 'AI Safety Debates'). "
+                "Do NOT echo keywords verbatim, do NOT use markdown or punctuation, and avoid generic filler "
+                "words like Discussion, Topic, Reddit, General, Community, or Miscellaneous."
             ),
         },
         {
@@ -244,4 +250,4 @@ def topic_label_prompt(keywords: List[str]) -> Tuple[Messages, str]:
             "content": f"Keywords: {kw_str}\n\nLabel:",
         },
     ]
-    return messages, "tl-v2"
+    return messages, "tl-v3"

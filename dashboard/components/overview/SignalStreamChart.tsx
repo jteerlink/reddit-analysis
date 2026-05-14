@@ -108,10 +108,17 @@ export function SignalStreamChart({ volumeData, sentimentData, sentimentDaily }:
   const maxVolume = Math.max(...volumeRows.map((row) => row.count), 1);
   const volumePoints = toPoints(volumeRows, (row) => row.count, 0, maxVolume, 58, 218);
   const volumeByDate = new Map(volumeRows.map((row) => [row.date, row.count]));
+  const sentimentYByDate = new Map<string, number>(
+    sentimentPoints.map((p) => [(p.row as { date: string }).date, p.y])
+  );
   const highVolumeMarkers = [...volumePoints]
     .sort((a, b) => b.value - a.value)
     .slice(0, 6)
-    .sort((a, b) => a.x - b.x);
+    .sort((a, b) => a.x - b.x)
+    .map((p) => ({
+      ...p,
+      sentimentY: sentimentYByDate.get((p.row as { date: string }).date) ?? 125,
+    }));
   const anomaly = sentimentPoints.reduce((lowest, point) => (point.y > lowest.y ? point : lowest), sentimentPoints[0]);
   const nearestSignal = (clientX: number, rect: DOMRect) => {
     const svgX = ((clientX - rect.left) / rect.width) * 560;
@@ -193,7 +200,7 @@ export function SignalStreamChart({ volumeData, sentimentData, sentimentDaily }:
           {highVolumeMarkers.map((point, index) => (
             <g key={`${point.x}-${point.value}`}>
               <line x1={point.x} x2={point.x} y1="34" y2="218" stroke={index % 2 ? "#c07a45" : "#31d38f"} strokeOpacity="0.32" strokeDasharray="2 10" />
-              <circle cx={point.x} cy={point.y} r={index % 3 === 0 ? 4 : 3} fill={index % 2 ? "#c07a45" : "#31d38f"} opacity="0.9" />
+              <circle cx={point.x} cy={point.sentimentY} r={index % 3 === 0 ? 4 : 3} fill={index % 2 ? "#c07a45" : "#31d38f"} opacity="0.9" />
             </g>
           ))}
           {anomaly && (
