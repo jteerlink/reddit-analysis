@@ -966,6 +966,7 @@ def get_deep_dive(
     end_date: Optional[str] = None,
     label_filter: str = "all",
     content_type_filter: str = "both",
+    topic_id: Optional[int] = None,
     limit: int = 500,
     offset: int = 0,
     parents: Tuple[str, ...] = (),
@@ -974,6 +975,7 @@ def get_deep_dive(
         conn = _connect()
         conditions: list = []
         params: list = []
+        join_params: list = []
         marker = paramstyle()
 
         if keyword:
@@ -996,6 +998,10 @@ def get_deep_dive(
         if content_type_filter != "both":
             conditions.append(f"p.content_type = {marker}")
             params.append(content_type_filter)
+        topic_join = ""
+        if topic_id is not None:
+            topic_join = "JOIN topic_assignments ta ON ta.id = p.id AND ta.topic_id = {marker}".format(marker=marker)
+            join_params.append(topic_id)
 
         where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         sql = f"""
@@ -1008,11 +1014,12 @@ def get_deep_dive(
                 UNION ALL
                 SELECT id, timestamp, subreddit, 'comment' AS content_type FROM comments
             ) src ON p.id = src.id AND p.content_type = src.content_type
+            {topic_join}
             {where_clause}
             ORDER BY src.timestamp DESC
             LIMIT {marker} OFFSET {marker}
         """
-        params += [limit, offset]
+        params = join_params + params + [limit, offset]
         df = pd.read_sql_query(sql, conn, params=params)
         _close(conn)
         return df.to_dict(orient="records")

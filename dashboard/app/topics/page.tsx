@@ -57,11 +57,65 @@ function TagCloud({ keywords }: { keywords: string }) {
 }
 
 type GraphMode = "subreddits" | "topics";
+type TopicLensItem = { topic_id: number; label: string; count: number };
+
+function TopicLens({
+  topics,
+  selectedTopic,
+  onSelectTopic,
+}: {
+  topics: TopicLensItem[];
+  selectedTopic: number | null;
+  onSelectTopic: (topicId: number | null) => void;
+}) {
+  if (!topics.length) {
+    return null;
+  }
+
+  return (
+    <div className="rounded-md border border-border bg-black/14 px-3 py-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="command-label">Topic lens</p>
+        {selectedTopic != null && (
+          <button
+            type="button"
+            onClick={() => onSelectTopic(null)}
+            className="font-mono text-[10px] text-signal-copper transition-colors hover:text-foreground"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+      <div className="mt-2 grid grid-cols-1 gap-1.5 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+        {topics.map((topic) => {
+          const active = selectedTopic === topic.topic_id;
+          return (
+            <button
+              key={topic.topic_id}
+              type="button"
+              onClick={() => onSelectTopic(active ? null : topic.topic_id)}
+              className={`grid grid-cols-[1fr_auto] items-center gap-2 rounded border px-2.5 py-2 text-left text-xs transition-colors ${
+                active
+                  ? "border-signal-green/45 bg-signal-green/10 text-foreground"
+                  : "border-border text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+              }`}
+              title={`Topic ${topic.topic_id}`}
+            >
+              <span className="truncate">{topic.label}</span>
+              <span className="font-mono text-[10px] tabular-nums text-muted-foreground">{topic.count}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 
 export default function TopicsPage() {
   const { subreddits, parents } = useFilterStore();
   const [graphMode, setGraphMode] = useState<GraphMode>("subreddits");
   const [isolatedParent, setIsolatedParent] = useState<string | null>(null);
+  const [topicFocus, setTopicFocus] = useState<number | null>(null);
 
   const { data: topics } = useSWR<Topic[]>("/api/topics", fetcher);
   const { data: emerging } = useSWR<Topic[]>("/api/topics/emerging", fetcher);
@@ -83,6 +137,23 @@ export default function TopicsPage() {
   const subredditNodes = Array.isArray(subredditGraph?.nodes) ? subredditGraph.nodes : [];
   const subredditEdges = Array.isArray(subredditGraph?.edges) ? subredditGraph.edges : [];
 
+  const lensTopics = useMemo<TopicLensItem[]>(() => {
+    const seen = new Map<number, TopicLensItem>();
+    for (const node of subredditNodes) {
+      for (const topic of node.top_topics) {
+        const current = seen.get(topic.topic_id) ?? {
+          topic_id: topic.topic_id,
+          label: topic.label || `Topic ${topic.topic_id}`,
+          count: 0,
+        };
+        current.count += 1;
+        seen.set(topic.topic_id, current);
+      }
+    }
+    return Array.from(seen.values()).sort((a, b) => b.count - a.count).slice(0, 6);
+  }, [subredditNodes]);
+  const showTopicLens = graphMode === "subreddits" && lensTopics.length > 0;
+
   const topicRows = useMemo(
     () => graphNodes.length || hasFilter ? graphNodes : topics ?? [],
     [graphNodes, hasFilter, topics],
@@ -97,6 +168,18 @@ export default function TopicsPage() {
       setSelected(topicRows[0].topic_id);
     }
   }, [selected, topicRows]);
+
+  useEffect(() => {
+    if (topicFocus != null && !lensTopics.some((topic) => topic.topic_id === topicFocus)) {
+      setTopicFocus(null);
+    }
+  }, [lensTopics, topicFocus]);
+
+  useEffect(() => {
+    if (graphMode !== "subreddits" && topicFocus != null) {
+      setTopicFocus(null);
+    }
+  }, [graphMode, topicFocus]);
 
   const selectedTopic = topicRows.find((t) => t.topic_id === selected);
   const { data: overTime } = useSWR<TopicOverTime[]>(
@@ -139,6 +222,7 @@ export default function TopicsPage() {
                 nodes={subredditNodes}
                 edges={subredditEdges}
                 selectedParent={isolatedParent}
+                selectedTopic={topicFocus}
                 onSelectParent={setIsolatedParent}
               />
             ) : (
@@ -158,7 +242,10 @@ export default function TopicsPage() {
 
         <div className="space-y-4">
           <ChartCard title="Topics" subtitle="Ordered by comment count">
-            <div className="flex max-h-[520px] flex-col gap-1 overflow-y-auto pr-1">
+            {showTopicLens && (
+              <TopicLens topics={lensTopics} selectedTopic={topicFocus} onSelectTopic={setTopicFocus} />
+            )}
+            <div className={`${showTopicLens ? "mt-3" : ""} flex max-h-[520px] flex-col gap-1 overflow-y-auto pr-1`}>
               {topicRows.length ? topicRows.map((t) => {
                 const label = (t as Topic).label || (t as Topic).llm_label;
                 return (

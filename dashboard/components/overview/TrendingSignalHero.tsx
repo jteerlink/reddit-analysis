@@ -36,6 +36,16 @@ function keywordSubtitle(topic: TrendingTopic): string {
     .join(" · ");
 }
 
+function deepDiveHref(topic: TrendingTopic, headline: string): string {
+  const params = new URLSearchParams({
+    topic_id: String(topic.topic_id),
+    topic_label: headline,
+    content_type: "both",
+  });
+  (topic.parents ?? []).forEach((parent) => params.append("parents", parent.parent_id));
+  return `/deep-dive?${params}`;
+}
+
 function Sparkline({ values }: { values: number[] }) {
   if (!values || values.length < 2) return null;
   const max = Math.max(...values, 1);
@@ -98,9 +108,11 @@ export function TrendingSignalHero({ topics, state = "ready", message }: Props) 
             const parents = topic.parents ?? [];
             const weeklyCounts = topic.weekly_counts ?? [];
             return (
-              <div
+              <Link
                 key={topic.topic_id}
-                className="flex flex-col gap-2 rounded-lg border border-border bg-background/45 p-3"
+                href={deepDiveHref(topic, headline)}
+                className="flex min-h-36 flex-col gap-2 rounded-lg border border-border bg-background/45 p-3 transition-colors hover:border-signal-green/35 hover:bg-signal-green/8 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal-green/45"
+                aria-label={`Open Deep Dive filtered to ${headline}`}
               >
                 <div className="flex items-start justify-between gap-2">
                   <p className="text-sm font-semibold leading-tight tracking-[-0.01em] text-foreground line-clamp-2">
@@ -128,7 +140,7 @@ export function TrendingSignalHero({ topics, state = "ready", message }: Props) 
                     </span>
                   ))}
                 </div>
-              </div>
+              </Link>
             );
           })}
         </div>

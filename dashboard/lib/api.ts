@@ -42,6 +42,7 @@ export const api = {
     end?: string;
     label?: string;
     content_type?: string;
+    topic_id?: number;
     limit?: number;
     offset?: number;
   }) => get("/posts/search", params as Record<string, string | string[] | number | undefined>),

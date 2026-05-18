@@ -377,6 +377,13 @@ def test_api_db_deep_dive_filters(api_db):
     assert rows[0]["clean_text"] == "good ai news"
 
 
+def test_api_db_deep_dive_filters_by_topic(api_db):
+    rows = api_db.get_deep_dive(topic_id=1, limit=10, offset=0)
+
+    assert len(rows) == 1
+    assert rows[0]["clean_text"] == "good ai news"
+
+
 def test_api_db_expand_parents_resolves_to_subreddits(api_db):
     assert api_db.expand_parents(()) == ()
     assert set(api_db.expand_parents(("OPENAI",))) == {"ChatGPT"}

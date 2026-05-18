@@ -148,6 +148,7 @@ def posts_search(
     end: Optional[str] = Query(default=None),
     label: str = Query(default="all"),
     content_type: str = Query(default="both"),
+    topic_id: Optional[int] = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
 ):
@@ -158,6 +159,7 @@ def posts_search(
         end_date=end,
         label_filter=label,
         content_type_filter=content_type,
+        topic_id=topic_id,
         limit=limit,
         offset=offset,
         parents=tuple(parents),
