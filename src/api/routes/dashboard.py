@@ -214,6 +214,11 @@ def subreddit_graph(
     )
 
 
+@router.get("/pipeline/health", response_model=models.PipelineHealthResponse)
+def pipeline_health():
+    return db.get_pipeline_health()
+
+
 @router.get("/date-range")
 def date_range():
     return db.get_date_range()

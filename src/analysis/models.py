@@ -126,6 +126,8 @@ class EmbeddingPoint(BaseModel):
     y: float
     cluster_id: int
     topic_id: Optional[int] = None
+    topic_label: Optional[str] = None
+    label_source: Optional[str] = None
     subreddit: Optional[str] = None
     parent_id: Optional[str] = None
     sentiment: Optional[str] = None
@@ -135,8 +137,29 @@ class EmbeddingPoint(BaseModel):
     provenance: Optional[AnalysisProvenance] = None
 
 
+class TopicDistributionItem(BaseModel):
+    topic_id: int
+    label: Optional[str] = None
+    count: int = 0
+    share: float = 0.0
+
+
+class EmbeddingTopicDiagnostics(BaseModel):
+    total_points: int = 0
+    topic_count: int = 0
+    outlier_count: int = 0
+    outlier_share: float = 0.0
+    largest_topic_id: Optional[int] = None
+    largest_topic_label: Optional[str] = None
+    largest_topic_share: float = 0.0
+    collapsed: bool = False
+    warning: Optional[str] = None
+    topics: List[TopicDistributionItem] = Field(default_factory=list)
+
+
 class EmbeddingMapResponse(BaseModel):
     items: List[EmbeddingPoint] = Field(default_factory=list)
+    diagnostics: Optional[EmbeddingTopicDiagnostics] = None
     state: AnalysisState = "ready"
     provenance: Optional[AnalysisProvenance] = None
 
@@ -162,6 +185,7 @@ class SemanticSearchResponse(BaseModel):
 
 class TopicHeatmapItem(BaseModel):
     topic_id: int
+    label: Optional[str] = None
     week_start: str
     avg_sentiment: Optional[float] = None
 
@@ -282,8 +306,43 @@ class SubredditGraphEdge(BaseModel):
     topic_overlap: float = 0.0
     score: float = 0.0
     shared_topic_ids: List[int] = Field(default_factory=list)
+    shared_topics: List[SubredditTopicShare] = Field(default_factory=list)
 
 
 class SubredditGraphResponse(BaseModel):
     nodes: List[SubredditGraphNode] = Field(default_factory=list)
     edges: List[SubredditGraphEdge] = Field(default_factory=list)
+
+
+class ChartSummaryResponse(BaseModel):
+    summary: str
+    state: AnalysisState = "ready"
+    generated_at: Optional[str] = None
+    model_name: Optional[str] = None
+    source_input_hash: Optional[str] = None
+    provenance: Optional[AnalysisProvenance] = None
+
+
+class PipelineHealthStage(BaseModel):
+    name: str
+    state: str
+    healthy: bool = True
+    detail: Optional[str] = None
+
+
+class PipelineStorageHealth(BaseModel):
+    avg_latency_seconds: Optional[float] = None
+    p95_latency_seconds: Optional[float] = None
+    latest_lag_seconds: Optional[float] = None
+    throughput_items_per_minute: Optional[float] = None
+    recent_batches: int = 0
+    sparkline_latency_seconds: List[float] = Field(default_factory=list)
+    sparkline_throughput_items_per_minute: List[float] = Field(default_factory=list)
+    latest_storage_timestamp: Optional[str] = None
+
+
+class PipelineHealthResponse(BaseModel):
+    stages: List[PipelineHealthStage] = Field(default_factory=list)
+    storage: PipelineStorageHealth = Field(default_factory=PipelineStorageHealth)
+    state: AnalysisState = "ready"
+    provenance: Optional[AnalysisProvenance] = None

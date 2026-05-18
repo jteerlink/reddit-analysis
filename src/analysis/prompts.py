@@ -223,20 +223,27 @@ def analyst_brief_prompt(
     return messages, "ab-v4"
 
 
-def topic_label_prompt(keywords: List[str]) -> Tuple[Messages, str]:
+def topic_label_prompt(keywords: List[str], samples: List[str] | None = None) -> Tuple[Messages, str]:
     """
     Prompt to generate a short human-readable label for a BERTopic cluster.
     Returns (messages, prompt_version).
     """
     clean_keywords = clean_topic_keywords(keywords)
     kw_str = ", ".join(clean_keywords[:12]) if clean_keywords else "(no keywords)"
+    sample_lines = [
+        f"{index + 1}. {sample.strip()[:280]}"
+        for index, sample in enumerate(samples or [])
+        if sample and sample.strip()
+    ][:6]
+    samples_block = "\n".join(sample_lines) if sample_lines else "(no representative text available)"
 
     messages: Messages = [
         {
             "role": _SYSTEM,
             "content": (
                 "You label Reddit discussion clusters for an AI-community analytics dashboard. "
-                "Given cleaned keywords from a BERTopic cluster, infer the specific underlying discussion theme "
+                "Given cleaned keywords and representative post/comment excerpts from a BERTopic cluster, "
+                "infer the specific underlying discussion theme "
                 "and express it as a short, meaningful headline (2-5 words, Title Case). "
                 "The label should name the subject, not describe the act of discussing it. "
                 "Prefer noun phrases that a reader would immediately understand (e.g. 'Model Context Window Limits', "
@@ -247,7 +254,7 @@ def topic_label_prompt(keywords: List[str]) -> Tuple[Messages, str]:
         },
         {
             "role": _USER,
-            "content": f"Keywords: {kw_str}\n\nLabel:",
+            "content": f"Keywords: {kw_str}\n\nRepresentative excerpts:\n{samples_block}\n\nLabel:",
         },
     ]
-    return messages, "tl-v3"
+    return messages, "tl-v4"

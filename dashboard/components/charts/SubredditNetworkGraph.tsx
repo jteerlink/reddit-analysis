@@ -49,6 +49,7 @@ export function SubredditNetworkGraph({ nodes, edges, selectedParent, onSelectPa
   const [graphLinks, setGraphLinks] = useState<GraphLink[]>([]);
   const [hovered, setHovered] = useState<SubredditGraphNode | null>(null);
   const [hoveredEdge, setHoveredEdge] = useState<GraphLink | null>(null);
+  const [topicFocus, setTopicFocus] = useState<number | null>(null);
 
   const maxVolume = useMemo(
     () => Math.max(...nodes.map((node) => node.total_volume), 1),
@@ -63,6 +64,22 @@ export function SubredditNetworkGraph({ nodes, edges, selectedParent, onSelectPa
       else seen.set(node.parent_id, { id: node.parent_id, display_name: node.display_name, count: 1 });
     }
     return Array.from(seen.values()).sort((a, b) => b.count - a.count);
+  }, [nodes]);
+
+  const presentTopics = useMemo(() => {
+    const seen = new Map<number, { topic_id: number; label: string; count: number }>();
+    for (const node of nodes) {
+      for (const topic of node.top_topics) {
+        const current = seen.get(topic.topic_id) ?? {
+          topic_id: topic.topic_id,
+          label: topic.label || `Topic ${topic.topic_id}`,
+          count: 0,
+        };
+        current.count += 1;
+        seen.set(topic.topic_id, current);
+      }
+    }
+    return Array.from(seen.values()).sort((a, b) => b.count - a.count).slice(0, 5);
   }, [nodes]);
 
   useEffect(() => {
@@ -110,6 +127,10 @@ export function SubredditNetworkGraph({ nodes, edges, selectedParent, onSelectPa
     return selectedParent != null && parentId !== selectedParent;
   }
 
+  function nodeHasTopic(node: SubredditGraphNode, topicId: number | null) {
+    return topicId == null || node.top_topics.some((topic) => topic.topic_id === topicId);
+  }
+
   return (
     <div className="relative">
       <svg
@@ -129,6 +150,8 @@ export function SubredditNetworkGraph({ nodes, edges, selectedParent, onSelectPa
             const dim = selectedParent != null
               && sourceNode?.parent_id !== selectedParent
               && targetNode?.parent_id !== selectedParent;
+            const topicDim = topicFocus != null
+              && !(sourceNode && targetNode && nodeHasTopic(sourceNode, topicFocus) && nodeHasTopic(targetNode, topicFocus));
             return (
               <line
                 key={`${sId}-${tId}`}
@@ -137,7 +160,7 @@ export function SubredditNetworkGraph({ nodes, edges, selectedParent, onSelectPa
                 x2={target.x}
                 y2={target.y}
                 stroke="#9aa3a8"
-                strokeOpacity={dim ? 0.08 : 0.25 + edge.score * 0.55}
+                strokeOpacity={dim || topicDim ? 0.08 : 0.25 + edge.score * 0.55}
                 strokeWidth={1 + edge.score * 6}
                 onMouseEnter={() => setHoveredEdge(edge)}
                 onMouseLeave={() => setHoveredEdge(null)}
@@ -147,7 +170,7 @@ export function SubredditNetworkGraph({ nodes, edges, selectedParent, onSelectPa
           })}
           {graphNodes.map((node) => {
             const color = parentColor(node.parent_id);
-            const muted = isMuted(node.parent_id);
+            const muted = isMuted(node.parent_id) || !nodeHasTopic(node, topicFocus);
             return (
               <g
                 key={node.subreddit}
@@ -216,6 +239,31 @@ export function SubredditNetworkGraph({ nodes, edges, selectedParent, onSelectPa
         )}
       </div>
 
+      {!!presentTopics.length && (
+        <div className="absolute left-3 top-3 max-w-80 rounded-md border border-border bg-card/90 px-2 py-2 text-[11px] shadow-2xl">
+          <p className="px-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Topic lens</p>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {presentTopics.map((topic) => {
+              const active = topicFocus === topic.topic_id;
+              return (
+                <button
+                  key={topic.topic_id}
+                  type="button"
+                  onClick={() => setTopicFocus(active ? null : topic.topic_id)}
+                  className={cn(
+                    "max-w-36 truncate rounded border px-2 py-1 text-left transition-colors",
+                    active ? "border-signal-green/45 bg-signal-green/10 text-foreground" : "border-border text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                  )}
+                  title={`Topic ${topic.topic_id}`}
+                >
+                  {topic.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {hovered && (
         <div className="pointer-events-none absolute bottom-4 left-4 z-20 max-w-72 rounded-lg border border-signal-copper/35 bg-[#081816]/95 px-3 py-2 text-[11px] shadow-2xl">
           <p className="font-mono text-signal-copper">{hovered.display_name}</p>
@@ -228,7 +276,7 @@ export function SubredditNetworkGraph({ nodes, edges, selectedParent, onSelectPa
             <p className="mt-1 truncate font-mono text-signal-green">
               {hovered.top_topics
                 .slice(0, 3)
-                .map((t) => t.label ?? `#${t.topic_id}`)
+                .map((t) => t.label ?? `Topic ${t.topic_id}`)
                 .join(", ")}
             </p>
           )}
@@ -247,7 +295,12 @@ export function SubredditNetworkGraph({ nodes, edges, selectedParent, onSelectPa
           </p>
           {!!hoveredEdge.shared_topic_ids.length && (
             <p className="mt-1 truncate font-mono text-signal-green">
-              shared topics: {hoveredEdge.shared_topic_ids.slice(0, 5).map((id) => `#${id}`).join(", ")}
+              shared topics: {
+                (hoveredEdge.shared_topics?.length ? hoveredEdge.shared_topics : hoveredEdge.shared_topic_ids.map((id) => ({ topic_id: id, label: `Topic ${id}` })))
+                  .slice(0, 5)
+                  .map((topic) => topic.label || `Topic ${topic.topic_id}`)
+                  .join(", ")
+              }
             </p>
           )}
         </div>

@@ -30,6 +30,7 @@ export interface TopicGraphResponse {
 
 export interface TopicHeatmapRow {
   topic_id: number;
+  label?: string | null;
   week_start: string;
   avg_sentiment: number | null;
 }
@@ -57,6 +58,7 @@ export interface TopicHeatmapResponse {
 
 export interface TopicOverTime {
   topic_id: number;
+  label?: string | null;
   week_start: string;
   doc_count: number;
   avg_sentiment?: number | null;
@@ -183,6 +185,8 @@ export interface EmbeddingPoint {
   y: number;
   cluster_id: number;
   topic_id?: number | null;
+  topic_label?: string | null;
+  label_source?: string | null;
   subreddit?: string | null;
   parent_id?: string | null;
   sentiment?: string | null;
@@ -190,8 +194,29 @@ export interface EmbeddingPoint {
   preview?: string | null;
 }
 
+export interface TopicDistributionItem {
+  topic_id: number;
+  label?: string | null;
+  count: number;
+  share: number;
+}
+
+export interface EmbeddingTopicDiagnostics {
+  total_points: number;
+  topic_count: number;
+  outlier_count: number;
+  outlier_share: number;
+  largest_topic_id?: number | null;
+  largest_topic_label?: string | null;
+  largest_topic_share: number;
+  collapsed: boolean;
+  warning?: string | null;
+  topics: TopicDistributionItem[];
+}
+
 export interface EmbeddingMapResponse {
   items: EmbeddingPoint[];
+  diagnostics?: EmbeddingTopicDiagnostics | null;
   state: string;
   provenance?: ResponseProvenance;
 }
@@ -344,9 +369,44 @@ export interface SubredditGraphEdge {
   topic_overlap: number;
   score: number;
   shared_topic_ids: number[];
+  shared_topics?: Array<{ topic_id: number; label?: string | null; share: number }>;
 }
 
 export interface SubredditGraphResponse {
   nodes: SubredditGraphNode[];
   edges: SubredditGraphEdge[];
+}
+
+export interface ChartSummaryResponse {
+  summary: string;
+  state: string;
+  generated_at?: string | null;
+  model_name?: string | null;
+  source_input_hash?: string | null;
+  provenance?: ResponseProvenance;
+}
+
+export interface PipelineHealthStage {
+  name: string;
+  state: string;
+  healthy: boolean;
+  detail?: string | null;
+}
+
+export interface PipelineStorageHealth {
+  avg_latency_seconds?: number | null;
+  p95_latency_seconds?: number | null;
+  latest_lag_seconds?: number | null;
+  throughput_items_per_minute?: number | null;
+  recent_batches: number;
+  sparkline_latency_seconds: number[];
+  sparkline_throughput_items_per_minute: number[];
+  latest_storage_timestamp?: string | null;
+}
+
+export interface PipelineHealthResponse {
+  stages: PipelineHealthStage[];
+  storage: PipelineStorageHealth;
+  state: string;
+  provenance?: ResponseProvenance;
 }

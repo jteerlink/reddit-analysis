@@ -38,8 +38,12 @@ const HEIGHT = 520;
 const EMPTY_NODES: TopicGraphNode[] = [];
 const EMPTY_EDGES: TopicGraphEdge[] = [];
 
-function topicName(keywords: string) {
+function keywordName(keywords: string) {
   return keywords.replace(/[[\]"]/g, "").split(",")[0].trim() || keywords.slice(0, 22);
+}
+
+function topicName(node: TopicGraphNode) {
+  return node.label || node.llm_label || keywordName(node.keywords);
 }
 
 function nodeColor(node: TopicGraphNode, selectedTopicId: number | null) {
@@ -264,7 +268,7 @@ export function TopicGraph({ nodes, edges, selectedTopicId, onSelectTopic, compa
                 key={node.topic_id}
                 role="button"
                 tabIndex={0}
-                aria-label={`Topic ${node.topic_id}: ${topicName(node.keywords)}`}
+                aria-label={topicName(node)}
                 className="cursor-grab outline-none"
                 transform={`translate(${node.x ?? WIDTH / 2} ${node.y ?? HEIGHT / 2})`}
                 onPointerDown={(event) => beginDrag(node.topic_id, event)}
@@ -285,7 +289,7 @@ export function TopicGraph({ nodes, edges, selectedTopicId, onSelectTopic, compa
                     className="pointer-events-none fill-foreground font-mono text-[11px]"
                     opacity={muted ? 0.42 : 0.9}
                   >
-                    {topicName(node.keywords)}
+                    {topicName(node)}
                   </text>
                 )}
               </g>
@@ -306,8 +310,8 @@ export function TopicGraph({ nodes, edges, selectedTopicId, onSelectTopic, compa
 
       {hoveredNode && (
         <div className="pointer-events-none absolute bottom-4 left-4 z-20 max-w-72 rounded-lg border border-signal-copper/35 bg-[#081816]/95 px-3 py-2 text-[11px] shadow-2xl">
-          <p className="font-mono text-signal-copper">topic #{hoveredNode.topic_id}</p>
-          <p className="mt-1 text-sm font-medium text-foreground">{topicName(hoveredNode.keywords)}</p>
+          <p className="font-mono text-signal-copper">topic cluster</p>
+          <p className="mt-1 text-sm font-medium text-foreground">{topicName(hoveredNode)}</p>
           <p className="mt-1 font-mono text-muted-foreground">
             {hoveredNode.doc_count.toLocaleString()} comments / coherence {(hoveredNode.coherence_score ?? 0).toFixed(2)}
           </p>

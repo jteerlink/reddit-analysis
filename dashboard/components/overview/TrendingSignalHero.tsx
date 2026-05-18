@@ -25,7 +25,7 @@ function topicHeadline(topic: TrendingTopic): string {
   const words = stripStopwords(
     topic.keywords.replace(/[[\]"]/g, "").split(/[,\s]+/).filter(Boolean)
   ).slice(0, 4);
-  return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ") || `Topic #${topic.topic_id}`;
+  return words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ") || `Topic ${topic.topic_id}`;
 }
 
 function keywordSubtitle(topic: TrendingTopic): string {

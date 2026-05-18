@@ -168,6 +168,12 @@ def _topic_llm_label_expr(conn, alias: str = "") -> str:
     return f"{prefix}llm_label" if _column_exists(conn, "topics", "llm_label") else "NULL"
 
 
+def _topic_resolved_label_expr(conn, alias: str = "t") -> str:
+    llm_expr = _topic_llm_label_expr(conn, alias)
+    prefix = f"{alias}." if alias else ""
+    return f"COALESCE(NULLIF({llm_expr}, ''), NULLIF({prefix}keywords, ''))"
+
+
 def _known_subreddits(conn) -> list[str]:
     rows = execute(
         conn,
@@ -771,6 +777,7 @@ def get_topic_graph(
         conn = _connect()
         effective = _merge_subreddits(subreddits, parents)
         label_expr = _topic_llm_label_expr(conn, "t")
+        resolved_label_expr = _topic_resolved_label_expr(conn, "t")
         if effective:
             df = pd.read_sql_query(
                 f"""
@@ -778,6 +785,7 @@ def get_topic_graph(
                     t.topic_id,
                     t.keywords,
                     {label_expr} AS llm_label,
+                    {resolved_label_expr} AS label,
                     COUNT(ta.id) AS doc_count,
                     t.coherence_score,
                     t.created_at
@@ -790,7 +798,7 @@ def get_topic_graph(
                 ) src ON src.id = ta.id
                 WHERE t.topic_id != -1
                   AND src.subreddit IN ({placeholders(len(effective))})
-                GROUP BY t.topic_id, t.keywords, {label_expr}, t.coherence_score, t.created_at
+                GROUP BY t.topic_id, t.keywords, {label_expr}, {resolved_label_expr}, t.coherence_score, t.created_at
                 ORDER BY doc_count DESC, t.topic_id ASC
                 LIMIT {paramstyle()}
                 """,
@@ -800,7 +808,7 @@ def get_topic_graph(
         else:
             df = pd.read_sql_query(
                 f"""
-                SELECT t.topic_id, t.keywords, {label_expr} AS llm_label, t.doc_count, t.coherence_score, t.created_at
+                SELECT t.topic_id, t.keywords, {label_expr} AS llm_label, {resolved_label_expr} AS label, t.doc_count, t.coherence_score, t.created_at
                 FROM topics t
                 WHERE t.topic_id != -1
                 ORDER BY doc_count DESC, topic_id ASC
@@ -834,7 +842,8 @@ def get_topic_graph(
                     "keywords": row.get("keywords") or "",
                     "keyword_terms": keywords,
                     "llm_label": row.get("llm_label"),
-                    "label": row.get("llm_label"),
+                    "label": row.get("label") or row.get("llm_label") or row.get("keywords"),
+                    "label_source": "llm_artifact" if row.get("llm_label") else "deterministic_fallback",
                     "doc_count": int(row.get("doc_count") or 0),
                     "coherence_score": row.get("coherence_score"),
                     "emerging": emerging,
@@ -889,8 +898,15 @@ def get_emerging_topics(days: int = 7) -> List[dict]:
 def get_topic_over_time(topic_id: int) -> List[dict]:
     try:
         conn = _connect()
+        label_expr = _topic_resolved_label_expr(conn, "t")
         df = pd.read_sql_query(
-            f"SELECT week_start, doc_count, avg_sentiment FROM topic_over_time WHERE topic_id = {paramstyle()} ORDER BY week_start",
+            f"""
+            SELECT tot.topic_id, {label_expr} AS label, tot.week_start, tot.doc_count, tot.avg_sentiment
+            FROM topic_over_time tot
+            LEFT JOIN topics t ON t.topic_id = tot.topic_id
+            WHERE tot.topic_id = {paramstyle()}
+            ORDER BY tot.week_start
+            """,
             conn,
             params=[topic_id],
         )
@@ -904,15 +920,17 @@ def get_topic_over_time(topic_id: int) -> List[dict]:
 def get_topic_heatmap(n: int = 30) -> List[dict]:
     try:
         conn = _connect()
+        label_expr = _topic_resolved_label_expr(conn, "t")
         df = pd.read_sql_query(
             f"""
-            SELECT topic_id, week_start, avg_sentiment
-            FROM topic_over_time
-            WHERE topic_id IN (
+            SELECT tot.topic_id, {label_expr} AS label, tot.week_start, tot.avg_sentiment
+            FROM topic_over_time tot
+            LEFT JOIN topics t ON t.topic_id = tot.topic_id
+            WHERE tot.topic_id IN (
                 SELECT topic_id FROM topics WHERE topic_id != -1
                 ORDER BY doc_count DESC LIMIT {paramstyle()}
             )
-            ORDER BY topic_id, week_start
+            ORDER BY tot.topic_id, tot.week_start
             """,
             conn,
             params=[n],
@@ -1337,11 +1355,12 @@ def get_subreddit_graph(
         )
 
         label_expr = _topic_llm_label_expr(conn)
+        resolved_label_expr = _topic_resolved_label_expr(conn, "")
         topic_labels_df = pd.read_sql_query(
-            f"SELECT topic_id, {label_expr} AS llm_label FROM topics",
+            f"SELECT topic_id, {label_expr} AS llm_label, {resolved_label_expr} AS label FROM topics",
             conn,
         )
-        label_lookup = {int(row["topic_id"]): row["llm_label"] for _, row in topic_labels_df.iterrows()}
+        label_lookup = {int(row["topic_id"]): row["label"] for _, row in topic_labels_df.iterrows()}
 
         _close(conn)
 
@@ -1408,12 +1427,146 @@ def get_subreddit_graph(
                     "topic_overlap": round(topic_overlap, 4),
                     "score": round(score, 4),
                     "shared_topic_ids": [int(t) for t in shared_sorted],
+                    "shared_topics": [
+                        {
+                            "topic_id": int(t),
+                            "share": round(min(share_a.get(t, 0), share_b.get(t, 0)), 4),
+                            "label": label_lookup.get(int(t)),
+                        }
+                        for t in shared_sorted
+                    ],
                 })
         edges.sort(key=lambda e: -e["score"])
         return {"nodes": nodes, "edges": edges}
     except Exception:
         logger.exception("Failed to build subreddit graph")
         return {"nodes": [], "edges": []}
+
+
+def _parse_timestamp(value: object) -> Optional[datetime]:
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def _percentile(values: list[float], percentile: float) -> Optional[float]:
+    if not values:
+        return None
+    ordered = sorted(values)
+    index = int(round((len(ordered) - 1) * percentile))
+    return ordered[max(0, min(index, len(ordered) - 1))]
+
+
+@_ttl_cache(seconds=30)
+def get_pipeline_health(limit: int = 20) -> dict:
+    """Return operational health from persisted batch collection metadata."""
+    try:
+        readiness = get_table_state(("batch_collections",))
+        if readiness["state"] != "ready":
+            return {
+                "stages": [
+                    {"name": "Storage", "state": "No data", "healthy": False, "detail": readiness.get("reason")},
+                ],
+                "storage": {"recent_batches": 0},
+                "state": readiness["state"],
+                "provenance": {
+                    "state": readiness["state"],
+                    "label": "missing_config",
+                    "source": "batch_collections",
+                    "source_table": "batch_collections",
+                    "source_ids": [],
+                    "schema_version": 1,
+                    "detail": readiness.get("reason"),
+                },
+            }
+        conn = _connect()
+        rows = execute(
+            conn,
+            f"""
+            SELECT subreddit, collection_timestamp, posts_collected, comments_collected,
+                   processing_time_seconds, batch_status, storage_timestamp
+            FROM batch_collections
+            ORDER BY storage_timestamp DESC, collection_timestamp DESC
+            LIMIT {paramstyle()}
+            """,
+            (limit,),
+        ).fetchall()
+        _close(conn)
+        records = [dict(row) if hasattr(row, "keys") else {} for row in rows]
+        completed = [row for row in records if str(row.get("batch_status") or "completed") == "completed"]
+        latencies = [
+            float(row.get("processing_time_seconds") or 0)
+            for row in completed
+            if float(row.get("processing_time_seconds") or 0) > 0
+        ]
+        throughputs: list[float] = []
+        for row in completed:
+            seconds = float(row.get("processing_time_seconds") or 0)
+            items = int(row.get("posts_collected") or 0) + int(row.get("comments_collected") or 0)
+            if seconds > 0:
+                throughputs.append(items / seconds * 60)
+        latest_storage = next((_parse_timestamp(row.get("storage_timestamp")) for row in records if row.get("storage_timestamp")), None)
+        latest_lag = None
+        if latest_storage:
+            latest_lag = max(0.0, (datetime.now(timezone.utc) - latest_storage).total_seconds())
+        avg_latency = (sum(latencies) / len(latencies)) if latencies else None
+        p95_latency = _percentile(latencies, 0.95)
+        throughput = (sum(throughputs) / len(throughputs)) if throughputs else None
+        stale = latest_lag is not None and latest_lag > 3600
+        healthy = bool(records) and not stale and bool(latencies)
+        state = "ready" if records else "unpopulated"
+        storage_state = "Healthy" if healthy else ("Stale" if stale else "No data")
+        return {
+            "stages": [
+                {"name": "Ingestion", "state": "Tracked" if records else "No data", "healthy": bool(records)},
+                {"name": "Processing", "state": "Tracked" if records else "No data", "healthy": bool(records)},
+                {"name": "Sentiment", "state": "See ML run", "healthy": True},
+                {"name": "Topics", "state": "See pipeline", "healthy": True},
+                {"name": "Storage", "state": storage_state, "healthy": healthy, "detail": None if records else "No batch metadata is available."},
+            ],
+            "storage": {
+                "avg_latency_seconds": avg_latency,
+                "p95_latency_seconds": p95_latency,
+                "latest_lag_seconds": latest_lag,
+                "throughput_items_per_minute": throughput,
+                "recent_batches": len(records),
+                "sparkline_latency_seconds": list(reversed(latencies[-13:])),
+                "sparkline_throughput_items_per_minute": list(reversed(throughputs[-13:])),
+                "latest_storage_timestamp": latest_storage.isoformat().replace("+00:00", "Z") if latest_storage else None,
+            },
+            "state": state,
+            "provenance": {
+                "state": state,
+                "label": "real_data" if records else "missing_config",
+                "source": "batch_collections",
+                "source_table": "batch_collections",
+                "source_ids": [str(row.get("subreddit") or "") for row in records[:10]],
+                "schema_version": 1,
+                "detail": None if records else "No batch metadata is available.",
+            },
+        }
+    except Exception as exc:
+        logger.exception("Failed to read pipeline health")
+        return {
+            "stages": [{"name": "Storage", "state": "Error", "healthy": False, "detail": str(exc)}],
+            "storage": {"recent_batches": 0},
+            "state": "error",
+            "provenance": {
+                "state": "error",
+                "label": "missing_config",
+                "source": "batch_collections",
+                "source_table": "batch_collections",
+                "source_ids": [],
+                "schema_version": 1,
+                "detail": str(exc),
+            },
+        }
 
 
 @_ttl_cache(seconds=60)

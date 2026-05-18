@@ -186,7 +186,7 @@ export default function TopicsPage() {
           {selectedTopic ? (
             <>
               <ChartCard
-                title={selectedTopic.label || selectedTopic.llm_label || `Topic #${selectedTopic.topic_id}`}
+                title={selectedTopic.label || selectedTopic.llm_label || `Topic ${selectedTopic.topic_id}`}
                 subtitle="Weekly comment count"
               >
                 {overTime ? <TopicBarChart data={overTime} /> : <Skeleton className="h-52 w-full" />}

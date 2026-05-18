@@ -47,6 +47,51 @@ def _clean_llm_label(content: str) -> str:
     label = " ".join(label.split())
     return label[:80]
 
+
+def _topic_sample_texts(conn: Any, topic_id: int, limit: int = 6) -> list[dict]:
+    """Return bounded representative text samples for a BERTopic topic."""
+    marker = paramstyle()
+    text_col = "p.clean_text"
+    probability_order = "ta.probability DESC,"
+    try:
+        rows = execute(
+            conn,
+            f"""
+            SELECT p.id, p.content_type, {text_col} AS clean_text, src.subreddit, ta.probability
+            FROM topic_assignments ta
+            JOIN preprocessed p ON ta.id = p.id
+            LEFT JOIN (
+                SELECT id, subreddit, 'post' AS content_type, COALESCE(title, content, '') AS source_text FROM posts
+                UNION ALL
+                SELECT id, subreddit, 'comment' AS content_type, COALESCE(content, '') AS source_text FROM comments
+            ) src ON src.id = ta.id AND src.content_type = p.content_type
+            WHERE ta.topic_id = {marker}
+              AND COALESCE(NULLIF(p.clean_text, ''), NULLIF(src.source_text, '')) IS NOT NULL
+            ORDER BY {probability_order} LENGTH(COALESCE(NULLIF(p.clean_text, ''), src.source_text)) DESC, p.id
+            LIMIT {marker}
+            """,
+            (topic_id, limit),
+        ).fetchall()
+    except Exception as exc:
+        logger.warning("Could not sample topic %s text for LLM label: %s", topic_id, exc)
+        return []
+
+    samples: list[dict] = []
+    for row in rows:
+        text = row["clean_text"] if hasattr(row, "keys") else row[2]
+        if not text:
+            continue
+        samples.append(
+            {
+                "id": row["id"] if hasattr(row, "keys") else row[0],
+                "content_type": row["content_type"] if hasattr(row, "keys") else row[1],
+                "subreddit": row["subreddit"] if hasattr(row, "keys") else row[3],
+                "text": " ".join(str(text).split())[:320],
+            }
+        )
+    return samples
+
+
 def _select_model(conn: Any, config: OllamaConfig) -> Optional[str]:
     """
     Return the best available model from the DB registry, or None if
@@ -403,9 +448,17 @@ def enrich_bertopic_labels(
             keywords = []
 
         clean_keywords = clean_topic_keywords(keywords)
-        messages, version = topic_label_prompt(clean_keywords)
+        samples = _topic_sample_texts(conn, int(topic_id))
+        sample_texts = [sample["text"] for sample in samples]
+        messages, version = topic_label_prompt(clean_keywords, sample_texts)
         source_hash = artifact_checksum(
-            {"topic_id": int(topic_id), "keywords": clean_keywords, "prompt_version": version}
+            {
+                "topic_id": int(topic_id),
+                "keywords": clean_keywords,
+                "sample_ids": [sample["id"] for sample in samples],
+                "samples": sample_texts,
+                "prompt_version": version,
+            }
         )
         if source_hash in existing_artifacts:
             continue
@@ -414,7 +467,12 @@ def enrich_bertopic_labels(
             conn,
             kind="bertopic_label_llm",
             source_input_hash=source_hash,
-            payload={"topic_id": int(topic_id)},
+            payload={
+                "topic_id": int(topic_id),
+                "keywords": clean_keywords,
+                "samples": samples,
+                "prompt_version": version,
+            },
             provider="ollama",
             model_name=model,
             prompt_version=version,
@@ -431,7 +489,13 @@ def enrich_bertopic_labels(
         complete_artifact(
             conn,
             artifact_id,
-            {"topic_id": int(topic_id), "llm_label": llm_label, "prompt_version": version},
+            {
+                "topic_id": int(topic_id),
+                "llm_label": llm_label,
+                "prompt_version": version,
+                "keywords": clean_keywords,
+                "samples": samples,
+            },
         )
 
         try:

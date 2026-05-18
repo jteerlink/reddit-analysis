@@ -327,17 +327,35 @@ def _ensure_topics_table(conn):
 def test_enrich_bertopic_labels_writes_topic_llm_label(conn, local_config):
     _ensure_topics_table(conn)
     conn.execute(
+        "CREATE TABLE IF NOT EXISTS topic_assignments (id TEXT PRIMARY KEY, topic_id INTEGER, probability REAL)"
+    )
+    conn.execute(
         "INSERT INTO topics (topic_id, keywords, doc_count) VALUES (1, '[\"ai\", \"tools\"]', 12)"
     )
+    conn.execute(
+        "INSERT INTO preprocessed (id, content_type, clean_text) VALUES ('p1', 'post', 'Teams compare AI coding tools for production workflows')"
+    )
+    conn.execute(
+        "INSERT INTO posts (id, title, content, subreddit) VALUES ('p1', 'AI tools', 'Production coding assistant comparison', 'ChatGPT')"
+    )
+    conn.execute("INSERT INTO topic_assignments (id, topic_id, probability) VALUES ('p1', 1, 0.95)")
     conn.commit()
 
-    with patch("src.analysis.enrichment._chat_safe", return_value="AI Tooling"):
+    prompt_texts = []
+
+    def fake_chat_safe(config, model, messages, artifact_id, c):
+        prompt_texts.append(messages[-1]["content"])
+        return "AI Tooling"
+
+    with patch("src.analysis.enrichment._chat_safe", side_effect=fake_chat_safe):
         count = enrich_bertopic_labels(conn, local_config, "llama3", limit=10)
 
     assert count == 1
     row = conn.execute("SELECT llm_label, llm_prompt_version FROM topics WHERE topic_id = 1").fetchone()
     assert row["llm_label"] == "AI Tooling"
-    assert row["llm_prompt_version"] == "tl-v2"
+    assert row["llm_prompt_version"] == "tl-v4"
+    assert "Representative excerpts:" in prompt_texts[0]
+    assert "Teams compare AI coding tools" in prompt_texts[0]
 
 
 def test_enrich_bertopic_labels_is_idempotent(conn, local_config):
@@ -457,5 +475,5 @@ def test_enrich_analyst_brief_idempotency_uses_evidence_schema_version(conn, loc
         "SELECT * FROM analysis_artifacts WHERE kind = 'analyst_brief_llm' AND status = 'succeeded'"
     ).fetchall()
     assert len(artifacts) == 1
-    assert artifacts[0]["prompt_version"] == "ab-v3"
+    assert artifacts[0]["prompt_version"] == "ab-v4"
     assert artifacts[0]["schema_version"] == ANALYST_BRIEF_EVIDENCE_SCHEMA_VERSION

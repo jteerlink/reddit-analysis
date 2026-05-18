@@ -1,24 +1,28 @@
 "use client";
 
 import { useState } from "react";
+import useSWR from "swr";
 import { CheckCircle2, CircleDot, Database, GitBranch, MessageSquareText, Server, Workflow } from "lucide-react";
+import type { PipelineHealthResponse } from "@/lib/types";
 
-const STAGES = [
-  { name: "Ingestion", state: "Healthy", icon: CircleDot },
-  { name: "Processing", state: "Healthy", icon: Workflow },
-  { name: "Sentiment", state: "Healthy", icon: CheckCircle2 },
-  { name: "Topics", state: "Healthy", icon: Database },
-  { name: "Storage", state: "Lag 2m", icon: Server, alert: true },
-];
+const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
-const SPARKLINE_VALUES = [17, 12, 18, 8, 14, 11, 19, 10, 13, 9, 18, 15, 20];
+const STAGE_ICONS = {
+  Ingestion: CircleDot,
+  Processing: Workflow,
+  Sentiment: CheckCircle2,
+  Topics: Database,
+  Storage: Server,
+};
 
-function Sparkline({ alert = false, label }: { alert?: boolean; label: string }) {
+function Sparkline({ alert = false, label, values }: { alert?: boolean; label: string; values: number[] }) {
   const [hoverPoint, setHoverPoint] = useState<{ x: number; y: number; value: number } | null>(null);
   const stroke = alert ? "#ef5f54" : "#31d38f";
-  const points = SPARKLINE_VALUES.map((value, index) => ({
-    x: 2 + index * 7.15,
-    y: 24 - value,
+  const safeValues = values.length ? values.slice(-13) : [0];
+  const maxValue = Math.max(...safeValues, 1);
+  const points = safeValues.map((value, index) => ({
+    x: safeValues.length === 1 ? 45 : 2 + index * (86 / (safeValues.length - 1)),
+    y: 24 - (value / maxValue) * 20,
     value,
   }));
   const path = points.map((point, index) => `${index === 0 ? "M" : "L"}${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(" ");
@@ -49,14 +53,38 @@ function Sparkline({ alert = false, label }: { alert?: boolean; label: string })
           }}
         >
           <p className="font-mono text-signal-copper">{label}</p>
-          <p className="font-mono text-foreground">{alert ? `${(hoverPoint.value / 10).toFixed(1)} min` : `${hoverPoint.value.toFixed(1)}K/min`}</p>
+          <p className="font-mono text-foreground">{alert ? formatMinutes(hoverPoint.value) : formatThroughput(hoverPoint.value)}</p>
         </div>
       )}
     </div>
   );
 }
 
+function formatThroughput(value: number | null | undefined) {
+  if (value == null || Number.isNaN(value)) return "n/a";
+  if (value >= 1000) return `${(value / 1000).toFixed(1)}K/min`;
+  return `${value.toFixed(0)}/min`;
+}
+
+function formatMinutes(seconds: number | null | undefined) {
+  if (seconds == null || Number.isNaN(seconds)) return "n/a";
+  return `${(seconds / 60).toFixed(1)} min`;
+}
+
 export function PipelineHealthCard() {
+  const { data } = useSWR<PipelineHealthResponse>("/api/pipeline/health", fetcher, { refreshInterval: 30000 });
+  const stages = data?.stages?.length ? data.stages : [
+    { name: "Ingestion", state: "Loading", healthy: true },
+    { name: "Processing", state: "Loading", healthy: true },
+    { name: "Sentiment", state: "Loading", healthy: true },
+    { name: "Topics", state: "Loading", healthy: true },
+    { name: "Storage", state: "Loading", healthy: true },
+  ];
+  const storage = data?.storage;
+  const throughput = storage?.throughput_items_per_minute;
+  const latency = storage?.p95_latency_seconds ?? storage?.avg_latency_seconds;
+  const storageDetail = data?.provenance?.detail ?? (storage?.latest_storage_timestamp ? `Latest storage ${storage.latest_storage_timestamp.slice(0, 16).replace("T", " ")}` : "Waiting for batch metadata.");
+
   return (
     <section className="command-panel p-4">
       <div className="flex items-center justify-between">
@@ -68,16 +96,17 @@ export function PipelineHealthCard() {
       </div>
 
       <div className="mt-4 grid grid-cols-[repeat(5,minmax(0,1fr))] items-start gap-1">
-        {STAGES.map((stage, index) => {
-          const Icon = stage.icon;
+        {stages.map((stage, index) => {
+          const Icon = STAGE_ICONS[stage.name as keyof typeof STAGE_ICONS] ?? CircleDot;
+          const alert = !stage.healthy;
           return (
             <div key={stage.name} className="relative flex flex-col items-center gap-1 text-center">
-              {index < STAGES.length - 1 && <div className="absolute left-[58%] right-[-42%] top-4 h-px bg-border" />}
-              <div className={`relative z-10 grid size-8 place-items-center rounded-full border ${stage.alert ? "border-signal-red/45 bg-signal-red/10 text-signal-red" : "border-signal-green/45 bg-signal-green/10 text-signal-green"}`}>
+              {index < stages.length - 1 && <div className="absolute left-[58%] right-[-42%] top-4 h-px bg-border" />}
+              <div className={`relative z-10 grid size-8 place-items-center rounded-full border ${alert ? "border-signal-red/45 bg-signal-red/10 text-signal-red" : "border-signal-green/45 bg-signal-green/10 text-signal-green"}`}>
                 <Icon className="size-4" aria-hidden="true" />
               </div>
               <p className="text-[10px] font-medium text-foreground">{stage.name}</p>
-              <p className={`font-mono text-[10px] ${stage.alert ? "text-signal-red" : "text-signal-green"}`}>{stage.state}</p>
+              <p className={`font-mono text-[10px] ${alert ? "text-signal-red" : "text-signal-green"}`}>{stage.state}</p>
             </div>
           );
         })}
@@ -88,27 +117,27 @@ export function PipelineHealthCard() {
           <p className="text-[10px] uppercase text-muted-foreground">Throughput</p>
           <div className="mt-1 flex items-end justify-between gap-2">
             <div>
-              <p className="font-mono text-lg font-semibold text-foreground">18.7K</p>
+              <p className="font-mono text-lg font-semibold text-foreground">{formatThroughput(throughput).replace("/min", "")}</p>
               <p className="font-mono text-[10px] text-muted-foreground">items/min</p>
             </div>
-            <Sparkline label="Throughput" />
+            <Sparkline label="Throughput" values={storage?.sparkline_throughput_items_per_minute ?? []} />
           </div>
         </div>
         <div className="border-l border-border pl-3">
           <p className="text-[10px] uppercase text-muted-foreground">Latency</p>
           <div className="mt-1 flex items-end justify-between gap-2">
             <div>
-              <p className="font-mono text-lg font-semibold text-foreground">2.1</p>
+              <p className="font-mono text-lg font-semibold text-foreground">{latency == null ? "n/a" : (latency / 60).toFixed(1)}</p>
               <p className="font-mono text-[10px] text-muted-foreground">min</p>
             </div>
-            <Sparkline alert label="Latency" />
+            <Sparkline alert label="Latency" values={storage?.sparkline_latency_seconds ?? []} />
           </div>
         </div>
       </div>
 
       <div className="mt-3 flex items-center gap-2 rounded-md border border-signal-copper/20 bg-signal-copper/8 px-3 py-2 text-[11px] text-muted-foreground">
         <MessageSquareText className="size-3.5 text-signal-copper" aria-hidden="true" />
-        Forecast export queued after topic refresh.
+        {storageDetail}
       </div>
     </section>
   );

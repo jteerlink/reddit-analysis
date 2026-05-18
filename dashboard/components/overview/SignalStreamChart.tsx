@@ -1,12 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import type { SentimentDaily, SentimentSummary, VolumeDaily } from "@/lib/types";
+import type { ChartSummaryResponse, SentimentDaily, SentimentSummary, VolumeDaily } from "@/lib/types";
 
 interface Props {
   volumeData?: VolumeDaily[];
   sentimentData?: SentimentSummary[];
   sentimentDaily?: SentimentDaily[];
+  chartSummary?: ChartSummaryResponse;
 }
 
 interface HoverSignal {
@@ -103,7 +104,7 @@ function pathFromPoints(points: { x: number; y: number }[]) {
   return points.map((point, index) => `${index === 0 ? "M" : "L"} ${point.x.toFixed(1)} ${point.y.toFixed(1)}`).join(" ");
 }
 
-export function SignalStreamChart({ volumeData, sentimentData, sentimentDaily }: Props) {
+export function SignalStreamChart({ volumeData, sentimentData, sentimentDaily, chartSummary }: Props) {
   const [hoverSignal, setHoverSignal] = useState<HoverSignal | null>(null);
   const positive = sentimentPercent(sentimentData, "positive");
   const neutral = sentimentPercent(sentimentData, "neutral");
@@ -158,7 +159,7 @@ export function SignalStreamChart({ volumeData, sentimentData, sentimentDaily }:
   };
 
   return (
-    <section className="command-panel relative min-h-[392px] overflow-hidden p-5">
+    <section className="command-panel relative min-h-[470px] overflow-hidden p-5">
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_22%,rgba(49,211,143,0.11),transparent_28%),linear-gradient(135deg,rgba(190,112,58,0.08),transparent_38%)]" />
       <div className="relative flex items-start justify-between gap-4">
         <div>
@@ -266,6 +267,23 @@ export function SignalStreamChart({ volumeData, sentimentData, sentimentDaily }:
           <span>{sentimentRows[0]?.date?.slice(5) ?? "start"}</span>
           <span>Peak volume {peakVolume(volumeData)}</span>
           <span>{sentimentRows.at(-1)?.date?.slice(5) ?? "now"}</span>
+        </div>
+      </div>
+      <div className="relative mt-3 rounded-md border border-white/8 bg-black/16 px-3 py-2.5">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+              LLM chart summary
+            </p>
+            <p className="mt-1 line-clamp-3 text-[12px] leading-5 text-foreground">
+              {chartSummary?.summary ?? "Generating a concise readout for the active sentiment window."}
+            </p>
+          </div>
+          {chartSummary?.state && chartSummary.state !== "ready" && (
+            <span className="shrink-0 rounded border border-signal-yellow/30 px-2 py-1 font-mono text-[10px] text-signal-yellow">
+              {chartSummary.state.replace("_", " ")}
+            </span>
+          )}
         </div>
       </div>
     </section>

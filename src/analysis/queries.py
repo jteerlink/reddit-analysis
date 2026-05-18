@@ -316,6 +316,10 @@ def embedding_map(conn, limit: int = 5000) -> list[dict]:
         return []
     try:
         has_categories = not missing_analysis_tables(conn, ["subreddit_categories"])
+        has_topics = not missing_analysis_tables(conn, ["topics"])
+        topic_join = "LEFT JOIN topics t ON ta.topic_id = t.topic_id" if has_topics else ""
+        topic_keywords_expr = "t.keywords" if has_topics else "NULL"
+        topic_label_expr = "t.llm_label" if has_topics and _column_exists(conn, "topics", "llm_label") else "NULL"
         post_parent_col = (
             "subreddit_parent_id"
             if _column_exists(conn, "posts", "subreddit_parent_id")
@@ -347,6 +351,12 @@ def embedding_map(conn, limit: int = 5000) -> list[dict]:
             {category_cte}
             base AS (
                 SELECT e.post_id, e.x, e.y, e.cluster_id, ta.topic_id,
+                       COALESCE(NULLIF({topic_label_expr}, ''), NULLIF({topic_keywords_expr}, '')) AS topic_label,
+                       CASE
+                           WHEN {topic_label_expr} IS NOT NULL AND {topic_label_expr} != '' THEN 'llm_artifact'
+                           WHEN {topic_keywords_expr} IS NOT NULL AND {topic_keywords_expr} != '' THEN 'deterministic_fallback'
+                           ELSE 'unlabeled'
+                       END AS label_source,
                        src.subreddit,
                        COALESCE(NULLIF(src.subreddit_parent_id, ''), sc.parent_id, 'OTHER') AS parent_id,
                        COALESCE(NULLIF(src.subreddit_parent_id, ''), sc.parent_id, 'OTHER') AS parent_group,
@@ -354,6 +364,7 @@ def embedding_map(conn, limit: int = 5000) -> list[dict]:
                        src.date, p.clean_text, sp.label
                 FROM embedding_2d e
                 LEFT JOIN topic_assignments ta ON e.post_id = ta.id
+                {topic_join}
                 LEFT JOIN preprocessed p ON e.post_id = p.id
                 LEFT JOIN sentiment_predictions sp ON e.post_id = sp.id
                 LEFT JOIN src ON e.post_id = src.id
@@ -375,7 +386,7 @@ def embedding_map(conn, limit: int = 5000) -> list[dict]:
                        ) AS parent_rank
                 FROM subreddit_ranked
             )
-            SELECT post_id, x, y, cluster_id, topic_id, subreddit, parent_id, date, clean_text, label
+            SELECT post_id, x, y, cluster_id, topic_id, topic_label, label_source, subreddit, parent_id, date, clean_text, label
             FROM parent_ranked
             ORDER BY parent_rank, parent_group, subreddit_rank, subreddit_group, COALESCE(date, '') DESC, post_id
             LIMIT {paramstyle()}
@@ -389,6 +400,8 @@ def embedding_map(conn, limit: int = 5000) -> list[dict]:
                 "y": float(row["y"]),
                 "cluster_id": int(row["cluster_id"]),
                 "topic_id": row["topic_id"],
+                "topic_label": row["topic_label"],
+                "label_source": row["label_source"],
                 "subreddit": row["subreddit"],
                 "parent_id": row["parent_id"],
                 "sentiment": row["label"],

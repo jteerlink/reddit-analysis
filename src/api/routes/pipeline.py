@@ -39,6 +39,14 @@ def _db_count(query: str) -> int:
         return 0
 
 
+def _llm_topic_labels_done() -> bool:
+    total = _db_count("SELECT COUNT(*) FROM topics WHERE topic_id != -1")
+    if total <= 0:
+        return _db_count("SELECT COUNT(*) FROM analysis_artifacts WHERE status = 'succeeded' AND provider = 'ollama'") > 0
+    labeled = _db_count("SELECT COUNT(*) FROM topics WHERE topic_id != -1 AND llm_label IS NOT NULL AND llm_label != ''")
+    return labeled >= total
+
+
 def _step_done(step_num: int) -> bool:
     abs_db = Path(DB_PATH) if Path(DB_PATH).is_absolute() else PROJECT_ROOT / DB_PATH
     if step_num == 1:
@@ -67,7 +75,7 @@ def _step_done(step_num: int) -> bool:
     if step_num == 8:
         return _db_count("SELECT COUNT(*) FROM analysis_artifacts WHERE status = 'succeeded'") > 0
     if step_num == 9:
-        return _db_count("SELECT COUNT(*) FROM analysis_artifacts WHERE status = 'succeeded' AND provider = 'ollama'") > 0
+        return _llm_topic_labels_done()
     return False
 
 

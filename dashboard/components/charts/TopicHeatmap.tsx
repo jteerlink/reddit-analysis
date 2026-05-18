@@ -13,6 +13,7 @@ export function TopicHeatmap({ data }: { data: TopicHeatmapRow[] }) {
   const weeks = Array.from(new Set(data.map((row) => row.week_start))).sort().slice(-12);
   const topics = Array.from(new Set(data.map((row) => row.topic_id))).slice(0, 18);
   const values = new Map(data.map((row) => [`${row.topic_id}:${row.week_start}`, row.avg_sentiment]));
+  const labels = new Map(data.map((row) => [row.topic_id, row.label || `Topic ${row.topic_id}`]));
 
   if (!weeks.length || !topics.length) {
     return <div className="grid h-48 place-items-center text-sm text-muted-foreground">No topic sentiment rows</div>;
@@ -21,7 +22,7 @@ export function TopicHeatmap({ data }: { data: TopicHeatmapRow[] }) {
   return (
     <div className="overflow-x-auto">
       <div className="min-w-[680px]">
-        <div className="grid gap-1" style={{ gridTemplateColumns: `84px repeat(${weeks.length}, minmax(42px, 1fr))` }}>
+        <div className="grid gap-1" style={{ gridTemplateColumns: `132px repeat(${weeks.length}, minmax(42px, 1fr))` }}>
           <div />
           {weeks.map((week) => (
             <div key={week} className="truncate text-center font-mono text-[10px] text-muted-foreground">
@@ -30,13 +31,13 @@ export function TopicHeatmap({ data }: { data: TopicHeatmapRow[] }) {
           ))}
           {topics.map((topic) => (
             <div key={topic} className="contents">
-              <div className="truncate pr-2 text-right font-mono text-[11px] text-muted-foreground">#{topic}</div>
+              <div className="truncate pr-2 text-right text-[11px] text-muted-foreground">{labels.get(topic)}</div>
               {weeks.map((week) => {
                 const value = values.get(`${topic}:${week}`) ?? null;
                 return (
                   <div
                     key={`${topic}:${week}`}
-                    title={`Topic ${topic} / ${week}: ${value === null ? "n/a" : value.toFixed(3)}`}
+                    title={`${labels.get(topic)} / ${week}: ${value === null ? "n/a" : value.toFixed(3)}`}
                     className={`grid h-7 place-items-center rounded-sm font-mono text-[10px] tabular-nums ${tone(value)}`}
                   >
                     {value === null ? "-" : value.toFixed(1)}

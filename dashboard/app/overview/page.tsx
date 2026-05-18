@@ -12,6 +12,7 @@ import { ParentSummaryPanel } from "@/components/overview/ParentSummaryPanel";
 import { TrendingSignalHero } from "@/components/overview/TrendingSignalHero";
 import type {
   CollectionSummary,
+  ChartSummaryResponse,
   SentimentDaily,
   SentimentSummary,
   SubredditCategoriesResponse,
@@ -51,6 +52,7 @@ export default function OverviewPage() {
   const { data: sentimentData, error: sentimentError } = useSWR<SentimentSummary[]>(`/api/sentiment/summary${q}`, fetcher);
   const { data: sentimentDaily } = useSWR<SentimentDaily[]>(`/api/sentiment/daily${q}`, fetcher);
   const { data: volumeData } = useSWR<VolumeDaily[]>(`/api/volume/daily${q}`, fetcher);
+  const { data: chartSummary } = useSWR<ChartSummaryResponse>(`/api/analysis/overview-chart-summary${q}`, fetcher);
   const { data: allSubreddits = [] } = useSWR<string[]>("/api/subreddits", fetcher);
   const { data: categories } = useSWR<SubredditCategoriesResponse>("/api/subreddits/categories", fetcher);
 
@@ -202,7 +204,7 @@ export default function OverviewPage() {
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.45fr)_minmax(380px,0.75fr)]">
-        <SignalStreamChart volumeData={volumeData} sentimentData={sentimentData} sentimentDaily={sentimentDaily} />
+        <SignalStreamChart volumeData={volumeData} sentimentData={sentimentData} sentimentDaily={sentimentDaily} chartSummary={chartSummary} />
 
         <div className="grid gap-4">
           <PipelineHealthCard />

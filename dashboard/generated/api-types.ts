@@ -501,6 +501,75 @@ export const generatedApiSchemas = {
     "title": "ArtifactStatusResponse",
     "type": "object"
   },
+  "ChartSummaryResponse": {
+    "properties": {
+      "generated_at": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Generated At"
+      },
+      "model_name": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Model Name"
+      },
+      "provenance": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/AnalysisProvenance"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "source_input_hash": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Source Input Hash"
+      },
+      "state": {
+        "default": "ready",
+        "enum": [
+          "ready",
+          "missing_schema",
+          "unpopulated",
+          "stale_artifact",
+          "missing_config",
+          "error"
+        ],
+        "title": "State",
+        "type": "string"
+      },
+      "summary": {
+        "title": "Summary",
+        "type": "string"
+      }
+    },
+    "required": [
+      "summary"
+    ],
+    "title": "ChartSummaryResponse",
+    "type": "object"
+  },
   "ConfidenceBySubreddit": {
     "properties": {
       "low_confidence_count": {
@@ -567,6 +636,16 @@ export const generatedApiSchemas = {
   },
   "EmbeddingMapResponse": {
     "properties": {
+      "diagnostics": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/EmbeddingTopicDiagnostics"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
       "items": {
         "items": {
           "$ref": "#/components/schemas/EmbeddingPoint"
@@ -621,6 +700,17 @@ export const generatedApiSchemas = {
       "id": {
         "title": "Id",
         "type": "string"
+      },
+      "label_source": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Label Source"
       },
       "parent_id": {
         "anyOf": [
@@ -700,6 +790,17 @@ export const generatedApiSchemas = {
         ],
         "title": "Topic Id"
       },
+      "topic_label": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Topic Label"
+      },
       "x": {
         "title": "X",
         "type": "number"
@@ -716,6 +817,82 @@ export const generatedApiSchemas = {
       "cluster_id"
     ],
     "title": "EmbeddingPoint",
+    "type": "object"
+  },
+  "EmbeddingTopicDiagnostics": {
+    "properties": {
+      "collapsed": {
+        "default": false,
+        "title": "Collapsed",
+        "type": "boolean"
+      },
+      "largest_topic_id": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Largest Topic Id"
+      },
+      "largest_topic_label": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Largest Topic Label"
+      },
+      "largest_topic_share": {
+        "default": 0.0,
+        "title": "Largest Topic Share",
+        "type": "number"
+      },
+      "outlier_count": {
+        "default": 0,
+        "title": "Outlier Count",
+        "type": "integer"
+      },
+      "outlier_share": {
+        "default": 0.0,
+        "title": "Outlier Share",
+        "type": "number"
+      },
+      "topic_count": {
+        "default": 0,
+        "title": "Topic Count",
+        "type": "integer"
+      },
+      "topics": {
+        "items": {
+          "$ref": "#/components/schemas/TopicDistributionItem"
+        },
+        "title": "Topics",
+        "type": "array"
+      },
+      "total_points": {
+        "default": 0,
+        "title": "Total Points",
+        "type": "integer"
+      },
+      "warning": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Warning"
+      }
+    },
+    "title": "EmbeddingTopicDiagnostics",
     "type": "object"
   },
   "EnrichRequest": {
@@ -1184,6 +1361,159 @@ export const generatedApiSchemas = {
     "title": "NarrativeEventsResponse",
     "type": "object"
   },
+  "PipelineHealthResponse": {
+    "properties": {
+      "provenance": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/AnalysisProvenance"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "stages": {
+        "items": {
+          "$ref": "#/components/schemas/PipelineHealthStage"
+        },
+        "title": "Stages",
+        "type": "array"
+      },
+      "state": {
+        "default": "ready",
+        "enum": [
+          "ready",
+          "missing_schema",
+          "unpopulated",
+          "stale_artifact",
+          "missing_config",
+          "error"
+        ],
+        "title": "State",
+        "type": "string"
+      },
+      "storage": {
+        "$ref": "#/components/schemas/PipelineStorageHealth"
+      }
+    },
+    "title": "PipelineHealthResponse",
+    "type": "object"
+  },
+  "PipelineHealthStage": {
+    "properties": {
+      "detail": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Detail"
+      },
+      "healthy": {
+        "default": true,
+        "title": "Healthy",
+        "type": "boolean"
+      },
+      "name": {
+        "title": "Name",
+        "type": "string"
+      },
+      "state": {
+        "title": "State",
+        "type": "string"
+      }
+    },
+    "required": [
+      "name",
+      "state"
+    ],
+    "title": "PipelineHealthStage",
+    "type": "object"
+  },
+  "PipelineStorageHealth": {
+    "properties": {
+      "avg_latency_seconds": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Avg Latency Seconds"
+      },
+      "latest_lag_seconds": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Latest Lag Seconds"
+      },
+      "latest_storage_timestamp": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Latest Storage Timestamp"
+      },
+      "p95_latency_seconds": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "P95 Latency Seconds"
+      },
+      "recent_batches": {
+        "default": 0,
+        "title": "Recent Batches",
+        "type": "integer"
+      },
+      "sparkline_latency_seconds": {
+        "items": {
+          "type": "number"
+        },
+        "title": "Sparkline Latency Seconds",
+        "type": "array"
+      },
+      "sparkline_throughput_items_per_minute": {
+        "items": {
+          "type": "number"
+        },
+        "title": "Sparkline Throughput Items Per Minute",
+        "type": "array"
+      },
+      "throughput_items_per_minute": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Throughput Items Per Minute"
+      }
+    },
+    "title": "PipelineStorageHealth",
+    "type": "object"
+  },
   "SemanticSearchResponse": {
     "properties": {
       "items": {
@@ -1397,6 +1727,13 @@ export const generatedApiSchemas = {
           "type": "integer"
         },
         "title": "Shared Topic Ids",
+        "type": "array"
+      },
+      "shared_topics": {
+        "items": {
+          "$ref": "#/components/schemas/SubredditTopicShare"
+        },
+        "title": "Shared Topics",
         "type": "array"
       },
       "source": {
@@ -1626,6 +1963,40 @@ export const generatedApiSchemas = {
     "title": "ThreadAnalysis",
     "type": "object"
   },
+  "TopicDistributionItem": {
+    "properties": {
+      "count": {
+        "default": 0,
+        "title": "Count",
+        "type": "integer"
+      },
+      "label": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Label"
+      },
+      "share": {
+        "default": 0.0,
+        "title": "Share",
+        "type": "number"
+      },
+      "topic_id": {
+        "title": "Topic Id",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "topic_id"
+    ],
+    "title": "TopicDistributionItem",
+    "type": "object"
+  },
   "TopicHeatmapItem": {
     "properties": {
       "avg_sentiment": {
@@ -1638,6 +2009,17 @@ export const generatedApiSchemas = {
           }
         ],
         "title": "Avg Sentiment"
+      },
+      "label": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Label"
       },
       "topic_id": {
         "title": "Topic Id",

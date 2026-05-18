@@ -43,9 +43,13 @@ function pointDateInRange(date: string | null | undefined, range: [string, strin
 function pointMatchesSearch(point: EmbeddingPoint, search: string) {
   const term = search.trim().toLowerCase();
   if (!term) return true;
-  return [point.id, point.subreddit, point.sentiment, point.preview, String(point.topic_id ?? point.cluster_id)]
+  return [point.id, point.subreddit, point.sentiment, point.preview, point.topic_label, String(point.topic_id ?? point.cluster_id)]
     .filter(Boolean)
     .some((value) => String(value).toLowerCase().includes(term));
+}
+
+function topicName(point: EmbeddingPoint) {
+  return point.topic_label || `Topic ${point.topic_id ?? point.cluster_id}`;
 }
 
 export default function EmbeddingMapPage() {
@@ -71,16 +75,19 @@ export default function EmbeddingMapPage() {
   }, [categories]);
 
   const topicOptions = useMemo(() => {
-    const counts = new Map<number, number>();
+    const counts = new Map<number, { count: number; label?: string | null }>();
     for (const point of points) {
       const topicId = point.topic_id ?? point.cluster_id;
       if (topicId == null) continue;
-      counts.set(topicId, (counts.get(topicId) ?? 0) + 1);
+      const current = counts.get(topicId) ?? { count: 0, label: point.topic_label };
+      current.count += 1;
+      if (!current.label && point.topic_label) current.label = point.topic_label;
+      counts.set(topicId, current);
     }
     return [...counts.entries()]
-      .sort((a, b) => b[1] - a[1])
+      .sort((a, b) => b[1].count - a[1].count)
       .slice(0, 12)
-      .map(([topicId, count]) => ({ topicId, count }));
+      .map(([topicId, value]) => ({ topicId, count: value.count, label: value.label }));
   }, [points]);
 
   const filteredPoints = useMemo(() => {
@@ -189,15 +196,21 @@ export default function EmbeddingMapPage() {
               <div className="flex flex-wrap items-center gap-1">
                 <span className="font-mono text-[10px] uppercase tracking-wide text-muted-foreground">colour</span>
                 {COLOR_MODES.map((mode) => (
-                  <Button
-                    key={mode}
-                    type="button"
-                    size="sm"
-                    variant={colorMode === mode ? "secondary" : "outline"}
-                    onClick={() => setColorMode(mode)}
-                  >
-                    {mode}
-                  </Button>
+                  <div key={mode} className="group relative">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={colorMode === mode ? "secondary" : "outline"}
+                      onClick={() => setColorMode(mode)}
+                    >
+                      {mode}
+                    </Button>
+                    {mode === "cluster" && (
+                      <div className="pointer-events-none absolute right-0 top-full z-30 mt-2 hidden w-72 rounded-md border border-signal-copper/35 bg-[#081816]/95 px-3 py-2 text-[11px] leading-5 text-muted-foreground shadow-2xl group-hover:block group-focus-within:block">
+                        Cluster colour uses the assigned BERTopic topic. Labels come from the LLM topic enrichment pipeline; counts reflect the current map payload.
+                      </div>
+                    )}
+                  </div>
                 ))}
                 <Button
                   type="button"
@@ -207,15 +220,16 @@ export default function EmbeddingMapPage() {
                 >
                   all topics
                 </Button>
-                {topicOptions.map(({ topicId, count }) => (
+                {topicOptions.map(({ topicId, count, label }) => (
                   <Button
                     key={topicId}
                     type="button"
                     size="sm"
                     variant={topicFilter === topicId ? "secondary" : "outline"}
                     onClick={() => setTopicFilter(topicId)}
+                    title={`Topic ${topicId}`}
                   >
-                    #{topicId}
+                    <span className="max-w-28 truncate">{label || `Topic ${topicId}`}</span>
                     <span className="font-mono text-[10px] text-muted-foreground">{count}</span>
                   </Button>
                 ))}
@@ -224,6 +238,9 @@ export default function EmbeddingMapPage() {
 
             <div className="mb-3 flex flex-wrap gap-2 text-xs text-muted-foreground">
               <Badge variant="outline">{filteredPoints.length.toLocaleString()} visible</Badge>
+              {data.diagnostics?.collapsed && (
+                <Badge variant="destructive">{data.diagnostics.warning}</Badge>
+              )}
               {!!parents.length && <Badge variant="outline">{parents.length} parent filters</Badge>}
               {!!subreddits.length && <Badge variant="outline">{subreddits.length} subreddit filters</Badge>}
               {(dateRange[0] || dateRange[1]) && <Badge variant="outline">{dateRange[0] || "start"} to {dateRange[1] || "end"}</Badge>}
@@ -242,7 +259,7 @@ export default function EmbeddingMapPage() {
                     <button
                       key={point.id}
                       type="button"
-                      aria-label={`Inspect ${point.subreddit ?? "unknown"} topic ${point.topic_id ?? point.cluster_id}`}
+                      aria-label={`Inspect ${point.subreddit ?? "unknown"} ${topicName(point)}`}
                       onPointerEnter={() => setHoveredPoint(point)}
                       onPointerLeave={() => setHoveredPoint(null)}
                       onMouseEnter={() => setHoveredPoint(point)}
@@ -257,9 +274,9 @@ export default function EmbeddingMapPage() {
                 })}
                 {hoveredPoint && (
                   <div className="pointer-events-none absolute left-3 top-3 z-30 max-w-sm rounded-md border border-signal-copper/35 bg-[#081816]/95 px-3 py-2 text-xs shadow-2xl">
-                    <p className="font-mono text-signal-copper">{hoveredPoint.subreddit ?? "unknown"} / topic {hoveredPoint.topic_id ?? hoveredPoint.cluster_id}</p>
+                    <p className="font-mono text-signal-copper">{hoveredPoint.subreddit ?? "unknown"} / {topicName(hoveredPoint)}</p>
                     <p className="mt-1 text-foreground">{hoveredPoint.preview ?? "No preview available"}</p>
-                    <p className="mt-2 font-mono text-muted-foreground">{hoveredPoint.date ?? "no date"} / {hoveredPoint.sentiment ?? "unscored"}</p>
+                    <p className="mt-2 font-mono text-muted-foreground">{hoveredPoint.date ?? "no date"} / {hoveredPoint.sentiment ?? "unscored"} / cluster {hoveredPoint.cluster_id}</p>
                   </div>
                 )}
                 {!filteredPoints.length && (
@@ -280,7 +297,7 @@ export default function EmbeddingMapPage() {
                       <Badge variant="secondary">{activePoint.sentiment ?? "unscored"}</Badge>
                       <Badge variant="outline">{activePoint.subreddit ?? "unknown"}</Badge>
                       {activePoint.parent_id && <Badge variant="outline">{activePoint.parent_id}</Badge>}
-                      <Badge variant="outline">topic {activePoint.topic_id ?? activePoint.cluster_id}</Badge>
+                      <Badge variant="outline">{topicName(activePoint)}</Badge>
                     </div>
                     <dl className="grid grid-cols-2 gap-3 text-xs">
                       <div>
@@ -289,7 +306,7 @@ export default function EmbeddingMapPage() {
                       </div>
                       <div>
                         <dt className="text-muted-foreground">Cluster</dt>
-                        <dd className="mt-1 font-mono text-foreground">#{activePoint.cluster_id}</dd>
+                        <dd className="mt-1 font-mono text-foreground">{activePoint.cluster_id}</dd>
                       </div>
                       <div>
                         <dt className="text-muted-foreground">X</dt>
