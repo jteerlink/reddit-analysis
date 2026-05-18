@@ -13,6 +13,7 @@ import type { ChangePoint, Forecast, SentimentDaily, SubredditCategoriesResponse
 type MAMode = "none" | "7d" | "30d" | "both";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
+const SENTIMENT_CHART_START_DATE = "2026-04-01";
 
 function buildQuery(subreddits: string[], parents: string[]) {
   if (!subreddits.length && !parents.length) return "";
@@ -81,6 +82,9 @@ export default function SentimentPage() {
   const { data: daily } = useSWR<SentimentDaily[]>(`/api/sentiment/daily${q}`, fetcher);
   const { data: changePoints } = useSWR<ChangePoint[]>(`/api/sentiment/change-points${q}`, fetcher);
   const { data: forecast } = useSWR<Forecast[]>(`/api/sentiment/forecast${q}`, fetcher);
+  const chartDaily = daily?.filter((row) => row.date >= SENTIMENT_CHART_START_DATE);
+  const chartChangePoints = changePoints?.filter((row) => row.date >= SENTIMENT_CHART_START_DATE);
+  const chartForecast = forecast?.filter((row) => row.date >= SENTIMENT_CHART_START_DATE);
 
   return (
     <div className="space-y-6">
@@ -103,16 +107,16 @@ export default function SentimentPage() {
           </div>
         }
       >
-        {daily && changePoints ? (
-          <SentimentLineChart data={daily} changePoints={changePoints} maMode={maMode} />
+        {chartDaily && chartChangePoints ? (
+          <SentimentLineChart data={chartDaily} changePoints={chartChangePoints} maMode={maMode} seriesLabels={seriesLabels} />
         ) : (
           <Skeleton className="h-[420px] w-full" />
         )}
       </ChartCard>
 
       <ChartCard title="14-day forecast" subtitle="Prophet forecast with 95% confidence band">
-        {forecast ? (
-          <ForecastAreaChart data={forecast} seriesLabels={seriesLabels} />
+        {chartForecast ? (
+          <ForecastAreaChart data={chartForecast} seriesLabels={seriesLabels} actualData={chartDaily} />
         ) : (
           <Skeleton className="h-[420px] w-full" />
         )}
