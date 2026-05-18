@@ -7,6 +7,8 @@ management and orchestration of collection, storage, and analysis.
 
 import logging
 import os
+from argparse import Namespace
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import praw
@@ -210,11 +212,22 @@ def collect_reddit_data(config: RedditConfig,
         collector = RedditDataCollector(working_config, storage)
 
         if enable_batching:
-            return _collect_with_batching(collector, storage, working_config,
-                                        posts_per_subreddit, comments_per_post, enable_resume)
+            result = _collect_with_batching(collector, storage, working_config,
+                                            posts_per_subreddit, comments_per_post, enable_resume)
         else:
-            return _collect_traditional_way(collector, storage, working_config,
-                                          posts_per_subreddit, comments_per_post)
+            result = _collect_traditional_way(collector, storage, working_config,
+                                              posts_per_subreddit, comments_per_post)
+
+        if result.get('success'):
+            if storage._using_postgres():
+                result['neon_mirror'] = {
+                    'status': 'skipped',
+                    'reason': 'active_postgres_backend',
+                }
+            else:
+                result['neon_mirror'] = _mirror_sqlite_to_neon(db_path)
+
+        return result
 
     except Exception as e:
         logger.error(f"Data collection failed: {e}")
@@ -225,6 +238,51 @@ def collect_reddit_data(config: RedditConfig,
             'comments_collected': 0,
             'collection_mode': collection_mode
         }
+
+
+def _mirror_sqlite_to_neon(db_path: str) -> Dict:
+    """Mirror a completed SQLite collection into Neon when configured."""
+    database_url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+    if not database_url:
+        return {
+            'status': 'skipped',
+            'reason': 'missing_neon_database_url',
+        }
+
+    if db_path.startswith(("postgres://", "postgresql://")):
+        return {
+            'status': 'skipped',
+            'reason': 'source_is_postgres',
+        }
+
+    source = Path(db_path)
+    if not source.exists():
+        return {
+            'status': 'skipped',
+            'reason': 'missing_sqlite_source',
+            'source': str(source),
+        }
+
+    from scripts import migrate_to_neon
+
+    args = Namespace(
+        source=str(source),
+        database_url=database_url,
+        schema=str(migrate_to_neon.SCHEMA_PATH),
+        seed=str(migrate_to_neon.SEED_PATH),
+        batch_size=int(os.environ.get("NEON_MIRROR_BATCH_SIZE", "1000")),
+        create_schema=os.environ.get("NEON_MIRROR_CREATE_SCHEMA", "true").lower()
+        not in {"0", "false", "no"},
+        dry_run=False,
+    )
+    exit_code = migrate_to_neon.run(args)
+    if exit_code != 0:
+        raise RuntimeError(f"Neon mirror failed with exit code {exit_code}")
+
+    return {
+        'status': 'mirrored',
+        'source': str(source),
+    }
 
 
 def _collect_with_batching(collector, storage, config, posts_per_subreddit, comments_per_post, enable_resume):

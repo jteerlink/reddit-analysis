@@ -10,6 +10,53 @@ from enum import Enum
 from typing import Dict, List, Optional
 
 
+DEFAULT_SUBREDDIT_CATEGORIES: tuple[tuple[str, str, str, int], ...] = (
+    ("AnthropicAI", "ANTHROPIC", "Anthropic", 10),
+    ("ClaudeAI", "ANTHROPIC", "Anthropic", 10),
+    ("ChatGPT", "OPENAI", "OpenAI", 20),
+    ("OpenAI", "OPENAI", "OpenAI", 20),
+    ("Bard", "GOOGLE", "Google AI", 30),
+    ("GeminiAI", "GOOGLE", "Google AI", 30),
+    ("GoogleGeminiAI", "GOOGLE", "Google AI", 30),
+    ("GoogleBard", "GOOGLE", "Google AI", 30),
+    ("GoogleAI", "GOOGLE", "Google AI", 30),
+    ("DeepMind", "GOOGLE", "Google AI", 30),
+    ("nvidia", "AI_INFRA", "AI Infrastructure", 40),
+    ("technology", "AI_INFRA", "AI Infrastructure", 40),
+    ("huggingface", "AI_INFRA", "AI Infrastructure", 40),
+    ("LocalLLaMA", "OPEN_SOURCE", "Open Source", 50),
+    ("StableDiffusion", "OPEN_SOURCE", "Open Source", 50),
+    ("MachineLearning", "ML_RESEARCH", "ML & Research", 60),
+    ("DeepLearning", "ML_RESEARCH", "ML & Research", 60),
+    ("datascience", "ML_RESEARCH", "ML & Research", 60),
+    ("learnmachinelearning", "ML_RESEARCH", "ML & Research", 60),
+    ("artificial", "ML_RESEARCH", "ML & Research", 60),
+    ("ArtificialIntelligence", "ML_RESEARCH", "ML & Research", 60),
+    ("AITA", "OTHER", "Other", 70),
+    ("AGI", "OTHER", "Other", 70),
+    ("Singularity", "OTHER", "Other", 70),
+    ("AItools", "OTHER", "Other", 70),
+    ("aiNews", "OTHER", "Other", 70),
+    ("AIStartups", "OTHER", "Other", 70),
+    ("AIArt", "OTHER", "Other", 70),
+    ("AutoGPT", "OTHER", "Other", 70),
+    ("LLMDevs", "OTHER", "Other", 70),
+    ("PromptEngineering", "OTHER", "Other", 70),
+)
+
+_SUBREDDIT_PARENT_IDS = {
+    subreddit.casefold(): parent_id
+    for subreddit, parent_id, _display_name, _sort_order in DEFAULT_SUBREDDIT_CATEGORIES
+}
+
+
+def subreddit_parent_id_for(subreddit: Optional[str]) -> str:
+    """Return the durable parent group for a subreddit."""
+    if not subreddit:
+        return "OTHER"
+    return _SUBREDDIT_PARENT_IDS.get(subreddit.casefold(), "OTHER")
+
+
 class ContentType(Enum):
     """Enumeration for content types"""
     POST = "post"
@@ -40,7 +87,7 @@ class RedditConfig:
     def __post_init__(self):
         """Initialize default values after creation"""
         if self.target_subreddits is None:
-            self.target_subreddits = ['ChatGPT', 'OpenAI', 'ClaudeAI', 'AnthropicAI', 'Gemini', 'AITA', 'LocalLLaMA', 'MachineLearning', 'artificial', 'ArtificialIntelligence', 'DeepLearning', 'AGI', 'Singularity', 'StableDiffusion', 'AItools', 'aiNews', 'huggingface', 'AIStartups', 'DeepMind', 'nvidia', 'AIArt', 'technology', 'LLMDevs', 'PromptEngineering', 'datascience', 'learnmachinelearning']
+            self.target_subreddits = ['ChatGPT', 'OpenAI', 'ClaudeAI', 'AnthropicAI', 'Bard', 'GeminiAI', 'GoogleGeminiAI', 'GoogleBard', 'GoogleAI', 'AITA', 'LocalLLaMA', 'MachineLearning', 'artificial', 'ArtificialIntelligence', 'DeepLearning', 'AGI', 'Singularity', 'StableDiffusion', 'AItools', 'aiNews', 'huggingface', 'AIStartups', 'DeepMind', 'nvidia', 'AIArt', 'technology', 'LLMDevs', 'PromptEngineering', 'datascience', 'learnmachinelearning']
         if self.target_keywords is None:
             self.target_keywords = ['AI', 'LLM', 'machine learning', 'artificial intelligence', 'ChatGPT', 'Claude', 'GPT', 'neural network']
 
@@ -58,7 +105,12 @@ class RedditPost:
     author_karma: int
     url: str
     num_comments: int
+    subreddit_parent_id: Optional[str] = None
     content_type: str = ContentType.POST.value
+
+    def __post_init__(self):
+        if not self.subreddit_parent_id:
+            self.subreddit_parent_id = subreddit_parent_id_for(self.subreddit)
     
     def to_dict(self) -> Dict:
         """Convert to dictionary with serialized datetime"""
@@ -79,7 +131,12 @@ class RedditComment:
     author: str
     author_karma: int
     post_id: str
+    subreddit_parent_id: Optional[str] = None
     content_type: str = ContentType.COMMENT.value
+
+    def __post_init__(self):
+        if not self.subreddit_parent_id:
+            self.subreddit_parent_id = subreddit_parent_id_for(self.subreddit)
     
     def to_dict(self) -> Dict:
         """Convert to dictionary with serialized datetime"""

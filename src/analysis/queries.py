@@ -19,7 +19,8 @@ from src.analysis.db import (
     list_artifacts,
     missing_analysis_tables,
 )
-from src.db.connection import execute, paramstyle
+from src.db.connection import execute, is_postgres_connection, paramstyle
+from src.reddit_api.models import DEFAULT_SUBREDDIT_CATEGORIES
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +68,31 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     if not denom or math.isnan(denom):
         return 0.0
     return float(np.dot(a, b) / denom)
+
+
+def _sql_text(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _column_exists(conn: Any, table_name: str, column_name: str) -> bool:
+    marker = paramstyle()
+    if is_postgres_connection(conn):
+        row = execute(
+            conn,
+            f"""
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = {marker}
+              AND column_name = {marker}
+            LIMIT 1
+            """,
+            (table_name, column_name),
+        ).fetchone()
+        return row is not None
+
+    rows = execute(conn, f"PRAGMA table_info({table_name})").fetchall()
+    return any((row["name"] if hasattr(row, "keys") else row[1]) == column_name for row in rows)
 
 
 def activity(conn, limit: int = 20) -> list[dict]:
@@ -285,28 +311,73 @@ def narrative_events(conn, limit: int = 50) -> list[dict]:
         raise AnalysisQueryError(str(exc)) from exc
 
 
-def embedding_map(conn, limit: int = 1000) -> list[dict]:
+def embedding_map(conn, limit: int = 5000) -> list[dict]:
     if missing_analysis_tables(conn, ["embedding_2d"]):
         return []
     try:
         has_categories = not missing_analysis_tables(conn, ["subreddit_categories"])
-        category_join = "LEFT JOIN subreddit_categories sc ON sc.subreddit = src.subreddit" if has_categories else ""
-        parent_col = "sc.parent_id," if has_categories else "NULL AS parent_id,"
+        post_parent_col = (
+            "subreddit_parent_id"
+            if _column_exists(conn, "posts", "subreddit_parent_id")
+            else "NULL AS subreddit_parent_id"
+        )
+        comment_parent_col = (
+            "subreddit_parent_id"
+            if _column_exists(conn, "comments", "subreddit_parent_id")
+            else "NULL AS subreddit_parent_id"
+        )
+        if has_categories:
+            category_cte = ""
+            category_join = "LEFT JOIN subreddit_categories sc ON sc.subreddit = src.subreddit"
+        else:
+            default_category_rows = ", ".join(
+                f"({_sql_text(subreddit)}, {_sql_text(parent_id)})"
+                for subreddit, parent_id, _display_name, _sort_order in DEFAULT_SUBREDDIT_CATEGORIES
+            )
+            category_cte = f"default_categories(subreddit, parent_id) AS (VALUES {default_category_rows}),"
+            category_join = "LEFT JOIN default_categories sc ON sc.subreddit = src.subreddit"
         rows = execute(
             conn,
             f"""
-            SELECT e.post_id, e.x, e.y, e.cluster_id, ta.topic_id,
-                   src.subreddit, {parent_col} src.date, p.clean_text, sp.label
-            FROM embedding_2d e
-            LEFT JOIN topic_assignments ta ON e.post_id = ta.id
-            LEFT JOIN preprocessed p ON e.post_id = p.id
-            LEFT JOIN sentiment_predictions sp ON e.post_id = sp.id
-            LEFT JOIN (
-                SELECT id, subreddit, DATE(timestamp) AS date FROM posts
+            WITH src AS (
+                SELECT id, subreddit, {post_parent_col}, DATE(timestamp) AS date FROM posts
                 UNION ALL
-                SELECT id, subreddit, DATE(timestamp) AS date FROM comments
-            ) src ON e.post_id = src.id
-            {category_join}
+                SELECT id, subreddit, {comment_parent_col}, DATE(timestamp) AS date FROM comments
+            ),
+            {category_cte}
+            base AS (
+                SELECT e.post_id, e.x, e.y, e.cluster_id, ta.topic_id,
+                       src.subreddit,
+                       COALESCE(NULLIF(src.subreddit_parent_id, ''), sc.parent_id, 'OTHER') AS parent_id,
+                       COALESCE(NULLIF(src.subreddit_parent_id, ''), sc.parent_id, 'OTHER') AS parent_group,
+                       COALESCE(src.subreddit, 'unknown') AS subreddit_group,
+                       src.date, p.clean_text, sp.label
+                FROM embedding_2d e
+                LEFT JOIN topic_assignments ta ON e.post_id = ta.id
+                LEFT JOIN preprocessed p ON e.post_id = p.id
+                LEFT JOIN sentiment_predictions sp ON e.post_id = sp.id
+                LEFT JOIN src ON e.post_id = src.id
+                {category_join}
+            ),
+            subreddit_ranked AS (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY parent_group, subreddit_group
+                           ORDER BY COALESCE(date, '') DESC, post_id
+                       ) AS subreddit_rank
+                FROM base
+            ),
+            parent_ranked AS (
+                SELECT *,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY parent_group
+                           ORDER BY subreddit_rank, subreddit_group, COALESCE(date, '') DESC, post_id
+                       ) AS parent_rank
+                FROM subreddit_ranked
+            )
+            SELECT post_id, x, y, cluster_id, topic_id, subreddit, parent_id, date, clean_text, label
+            FROM parent_ranked
+            ORDER BY parent_rank, parent_group, subreddit_rank, subreddit_group, COALESCE(date, '') DESC, post_id
             LIMIT {paramstyle()}
             """,
             (limit,),

@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Dict, List
 
 from .client import RateLimitedRedditClient
-from .models import RedditConfig, RedditPost, RedditComment
+from .models import RedditConfig, RedditPost, RedditComment, subreddit_parent_id_for
 
 logger = logging.getLogger(__name__)
 
@@ -59,17 +59,19 @@ class RedditDataCollector:
             RedditPost object or None if extraction fails
         """
         try:
+            subreddit = submission.subreddit.display_name
             return RedditPost(
                 id=submission.id,
                 title=submission.title,
                 content=submission.selftext or "",
                 upvotes=submission.score,
                 timestamp=datetime.fromtimestamp(submission.created_utc),
-                subreddit=submission.subreddit.display_name,
+                subreddit=subreddit,
                 author=str(submission.author) if submission.author else "[deleted]",
                 author_karma=self._get_author_karma(submission.author),
                 url=submission.url,
-                num_comments=submission.num_comments
+                num_comments=submission.num_comments,
+                subreddit_parent_id=subreddit_parent_id_for(subreddit),
             )
         except Exception as e:
             logger.error(f"Error extracting post data: {e}")
@@ -88,16 +90,18 @@ class RedditDataCollector:
         """
         try:
             if hasattr(comment, 'body') and comment.body != '[deleted]':
+                subreddit = comment.subreddit.display_name
                 return RedditComment(
                     id=comment.id,
                     parent_id=comment.parent_id,
                     content=comment.body,
                     upvotes=comment.score,
                     timestamp=datetime.fromtimestamp(comment.created_utc),
-                    subreddit=comment.subreddit.display_name,
+                    subreddit=subreddit,
                     author=str(comment.author) if comment.author else "[deleted]",
                     author_karma=self._get_author_karma(comment.author),
-                    post_id=post_id
+                    post_id=post_id,
+                    subreddit_parent_id=subreddit_parent_id_for(subreddit),
                 )
         except Exception as e:
             logger.error(f"Error extracting comment data: {e}")

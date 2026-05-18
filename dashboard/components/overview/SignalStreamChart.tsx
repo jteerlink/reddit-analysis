@@ -15,6 +15,12 @@ interface HoverSignal {
   date: string;
   sentiment: number;
   volume: number;
+  markers: Array<{
+    label: "Positive" | "Neutral" | "Negative";
+    y: number;
+    color: string;
+    value: number;
+  }>;
 }
 
 const FALLBACK_SENTIMENT = [
@@ -125,17 +131,29 @@ export function SignalStreamChart({ volumeData, sentimentData, sentimentDaily }:
   const anomaly = negativePoints.reduce((lowest, point) => (point.y > lowest.y ? point : lowest), negativePoints[0]);
   const nearestSignal = (clientX: number, rect: DOMRect) => {
     const svgX = ((clientX - rect.left) / rect.width) * 560;
-    const nearest = sentimentPoints.reduce((best, point) => {
-      return Math.abs(point.x - svgX) < Math.abs(best.x - svgX) ? point : best;
-    }, sentimentPoints[0]);
+    const nearestIndex = sentimentPoints.reduce((bestIndex, point, index) => {
+      return Math.abs(point.x - svgX) < Math.abs(sentimentPoints[bestIndex].x - svgX) ? index : bestIndex;
+    }, 0);
+    const nearest = sentimentPoints[nearestIndex];
     const row = nearest?.row as { date: string; score: number } | undefined;
     if (!nearest || !row) return null;
+    const markerRows = [
+      { label: "Positive" as const, point: positivePoints[nearestIndex], color: "#31d38f" },
+      { label: "Neutral" as const, point: neutralPoints[nearestIndex], color: "#c07a45" },
+      { label: "Negative" as const, point: negativePoints[nearestIndex], color: "#ef5f54" },
+    ];
     return {
       x: nearest.x,
       y: nearest.y,
       date: row.date,
       sentiment: row.score,
       volume: volumeByDate.get(row.date) ?? 0,
+      markers: markerRows.map((marker) => ({
+        label: marker.label,
+        y: marker.point.y,
+        color: marker.color,
+        value: marker.point.value,
+      })),
     };
   };
 
@@ -216,8 +234,12 @@ export function SignalStreamChart({ volumeData, sentimentData, sentimentDaily }:
           {hoverSignal && (
             <g pointerEvents="none">
               <line x1={hoverSignal.x} x2={hoverSignal.x} y1="28" y2="222" stroke="#f6e7c8" strokeOpacity="0.55" strokeDasharray="3 5" />
-              <circle cx={hoverSignal.x} cy={hoverSignal.y} r="6" fill="#081816" stroke="#f6e7c8" strokeWidth="1.5" />
-              <circle cx={hoverSignal.x} cy={hoverSignal.y} r="2.5" fill="#31d38f" />
+              {hoverSignal.markers.map((marker) => (
+                <g key={marker.label}>
+                  <circle cx={hoverSignal.x} cy={marker.y} r="6" fill="#081816" stroke="#f6e7c8" strokeWidth="1.5" />
+                  <circle cx={hoverSignal.x} cy={marker.y} r="2.8" fill={marker.color} />
+                </g>
+              ))}
             </g>
           )}
         </svg>
@@ -232,6 +254,11 @@ export function SignalStreamChart({ volumeData, sentimentData, sentimentDaily }:
           >
             <p className="font-mono text-signal-copper">{hoverSignal.date}</p>
             <p className="mt-1 font-mono">sentiment {hoverSignal.sentiment.toFixed(3)}</p>
+            {hoverSignal.markers.map((marker) => (
+              <p key={marker.label} className="font-mono" style={{ color: marker.color }}>
+                {marker.label.toLowerCase()} line {marker.value.toFixed(3)}
+              </p>
+            ))}
             <p className="font-mono text-muted-foreground">volume {hoverSignal.volume.toLocaleString()}</p>
           </div>
         )}

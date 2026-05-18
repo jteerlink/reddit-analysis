@@ -77,6 +77,22 @@ def mock_reddit_comment():
 
 class TestBatchedCollection:
     """Test batched collection functionality."""
+
+    def test_default_config_targets_google_ai_subreddits_not_crypto_gemini(self):
+        """Test that Google AI collection targets avoid the Gemini exchange subreddit."""
+        config = RedditConfig(
+            client_id='test_client',
+            client_secret='test_secret',
+            user_agent='test_agent',
+        )
+
+        assert 'Gemini' not in config.target_subreddits
+        assert {'Bard', 'GeminiAI', 'GoogleGeminiAI', 'GoogleBard', 'GoogleAI', 'DeepMind'} <= set(config.target_subreddits)
+
+        from src.reddit_api.models import subreddit_parent_id_for
+
+        assert subreddit_parent_id_for('Gemini') == 'OTHER'
+        assert subreddit_parent_id_for('GeminiAI') == 'GOOGLE'
     
     def test_successful_batch_collection(self, temp_db, test_config, mock_reddit_post, mock_reddit_comment):
         """Test successful batch collection with immediate storage."""
@@ -213,6 +229,96 @@ class TestBatchedCollection:
 
 class TestBatchStorage:
     """Test batch storage functionality."""
+
+    def test_storage_persists_subreddit_parent_group(self, temp_db):
+        """Test that new posts and comments store durable subreddit parent groups."""
+        storage = RedditDataStorage(temp_db)
+        post = RedditPost(
+            id='openai_post',
+            title='OpenAI release',
+            content='New model discussion',
+            upvotes=100,
+            timestamp=datetime.now(),
+            subreddit='OpenAI',
+            author='test_user',
+            author_karma=1000,
+            url='https://reddit.com/test',
+            num_comments=5,
+        )
+        comment = RedditComment(
+            id='local_comment',
+            parent_id='openai_post',
+            content='Local model comparison',
+            upvotes=25,
+            timestamp=datetime.now(),
+            subreddit='LocalLLaMA',
+            author='commenter',
+            author_karma=500,
+            post_id='openai_post',
+        )
+
+        assert storage.store_posts([post]) == 1
+        assert storage.store_comments([comment]) == 1
+
+        with sqlite3.connect(temp_db) as conn:
+            post_parent = conn.execute(
+                "SELECT subreddit_parent_id FROM posts WHERE id = ?",
+                ("openai_post",),
+            ).fetchone()[0]
+            comment_parent = conn.execute(
+                "SELECT subreddit_parent_id FROM comments WHERE id = ?",
+                ("local_comment",),
+            ).fetchone()[0]
+
+        assert post_parent == "OPENAI"
+        assert comment_parent == "OPEN_SOURCE"
+
+    def test_init_database_backfills_subreddit_parent_group(self, temp_db):
+        """Test that legacy rows get a durable parent group during schema init."""
+        with sqlite3.connect(temp_db) as conn:
+            conn.executescript(
+                """
+                CREATE TABLE posts (
+                    id TEXT PRIMARY KEY,
+                    title TEXT,
+                    content TEXT,
+                    upvotes INTEGER,
+                    timestamp DATETIME,
+                    subreddit TEXT,
+                    author TEXT,
+                    author_karma INTEGER,
+                    url TEXT,
+                    num_comments INTEGER,
+                    content_type TEXT DEFAULT 'post',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE comments (
+                    id TEXT PRIMARY KEY,
+                    parent_id TEXT,
+                    content TEXT,
+                    upvotes INTEGER,
+                    timestamp DATETIME,
+                    subreddit TEXT,
+                    author TEXT,
+                    author_karma INTEGER,
+                    post_id TEXT,
+                    content_type TEXT DEFAULT 'comment',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO posts (id, title, subreddit) VALUES ('p1', 'Known', 'ChatGPT');
+                INSERT INTO posts (id, title, subreddit) VALUES ('p2', 'Unknown', 'mysterySub');
+                INSERT INTO comments (id, content, subreddit) VALUES ('c1', 'Known', 'ClaudeAI');
+                """
+            )
+
+        RedditDataStorage(temp_db)
+
+        with sqlite3.connect(temp_db) as conn:
+            post_rows = dict(conn.execute("SELECT id, subreddit_parent_id FROM posts ORDER BY id").fetchall())
+            comment_rows = dict(conn.execute("SELECT id, subreddit_parent_id FROM comments ORDER BY id").fetchall())
+
+        assert post_rows == {"p1": "OPENAI", "p2": "OTHER"}
+        assert comment_rows == {"c1": "ANTHROPIC"}
     
     def test_atomic_batch_storage(self, temp_db, mock_reddit_post, mock_reddit_comment):
         """Test that batch storage is atomic - all or nothing."""
@@ -543,6 +649,54 @@ class TestMainIntegration:
             
             assert result['success'] is True
             assert mock_batched.called
+
+    def test_batched_collection_mirrors_sqlite_to_neon_after_success(self, temp_db, test_config, monkeypatch):
+        """Test that successful collection runs the Neon mirror as a final step."""
+        monkeypatch.setenv("NEON_DATABASE_URL", "postgresql://user:pass@example.test/db")
+
+        with patch('src.reddit_api.main._collect_with_batching') as mock_batched, \
+             patch('src.reddit_api.main._mirror_sqlite_to_neon') as mock_mirror:
+            mock_batched.return_value = {
+                'success': True,
+                'collection_mode': 'batched',
+                'total_posts_collected': 5,
+            }
+            mock_mirror.return_value = {
+                'status': 'mirrored',
+                'source': temp_db,
+            }
+
+            result = collect_reddit_data(
+                config=test_config,
+                enable_batching=True,
+                db_path=temp_db,
+            )
+
+            assert result['success'] is True
+            mock_mirror.assert_called_once_with(temp_db)
+            assert result['neon_mirror']['status'] == 'mirrored'
+
+    def test_collection_skips_neon_mirror_without_target_url(self, temp_db, test_config, monkeypatch):
+        """Test that SQLite-only local runs remain successful without Neon config."""
+        monkeypatch.delenv("NEON_DATABASE_URL", raising=False)
+        monkeypatch.delenv("DATABASE_URL", raising=False)
+
+        with patch('src.reddit_api.main._collect_with_batching') as mock_batched:
+            mock_batched.return_value = {
+                'success': True,
+                'collection_mode': 'batched',
+                'total_posts_collected': 5,
+            }
+
+            result = collect_reddit_data(
+                config=test_config,
+                enable_batching=True,
+                db_path=temp_db,
+            )
+
+            assert result['success'] is True
+            assert result['neon_mirror']['status'] == 'skipped'
+            assert result['neon_mirror']['reason'] == 'missing_neon_database_url'
             
     def test_traditional_mode_fallback(self, temp_db, test_config):
         """Test that traditional mode still works for backward compatibility."""

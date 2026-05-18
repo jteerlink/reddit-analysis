@@ -19,7 +19,7 @@ const STATE_BADGE: Record<string, { variant: "default" | "secondary" | "outline"
 export default function PipelinePage() {
   const { data: steps, mutate } = useSWR<PipelineStep[]>("/api/pipeline/status", fetcher, { refreshInterval: 5000 });
   const [output, setOutput] = useState<string[]>(["No runs yet. Select a step above to begin."]);
-  const [running, setRunning] = useState(false);
+  const [runningStep, setRunningStep] = useState<number | "all" | null>(null);
   const terminalRef = useRef<HTMLPreElement>(null);
 
   useEffect(() => {
@@ -29,8 +29,8 @@ export default function PipelinePage() {
   }, [output]);
 
   async function runStep(stepNum: number | "all") {
-    if (running) return;
-    setRunning(true);
+    if (runningStep !== null) return;
+    setRunningStep(stepNum);
     setOutput([`=== Starting ${stepNum === "all" ? "all steps" : `step ${stepNum}`} ===`]);
 
     const url = stepNum === "all" ? "/api/pipeline/run-all" : `/api/pipeline/run/${stepNum}`;
@@ -54,7 +54,7 @@ export default function PipelinePage() {
     } catch (e) {
       setOutput((prev) => [...prev, `[ERROR] ${e}`]);
     }
-    setRunning(false);
+    setRunningStep(null);
     mutate();
   }
 
@@ -77,7 +77,8 @@ export default function PipelinePage() {
 
       <div className="space-y-2">
         {steps?.map((step) => {
-          const badgeInfo = STATE_BADGE[running && !step.done && step.prereq_ok ? "running" : step.state] ?? STATE_BADGE.locked;
+          const isRunning = runningStep === "all" || runningStep === step.num;
+          const badgeInfo = STATE_BADGE[isRunning ? "running" : step.state] ?? STATE_BADGE.locked;
           return (
             <div key={step.num} className="flex items-center gap-3 rounded-xl border border-border bg-card px-4 py-3">
               <span className="text-xs text-muted-foreground w-6 shrink-0">#{step.num}</span>
@@ -87,7 +88,7 @@ export default function PipelinePage() {
               </div>
               <Badge variant={badgeInfo.variant}>{badgeInfo.label}</Badge>
               <button
-                disabled={running || !step.prereq_ok || step.done}
+                disabled={runningStep !== null || !step.prereq_ok}
                 onClick={() => runStep(step.num)}
                 className="px-3 py-1 rounded text-xs bg-muted text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
@@ -99,11 +100,11 @@ export default function PipelinePage() {
       </div>
 
       <button
-        disabled={running}
+        disabled={runningStep !== null}
         onClick={() => runStep("all")}
         className="px-4 py-2 rounded-lg bg-amber-500 text-black text-sm font-medium hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
       >
-        {running ? "Running…" : "Run all steps"}
+        {runningStep !== null ? "Running…" : "Run all steps"}
       </button>
 
       <div className="rounded-xl border border-border bg-card overflow-hidden">

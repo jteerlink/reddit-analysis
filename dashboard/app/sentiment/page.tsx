@@ -22,6 +22,33 @@ function buildQuery(subreddits: string[], parents: string[]) {
   return `?${params.toString()}`;
 }
 
+function buildSeriesLabels(
+  categories: SubredditCategoriesResponse | undefined,
+  parents: string[],
+  subreddits: string[],
+) {
+  const labels: Record<string, string> = {};
+  const selectedParents = new Set(parents);
+  const selectedSubreddits = new Set(subreddits);
+  const shouldGroupByParent = parents.length > 0 || subreddits.length === 0;
+
+  for (const parent of categories?.parents ?? []) {
+    if (shouldGroupByParent && (!selectedParents.size || selectedParents.has(parent.id))) {
+      for (const subreddit of parent.subreddits) {
+        labels[subreddit] = parent.display_name;
+      }
+    }
+  }
+
+  for (const subreddit of subreddits) {
+    if (!labels[subreddit] || (!parents.length && selectedSubreddits.has(subreddit))) {
+      labels[subreddit] = subreddit;
+    }
+  }
+
+  return labels;
+}
+
 export default function SentimentPage() {
   const { subreddits, parents, setParents } = useFilterStore();
   const { data: categories } = useSWR<SubredditCategoriesResponse>(
@@ -48,6 +75,7 @@ export default function SentimentPage() {
   }, [categories, parents.length, setParents]);
 
   const q = buildQuery(subreddits, parents);
+  const seriesLabels = buildSeriesLabels(categories, parents, subreddits);
   const [maMode, setMaMode] = useState<MAMode>("none");
 
   const { data: daily } = useSWR<SentimentDaily[]>(`/api/sentiment/daily${q}`, fetcher);
@@ -78,15 +106,15 @@ export default function SentimentPage() {
         {daily && changePoints ? (
           <SentimentLineChart data={daily} changePoints={changePoints} maMode={maMode} />
         ) : (
-          <Skeleton className="h-64 w-full" />
+          <Skeleton className="h-[420px] w-full" />
         )}
       </ChartCard>
 
       <ChartCard title="14-day forecast" subtitle="Prophet forecast with 95% confidence band">
         {forecast ? (
-          <ForecastAreaChart data={forecast} />
+          <ForecastAreaChart data={forecast} seriesLabels={seriesLabels} />
         ) : (
-          <Skeleton className="h-52 w-full" />
+          <Skeleton className="h-[420px] w-full" />
         )}
       </ChartCard>
     </div>

@@ -49,7 +49,7 @@ function pointMatchesSearch(point: EmbeddingPoint, search: string) {
 }
 
 export default function EmbeddingMapPage() {
-  const { data } = useSWR<EmbeddingMapResponse>("/api/analysis/embedding-map?limit=1200", fetcher);
+  const { data } = useSWR<EmbeddingMapResponse>("/api/analysis/embedding-map?limit=5000", fetcher);
   const { data: categories } = useSWR<SubredditCategoriesResponse>("/api/subreddits/categories", fetcher);
   const { subreddits, setSubreddits, parents, setParents, dateRange, setDateRange } = useFilterStore();
   const [sentiment, setSentiment] = useState<(typeof SENTIMENT_OPTIONS)[number]>("all");

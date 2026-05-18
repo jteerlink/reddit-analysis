@@ -17,6 +17,27 @@ const LABEL_COLORS: Record<string, string> = {
   negative: "bg-red-500/10 text-red-400 border-red-500/20",
 };
 
+function SegmentButton({
+  active,
+  children,
+  onClick,
+}: {
+  active: boolean;
+  children: React.ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={`px-3 py-1.5 rounded text-xs transition-colors ${active ? "bg-amber-500 text-black font-medium" : "bg-muted text-muted-foreground hover:text-foreground"}`}
+    >
+      {children}
+    </button>
+  );
+}
+
 export default function DeepDivePage() {
   const { subreddits, parents, dateRange } = useFilterStore();
   const [keyword, setKeyword] = useState("");
@@ -75,25 +96,25 @@ export default function DeepDivePage() {
         <div className="flex-1 min-w-48">
           <Input placeholder="Search keyword…" value={keyword} onChange={(e) => { setKeyword(e.target.value); setPage(0); }} />
         </div>
-        <div className="flex gap-1">
+        <div className="flex gap-1" role="group" aria-label="Search mode">
           {(["keyword", "semantic"] as const).map((option) => (
-            <button
+            <SegmentButton
               key={option}
+              active={mode === option}
               onClick={() => { setMode(option); setPage(0); }}
-              className={`px-3 py-1.5 rounded text-xs transition-colors ${mode === option ? "bg-amber-500 text-black font-medium" : "bg-muted text-muted-foreground hover:text-foreground"}`}
             >
               {option}
-            </button>
+            </SegmentButton>
           ))}
         </div>
-        <div className="flex gap-1">
+        <div className="flex gap-1" role="group" aria-label="Sentiment label">
           {["all", "positive", "neutral", "negative"].map((l) => (
-            <button key={l} onClick={() => { setLabel(l); setPage(0); }} className={`px-3 py-1.5 rounded text-xs transition-colors ${label === l ? "bg-amber-500 text-black font-medium" : "bg-muted text-muted-foreground hover:text-foreground"}`}>{l}</button>
+            <SegmentButton key={l} active={label === l} onClick={() => { setLabel(l); setPage(0); }}>{l}</SegmentButton>
           ))}
         </div>
-        <div className="flex gap-1">
+        <div className="flex gap-1" role="group" aria-label="Content type">
           {["both", "post", "comment"].map((ct) => (
-            <button key={ct} onClick={() => { setContentType(ct); setPage(0); }} className={`px-3 py-1.5 rounded text-xs transition-colors ${contentType === ct ? "bg-amber-500 text-black font-medium" : "bg-muted text-muted-foreground hover:text-foreground"}`}>{ct}</button>
+            <SegmentButton key={ct} active={contentType === ct} onClick={() => { setContentType(ct); setPage(0); }}>{ct}</SegmentButton>
           ))}
         </div>
         <button onClick={exportCSV} className="px-3 py-1.5 rounded text-xs bg-muted text-muted-foreground hover:text-foreground">CSV</button>

@@ -88,6 +88,14 @@ def test_pipeline_status_uses_shared_db_boundary(monkeypatch, tmp_path):
     assert pipeline._db_count("SELECT COUNT(*) FROM sentiment_predictions") == 1
 
 
+def test_pipeline_run_all_includes_completed_steps():
+    import src.dashboard.pipeline as pipeline
+
+    completed_statuses = {step["num"]: True for step in pipeline.STEPS}
+
+    assert pipeline._steps_to_run(0, completed_statuses) == [step["num"] for step in pipeline.STEPS]
+
+
 def test_env_example_does_not_contain_real_neon_secret():
     env_example = Path(".env.example").read_text()
 

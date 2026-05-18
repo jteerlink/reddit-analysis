@@ -332,3 +332,61 @@ def test_semantic_search_uses_vector_cache_when_available(tmp_path, monkeypatch)
     assert [row["id"] for row in results] == ["p1", "p2"]
     assert results[0]["score"] > results[1]["score"]
     assert results[0]["provenance"]["algorithm"] == "minilm_cosine"
+
+
+def test_embedding_map_stratifies_limited_points_by_parent_and_subreddit():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE embedding_2d (
+            post_id TEXT PRIMARY KEY,
+            x REAL NOT NULL,
+            y REAL NOT NULL,
+            cluster_id INTEGER NOT NULL
+        );
+        CREATE TABLE topic_assignments (
+            id TEXT PRIMARY KEY,
+            topic_id INTEGER
+        );
+        CREATE TABLE preprocessed (
+            id TEXT PRIMARY KEY,
+            clean_text TEXT
+        );
+        CREATE TABLE sentiment_predictions (
+            id TEXT PRIMARY KEY,
+            label TEXT
+        );
+        CREATE TABLE posts (
+            id TEXT PRIMARY KEY,
+            subreddit TEXT,
+            timestamp TEXT
+        );
+        CREATE TABLE comments (
+            id TEXT PRIMARY KEY,
+            subreddit TEXT,
+            timestamp TEXT
+        );
+        """
+    )
+    records = [
+        *[(f"local-{idx}", "LocalLLaMA") for idx in range(8)],
+        ("infra-0", "nvidia"),
+        ("infra-1", "nvidia"),
+        ("openai-0", "OpenAI"),
+        ("openai-1", "OpenAI"),
+        ("claude-0", "ClaudeAI"),
+        ("claude-1", "ClaudeAI"),
+    ]
+    for idx, (post_id, subreddit) in enumerate(records):
+        conn.execute("INSERT INTO embedding_2d (post_id, x, y, cluster_id) VALUES (?, ?, ?, ?)", (post_id, idx, idx, 1))
+        conn.execute("INSERT INTO topic_assignments (id, topic_id) VALUES (?, ?)", (post_id, idx % 3))
+        conn.execute("INSERT INTO preprocessed (id, clean_text) VALUES (?, ?)", (post_id, f"{subreddit} sample"))
+        conn.execute("INSERT INTO sentiment_predictions (id, label) VALUES (?, ?)", (post_id, "neutral"))
+        conn.execute("INSERT INTO posts (id, subreddit, timestamp) VALUES (?, ?, ?)", (post_id, subreddit, "2026-05-01"))
+    conn.commit()
+
+    results = queries.embedding_map(conn, limit=4)
+
+    assert [row["parent_id"] for row in results] == ["AI_INFRA", "ANTHROPIC", "OPENAI", "OPEN_SOURCE"]
+    assert {row["subreddit"] for row in results} == {"nvidia", "ClaudeAI", "OpenAI", "LocalLLaMA"}

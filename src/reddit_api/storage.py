@@ -16,9 +16,21 @@ import pandas as pd
 
 from src.db.connection import get_write_connection, is_postgres_connection
 
-from .models import RedditPost, RedditComment
+from .models import DEFAULT_SUBREDDIT_CATEGORIES, RedditPost, RedditComment, subreddit_parent_id_for
 
 logger = logging.getLogger(__name__)
+
+
+def _sql_text(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _subreddit_parent_case(column_name: str = "subreddit") -> str:
+    cases = " ".join(
+        f"WHEN {_sql_text(subreddit.casefold())} THEN {_sql_text(parent_id)}"
+        for subreddit, parent_id, _display_name, _sort_order in DEFAULT_SUBREDDIT_CATEGORIES
+    )
+    return f"CASE LOWER({column_name}) {cases} ELSE 'OTHER' END"
 
 try:
     import psycopg2
@@ -68,6 +80,7 @@ class _CompatCursor:
                     author_karma = EXCLUDED.author_karma,
                     url = EXCLUDED.url,
                     num_comments = EXCLUDED.num_comments,
+                    subreddit_parent_id = EXCLUDED.subreddit_parent_id,
                     content_type = EXCLUDED.content_type
             """
         elif normalized.startswith("INSERT OR REPLACE INTO COMMENTS"):
@@ -82,6 +95,7 @@ class _CompatCursor:
                     author = EXCLUDED.author,
                     author_karma = EXCLUDED.author_karma,
                     post_id = EXCLUDED.post_id,
+                    subreddit_parent_id = EXCLUDED.subreddit_parent_id,
                     content_type = EXCLUDED.content_type
             """
         elif normalized.startswith("INSERT OR REPLACE INTO BATCH_COLLECTIONS"):
@@ -187,6 +201,7 @@ class RedditDataStorage:
                     author_karma INTEGER,
                     url TEXT,
                     num_comments INTEGER,
+                    subreddit_parent_id TEXT DEFAULT 'OTHER',
                     content_type TEXT DEFAULT 'post',
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
@@ -204,11 +219,18 @@ class RedditDataStorage:
                     author TEXT,
                     author_karma INTEGER,
                     post_id TEXT,
+                    subreddit_parent_id TEXT DEFAULT 'OTHER',
                     content_type TEXT DEFAULT 'comment',
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (post_id) REFERENCES posts (id)
                 )
             ''')
+
+            raw_conn = conn.raw if isinstance(conn, _CompatConnection) else conn
+            using_postgres = is_postgres_connection(raw_conn)
+            self._ensure_subreddit_parent_column(cursor, "posts", using_postgres)
+            self._ensure_subreddit_parent_column(cursor, "comments", using_postgres)
+            self._backfill_subreddit_parent_ids(cursor)
 
             # API metrics table for tracking usage
             cursor.execute('''
@@ -232,6 +254,43 @@ class RedditDataStorage:
 
         logger.info(f"Database initialized: {self.db_path}")
 
+    def _column_exists(self, cursor, table_name: str, column_name: str, using_postgres: bool) -> bool:
+        if using_postgres:
+            cursor.execute(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = ?
+                  AND column_name = ?
+                LIMIT 1
+                """,
+                (table_name, column_name),
+            )
+            return cursor.fetchone() is not None
+
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        rows = cursor.fetchall()
+        return any((row["name"] if hasattr(row, "keys") else row[1]) == column_name for row in rows)
+
+    def _ensure_subreddit_parent_column(self, cursor, table_name: str, using_postgres: bool):
+        if self._column_exists(cursor, table_name, "subreddit_parent_id", using_postgres):
+            return
+        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN subreddit_parent_id TEXT DEFAULT 'OTHER'")
+
+    def _backfill_subreddit_parent_ids(self, cursor):
+        parent_case = _subreddit_parent_case("subreddit")
+        for table_name in ("posts", "comments"):
+            cursor.execute(
+                f"""
+                UPDATE {table_name}
+                SET subreddit_parent_id = {parent_case}
+                WHERE subreddit_parent_id IS NULL
+                   OR subreddit_parent_id = ''
+                   OR subreddit_parent_id = 'OTHER'
+                """
+            )
+
     def store_posts(self, posts: List[RedditPost]) -> int:
         """
         Store Reddit posts in the database.
@@ -254,12 +313,14 @@ class RedditDataStorage:
                     cursor.execute('''
                         INSERT OR REPLACE INTO posts
                         (id, title, content, upvotes, timestamp, subreddit, author,
-                         author_karma, url, num_comments, content_type)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         author_karma, url, num_comments, subreddit_parent_id, content_type)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         post.id, post.title, post.content, post.upvotes,
                         post.timestamp, post.subreddit, post.author,
-                        post.author_karma, post.url, post.num_comments, post.content_type
+                        post.author_karma, post.url, post.num_comments,
+                        post.subreddit_parent_id or subreddit_parent_id_for(post.subreddit),
+                        post.content_type
                     ))
                     stored_count += 1
                 except Exception as e:
@@ -292,12 +353,14 @@ class RedditDataStorage:
                     cursor.execute('''
                         INSERT OR REPLACE INTO comments
                         (id, parent_id, content, upvotes, timestamp, subreddit,
-                         author, author_karma, post_id, content_type)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         author, author_karma, post_id, subreddit_parent_id, content_type)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ''', (
                         comment.id, comment.parent_id, comment.content, comment.upvotes,
                         comment.timestamp, comment.subreddit, comment.author,
-                        comment.author_karma, comment.post_id, comment.content_type
+                        comment.author_karma, comment.post_id,
+                        comment.subreddit_parent_id or subreddit_parent_id_for(comment.subreddit),
+                        comment.content_type
                     ))
                     stored_count += 1
                 except Exception as e:
@@ -973,12 +1036,14 @@ class RedditDataStorage:
                 cursor.execute('''
                     INSERT OR REPLACE INTO posts
                     (id, title, content, upvotes, timestamp, subreddit, author,
-                     author_karma, url, num_comments, content_type)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     author_karma, url, num_comments, subreddit_parent_id, content_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     post.id, post.title, post.content, post.upvotes,
                     post.timestamp, post.subreddit, post.author,
-                    post.author_karma, post.url, post.num_comments, post.content_type
+                    post.author_karma, post.url, post.num_comments,
+                    post.subreddit_parent_id or subreddit_parent_id_for(post.subreddit),
+                    post.content_type
                 ))
                 stored_count += 1
             except Exception as e:
@@ -1007,12 +1072,14 @@ class RedditDataStorage:
                 cursor.execute('''
                     INSERT OR REPLACE INTO comments
                     (id, parent_id, content, upvotes, timestamp, subreddit,
-                     author, author_karma, post_id, content_type)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     author, author_karma, post_id, subreddit_parent_id, content_type)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     comment.id, comment.parent_id, comment.content, comment.upvotes,
                     comment.timestamp, comment.subreddit, comment.author,
-                    comment.author_karma, comment.post_id, comment.content_type
+                    comment.author_karma, comment.post_id,
+                    comment.subreddit_parent_id or subreddit_parent_id_for(comment.subreddit),
+                    comment.content_type
                 ))
                 stored_count += 1
             except Exception as e:

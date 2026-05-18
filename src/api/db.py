@@ -23,6 +23,7 @@ from src.db.connection import (
     recent_interval_sql,
     release_connection,
 )
+from src.reddit_api.models import DEFAULT_SUBREDDIT_CATEGORIES
 
 logger = logging.getLogger(__name__)
 ACTIVE_BACKEND = get_backend()
@@ -165,37 +166,6 @@ def _column_exists(conn, table: str, column: str) -> bool:
 def _topic_llm_label_expr(conn, alias: str = "") -> str:
     prefix = f"{alias}." if alias else ""
     return f"{prefix}llm_label" if _column_exists(conn, "topics", "llm_label") else "NULL"
-
-
-DEFAULT_SUBREDDIT_CATEGORIES: tuple[tuple[str, str, str, int], ...] = (
-    ("AnthropicAI", "ANTHROPIC", "Anthropic", 10),
-    ("ClaudeAI", "ANTHROPIC", "Anthropic", 10),
-    ("ChatGPT", "OPENAI", "OpenAI", 20),
-    ("OpenAI", "OPENAI", "OpenAI", 20),
-    ("Gemini", "GOOGLE", "Google AI", 30),
-    ("DeepMind", "GOOGLE", "Google AI", 30),
-    ("nvidia", "AI_INFRA", "AI Infrastructure", 40),
-    ("technology", "AI_INFRA", "AI Infrastructure", 40),
-    ("huggingface", "AI_INFRA", "AI Infrastructure", 40),
-    ("LocalLLaMA", "OPEN_SOURCE", "Open Source", 50),
-    ("StableDiffusion", "OPEN_SOURCE", "Open Source", 50),
-    ("MachineLearning", "ML_RESEARCH", "ML & Research", 60),
-    ("DeepLearning", "ML_RESEARCH", "ML & Research", 60),
-    ("datascience", "ML_RESEARCH", "ML & Research", 60),
-    ("learnmachinelearning", "ML_RESEARCH", "ML & Research", 60),
-    ("artificial", "ML_RESEARCH", "ML & Research", 60),
-    ("ArtificialIntelligence", "ML_RESEARCH", "ML & Research", 60),
-    ("AITA", "OTHER", "Other", 70),
-    ("AGI", "OTHER", "Other", 70),
-    ("Singularity", "OTHER", "Other", 70),
-    ("AItools", "OTHER", "Other", 70),
-    ("aiNews", "OTHER", "Other", 70),
-    ("AIStartups", "OTHER", "Other", 70),
-    ("AIArt", "OTHER", "Other", 70),
-    ("AutoGPT", "OTHER", "Other", 70),
-    ("LLMDevs", "OTHER", "Other", 70),
-    ("PromptEngineering", "OTHER", "Other", 70),
-)
 
 
 def _known_subreddits(conn) -> list[str]:

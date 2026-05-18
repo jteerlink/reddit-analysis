@@ -30,7 +30,7 @@ export function SentimentLineChart({ data, changePoints, maMode }: Props) {
 
   return (
     <div className="signal-chart-frame">
-      <ResponsiveContainer width="100%" height={260}>
+      <ResponsiveContainer width="100%" height={420}>
       <LineChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
         <defs>
           <linearGradient id={`${chartId}-streamGlow`} x1="0" x2="1" y1="0" y2="0">
@@ -48,7 +48,7 @@ export function SentimentLineChart({ data, changePoints, maMode }: Props) {
         </defs>
         <CartesianGrid {...CHART_GRID_PROPS} />
         <XAxis dataKey="date" {...CHART_AXIS_PROPS} tickFormatter={(v) => v.slice(5)} />
-        <YAxis domain={[-1, 1]} {...CHART_AXIS_PROPS} width={36} />
+        <YAxis domain={["auto", "auto"]} {...CHART_AXIS_PROPS} width={36} />
         <Tooltip {...CHART_TOOLTIP_PROPS} />
         <Legend {...CHART_LEGEND_PROPS} />
         {changePoints.map((cp) => (

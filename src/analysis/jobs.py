@@ -11,6 +11,7 @@ import numpy as np
 from src.analysis.db import artifact_checksum, complete_artifact, enqueue_artifact, ensure_analysis_tables
 from src.analysis.prompts import clean_topic_keywords
 from src.db.connection import execute, is_postgres_connection
+from src.reddit_api.models import DEFAULT_SUBREDDIT_CATEGORIES
 
 
 def _keywords(value: Any) -> list[str]:
@@ -40,6 +41,82 @@ def _scalar_count(conn, sql: str) -> int:
         return int(execute(conn, sql).fetchone()[0] or 0)
     except Exception:
         return 0
+
+
+def _sql_text(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _table_exists(conn: Any, table_name: str) -> bool:
+    if is_postgres_connection(conn):
+        row = execute(
+            conn,
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_name = %s
+            LIMIT 1
+            """,
+            (table_name,),
+        ).fetchone()
+        return row is not None
+
+    row = execute(
+        conn,
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _column_exists(conn: Any, table_name: str, column_name: str) -> bool:
+    if not _table_exists(conn, table_name):
+        return False
+    if is_postgres_connection(conn):
+        row = execute(
+            conn,
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = %s
+              AND column_name = %s
+            LIMIT 1
+            """,
+            (table_name, column_name),
+        ).fetchone()
+        return row is not None
+
+    rows = execute(conn, f"PRAGMA table_info({table_name})").fetchall()
+    return any((row["name"] if hasattr(row, "keys") else row[1]) == column_name for row in rows)
+
+
+def _embedding_source_ctes(conn: Any) -> str:
+    source_queries: list[str] = []
+    for table_name in ("posts", "comments"):
+        if not _table_exists(conn, table_name):
+            continue
+        subreddit_col = "subreddit" if _column_exists(conn, table_name, "subreddit") else "NULL AS subreddit"
+        parent_col = (
+            "subreddit_parent_id"
+            if _column_exists(conn, table_name, "subreddit_parent_id")
+            else "NULL AS subreddit_parent_id"
+        )
+        source_queries.append(f"SELECT id, {subreddit_col}, {parent_col} FROM {table_name}")
+
+    if not source_queries:
+        source_sql = "SELECT id, NULL AS subreddit, NULL AS subreddit_parent_id FROM preprocessed"
+    else:
+        source_sql = "\nUNION ALL\n".join(source_queries)
+
+    default_category_rows = ", ".join(
+        f"({_sql_text(subreddit)}, {_sql_text(parent_id)})"
+        for subreddit, parent_id, _display_name, _sort_order in DEFAULT_SUBREDDIT_CATEGORIES
+    )
+    return f"""
+        source AS ({source_sql}),
+        default_categories(subreddit, parent_id) AS (VALUES {default_category_rows}),
+    """
 
 
 def backfill_cluster_labels(conn) -> int:
@@ -88,16 +165,42 @@ def backfill_cluster_labels(conn) -> int:
     return count
 
 
-def backfill_embedding_2d(conn, limit: int = 2000) -> int:
+def backfill_embedding_2d(conn, limit: int = 5000) -> int:
+    source_ctes = _embedding_source_ctes(conn)
     rows = execute(
         conn,
         f"""
-        SELECT ta.id, ta.topic_id, p.embedding_key
-        FROM topic_assignments ta
-        JOIN preprocessed p ON ta.id = p.id
-        WHERE ta.topic_id >= 0
-          AND p.embedding_key IS NOT NULL
-        ORDER BY ta.topic_id, ta.id
+        WITH
+        {source_ctes}
+        base AS (
+            SELECT ta.id, ta.topic_id, p.embedding_key,
+                   COALESCE(NULLIF(source.subreddit_parent_id, ''), dc.parent_id, 'OTHER') AS parent_group,
+                   COALESCE(source.subreddit, 'unknown') AS subreddit_group
+            FROM topic_assignments ta
+            JOIN preprocessed p ON ta.id = p.id
+            LEFT JOIN source ON ta.id = source.id
+            LEFT JOIN default_categories dc ON dc.subreddit = source.subreddit
+            WHERE p.embedding_key IS NOT NULL
+        ),
+        subreddit_ranked AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY parent_group, subreddit_group
+                       ORDER BY topic_id, id
+                   ) AS subreddit_rank
+            FROM base
+        ),
+        parent_ranked AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY parent_group
+                       ORDER BY subreddit_rank, subreddit_group, topic_id, id
+                   ) AS parent_rank
+            FROM subreddit_ranked
+        )
+        SELECT id, topic_id, embedding_key
+        FROM parent_ranked
+        ORDER BY parent_rank, parent_group, subreddit_rank, subreddit_group, topic_id, id
         LIMIT {limit}
         """,
     ).fetchall()
@@ -160,6 +263,7 @@ def backfill_embedding_2d(conn, limit: int = 2000) -> int:
     max_abs = np.maximum(np.max(np.abs(coords), axis=0), 1e-9)
     coords = coords / max_abs
     count = 0
+    execute(conn, "DELETE FROM embedding_2d")
     for index, (rid, topic_id, _) in enumerate(selected):
         x = float(coords[index, 0])
         y = float(coords[index, 1])

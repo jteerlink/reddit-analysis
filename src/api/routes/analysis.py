@@ -114,7 +114,7 @@ def narrative_events(limit: int = Query(default=50, ge=1, le=200)):
 
 
 @router.get("/embedding-map", response_model=models.EmbeddingMapResponse)
-def embedding_map(limit: int = Query(default=1000, ge=1, le=5000)):
+def embedding_map(limit: int = Query(default=5000, ge=1, le=5000)):
     with connection(readonly=True) as conn:
         missing = missing_analysis_tables(
             conn,

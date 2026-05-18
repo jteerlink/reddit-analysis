@@ -64,9 +64,18 @@ function Sparkline({ values }: { values: number[] }) {
 
 interface Props {
   topics: TrendingTopic[] | undefined;
+  state?: "ready" | "loading" | "empty" | "error";
+  message?: string;
 }
 
-export function TrendingSignalHero({ topics }: Props) {
+const STATE_COPY = {
+  ready: "No topic signals for this view",
+  loading: "Loading topic signals",
+  empty: "No topic signals for this view",
+  error: "Topic signals unavailable",
+};
+
+export function TrendingSignalHero({ topics, state = "ready", message }: Props) {
   const items = (topics ?? []).slice(0, 5);
   return (
     <ChartCard
@@ -81,7 +90,7 @@ export function TrendingSignalHero({ topics }: Props) {
         </Link>
       }
     >
-      {items.length ? (
+      {state === "ready" && items.length ? (
         <div className="grid gap-3 lg:grid-cols-2 xl:grid-cols-5">
           {items.map((topic) => {
             const headline = topicHeadline(topic);
@@ -124,8 +133,17 @@ export function TrendingSignalHero({ topics }: Props) {
           })}
         </div>
       ) : (
-        <div className="grid h-24 place-items-center text-sm text-muted-foreground">
-          Waiting for topic signals
+        <div
+          aria-live="polite"
+          role={state === "error" ? "alert" : "status"}
+          className="grid min-h-28 place-items-center rounded-lg border border-dashed border-border/80 bg-background/35 px-4 py-6 text-center"
+        >
+          <div>
+            <p className={state === "error" ? "text-sm font-medium text-signal-red" : "text-sm font-medium text-foreground"}>
+              {STATE_COPY[state] ?? STATE_COPY.empty}
+            </p>
+            {message && <p className="mt-1 max-w-sm text-xs text-muted-foreground">{message}</p>}
+          </div>
         </div>
       )}
     </ChartCard>

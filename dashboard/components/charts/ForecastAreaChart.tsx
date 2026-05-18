@@ -7,22 +7,43 @@ import type { Forecast } from "@/lib/types";
 
 interface Props {
   data: Forecast[];
+  seriesLabels?: Record<string, string>;
 }
 
-export function ForecastAreaChart({ data }: Props) {
+interface ForecastBucket {
+  yhatTotal: number;
+  lowerTotal: number;
+  upperTotal: number;
+  count: number;
+}
+
+export function ForecastAreaChart({ data, seriesLabels = {} }: Props) {
   const chartId = useId().replace(/:/g, "");
-  const subreddits = [...new Set(data.map((d) => d.subreddit))];
+  const series = [...new Set(data.map((d) => seriesLabels[d.subreddit] ?? d.subreddit))];
   const byDate: Record<string, Record<string, string | number | number[]>> = {};
+  const buckets = new Map<string, ForecastBucket>();
   for (const row of data) {
-    if (!byDate[row.date]) byDate[row.date] = { date: row.date };
-    byDate[row.date][`${row.subreddit}_yhat`] = row.yhat;
-    byDate[row.date][`${row.subreddit}_ci`] = [row.yhat_lower, row.yhat_upper];
+    const label = seriesLabels[row.subreddit] ?? row.subreddit;
+    const key = `${row.date}:${label}`;
+    const bucket = buckets.get(key) ?? { yhatTotal: 0, lowerTotal: 0, upperTotal: 0, count: 0 };
+    bucket.yhatTotal += row.yhat;
+    bucket.lowerTotal += row.yhat_lower;
+    bucket.upperTotal += row.yhat_upper;
+    bucket.count += 1;
+    buckets.set(key, bucket);
+  }
+
+  for (const [key, bucket] of buckets) {
+    const [date, label] = key.split(":");
+    if (!byDate[date]) byDate[date] = { date };
+    byDate[date][`${label}_yhat`] = bucket.yhatTotal / bucket.count;
+    byDate[date][`${label}_ci`] = [bucket.lowerTotal / bucket.count, bucket.upperTotal / bucket.count];
   }
   const chartData = Object.values(byDate).sort((a, b) => (a.date > b.date ? 1 : -1));
 
   return (
     <div className="signal-chart-frame">
-      <ResponsiveContainer width="100%" height={220}>
+      <ResponsiveContainer width="100%" height={420}>
       <AreaChart data={chartData} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
         <defs>
           <linearGradient id={`${chartId}-forecastGlow`} x1="0" x2="1" y1="0" y2="0">
@@ -40,10 +61,10 @@ export function ForecastAreaChart({ data }: Props) {
         </defs>
         <CartesianGrid {...CHART_GRID_PROPS} />
         <XAxis dataKey="date" {...CHART_AXIS_PROPS} tickFormatter={(v) => v.slice(5)} />
-        <YAxis domain={[-1, 1]} {...CHART_AXIS_PROPS} width={36} />
+        <YAxis domain={["auto", "auto"]} {...CHART_AXIS_PROPS} width={36} />
         <Tooltip {...CHART_TOOLTIP_PROPS} />
         <Legend {...CHART_LEGEND_PROPS} />
-        {subreddits.map((s) => (
+        {series.map((s) => (
           <Area
             key={`${s}_stream`}
             dataKey={`${s}_yhat`}
@@ -59,7 +80,7 @@ export function ForecastAreaChart({ data }: Props) {
             isAnimationActive={false}
           />
         ))}
-        {subreddits.map((s, i) => (
+        {series.map((s, i) => (
           <Fragment key={s}>
             <Area
               dataKey={`${s}_ci`}

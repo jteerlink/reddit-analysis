@@ -304,16 +304,9 @@ def render_pipeline(db_path: str) -> None:
             st.session_state.pl_running = True
             output: List[str] = []
 
-            steps_to_run = (
-                [s["num"] for s in STEPS] if run_triggered == 0 else [run_triggered]
-            )
+            steps_to_run = _steps_to_run(run_triggered, statuses)
 
             for step_num in steps_to_run:
-                if run_triggered == 0 and statuses.get(step_num, False):
-                    output.append(f"--- Step {step_num}: already done, skipping ---")
-                    placeholder.code("\n".join(output), language="bash")
-                    continue
-
                 success = _run_step(step_num, db_path, output, placeholder)
                 if not success:
                     break
@@ -321,3 +314,10 @@ def render_pipeline(db_path: str) -> None:
             st.session_state.pl_output = output
             st.session_state.pl_running = False
             st.rerun()
+
+
+def _steps_to_run(run_triggered: int, statuses: dict[int, bool]) -> List[int]:
+    """Return requested pipeline steps without skipping completed steps."""
+    if run_triggered == 0:
+        return [s["num"] for s in STEPS]
+    return [run_triggered]

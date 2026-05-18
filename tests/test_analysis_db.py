@@ -223,6 +223,64 @@ def test_embedding_backfill_projects_real_vectors_deterministically(tmp_path, mo
     assert second_coords == first_coords
 
 
+def test_embedding_backfill_stratifies_projection_source_by_parent_group(tmp_path, monkeypatch):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_analysis_tables(conn)
+    conn.executescript(
+        """
+        CREATE TABLE topic_assignments (id TEXT PRIMARY KEY, topic_id INTEGER);
+        CREATE TABLE preprocessed (id TEXT PRIMARY KEY, embedding_key TEXT);
+        CREATE TABLE posts (
+            id TEXT PRIMARY KEY,
+            subreddit TEXT,
+            subreddit_parent_id TEXT
+        );
+        """
+    )
+    records = [
+        *[(f"local-{idx}", "LocalLLaMA", "OPEN_SOURCE") for idx in range(8)],
+        ("openai-0", "OpenAI", "OPENAI"),
+        ("claude-0", "ClaudeAI", "ANTHROPIC"),
+        ("gemini-0", "GeminiAI", "GOOGLE"),
+    ]
+    for idx, (post_id, subreddit, parent_id) in enumerate(records):
+        topic_id = -1 if parent_id == "GOOGLE" else idx % 2
+        conn.execute("INSERT INTO topic_assignments (id, topic_id) VALUES (?, ?)", (post_id, topic_id))
+        conn.execute("INSERT INTO preprocessed (id, embedding_key) VALUES (?, ?)", (post_id, post_id))
+        conn.execute(
+            "INSERT INTO posts (id, subreddit, subreddit_parent_id) VALUES (?, ?, ?)",
+            (post_id, subreddit, parent_id),
+        )
+    conn.execute("INSERT INTO embedding_2d (post_id, x, y, cluster_id) VALUES ('stale', 0, 0, 0)")
+    conn.commit()
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    index = {post_id: idx for idx, (post_id, _subreddit, _parent_id) in enumerate(records)}
+    (models_dir / "embeddings_index.json").write_text(json.dumps(index))
+    import numpy as np
+
+    np.save(models_dir / "embeddings_cache.npy", np.eye(len(records), dtype=np.float32))
+    monkeypatch.chdir(tmp_path)
+
+    assert backfill_embedding_2d(conn, limit=4) == 4
+
+    parents = [
+        row[0]
+        for row in conn.execute(
+            """
+            SELECT p.subreddit_parent_id
+            FROM embedding_2d e
+            JOIN posts p ON e.post_id = p.id
+            ORDER BY p.subreddit_parent_id
+            """
+        )
+    ]
+    assert parents == ["ANTHROPIC", "GOOGLE", "OPENAI", "OPEN_SOURCE"]
+    assert conn.execute("SELECT COUNT(*) FROM embedding_2d WHERE post_id = 'stale'").fetchone()[0] == 0
+
+
 def test_deterministic_brief_includes_evidence_sections():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
