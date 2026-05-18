@@ -114,7 +114,7 @@ def _source_count(conn: sqlite3.Connection, table: str) -> int:
 
 
 def _parse_timestamp(value: Any) -> datetime | None:
-    if value is None or pd.isna(value):
+    if value is None or pd.isna(value) or str(value).strip() == "":
         return None
     if isinstance(value, datetime):
         dt = value
@@ -126,7 +126,7 @@ def _parse_timestamp(value: Any) -> datetime | None:
 
 
 def _parse_date(value: Any) -> date | None:
-    if value is None or pd.isna(value):
+    if value is None or pd.isna(value) or str(value).strip() == "":
         return None
     if isinstance(value, date) and not isinstance(value, datetime):
         return value
@@ -134,7 +134,7 @@ def _parse_date(value: Any) -> date | None:
 
 
 def _parse_json(value: Any) -> Any:
-    if value is None or pd.isna(value):
+    if value is None or pd.isna(value) or str(value).strip() == "":
         return None
     if isinstance(value, (list, dict)):
         return value
@@ -156,7 +156,7 @@ def _transform(table: str, df: pd.DataFrame) -> pd.DataFrame:
     for column in JSON_COLUMNS.get(table, []):
         if column in df.columns:
             df[column] = df[column].map(_parse_json)
-    return df.where(pd.notna(df), None)
+    return df.astype(object).where(pd.notna(df), None)
 
 
 def _iter_batches(df: pd.DataFrame, size: int) -> Iterable[pd.DataFrame]:

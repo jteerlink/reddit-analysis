@@ -8,6 +8,7 @@
 #   ./scripts/run_pipeline.sh step N       # run a specific step (1-9)
 #   ./scripts/run_pipeline.sh N            # run a specific step (1-9)
 #   ./scripts/run_pipeline.sh --all        # run all steps in sequence
+#   ./scripts/run_pipeline.sh --no-neon-sync  # skip post-run SQLite→Neon mirror
 #   ./scripts/run_pipeline.sh --verbose    # show full command output
 
 set -euo pipefail
@@ -31,6 +32,7 @@ MODE="interactive"   # interactive | check | step | all
 TARGET_STEP=""
 VERBOSE=false
 DB_PATH_OVERRIDE=false
+NEON_SYNC=true
 
 # ── Colors ─────────────────────────────────────────────────────────────────────
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
@@ -53,6 +55,66 @@ die() { error "$*"; exit 1; }
 require_db() {
   [[ -n "${DATABASE_URL:-}" ]] && return 0
   [[ -f "$DB" ]] || die "Database not found: $DB\n  Set DB_PATH or run from project root."
+}
+
+sync_neon() {
+  local context="${1:-pipeline}"
+
+  if [[ "$NEON_SYNC" != "true" ]]; then
+    dim "Neon mirror skipped for $context (--no-neon-sync)"
+    return 0
+  fi
+
+  if [[ -n "${DATABASE_URL:-}" ]]; then
+    dim "Neon mirror skipped for $context (pipeline is already using DATABASE_URL)"
+    return 0
+  fi
+
+  if [[ "$DB" == postgres://* || "$DB" == postgresql://* ]]; then
+    dim "Neon mirror skipped for $context (DB path is already PostgreSQL)"
+    return 0
+  fi
+
+  if [[ ! -f "$DB" ]]; then
+    warn "Neon mirror skipped for $context — SQLite source not found: $DB"
+    return 0
+  fi
+
+  info "Mirroring SQLite to Neon after $context..."
+  if "$PYTHON" - <<PYEOF
+import os
+from argparse import Namespace
+from pathlib import Path
+
+from dotenv import load_dotenv
+from scripts import migrate_to_neon
+
+load_dotenv(dotenv_path=Path("$PROJECT_ROOT") / ".env")
+database_url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
+if not database_url:
+    print("SKIP missing NEON_DATABASE_URL or DATABASE_URL in .env")
+    raise SystemExit(0)
+
+source = Path("$DB")
+args = Namespace(
+    source=str(source),
+    database_url=database_url,
+    schema=str(migrate_to_neon.SCHEMA_PATH),
+    seed=str(migrate_to_neon.SEED_PATH),
+    batch_size=int(os.environ.get("NEON_MIRROR_BATCH_SIZE", "1000")),
+    create_schema=os.environ.get("NEON_MIRROR_CREATE_SCHEMA", "true").lower()
+    not in {"0", "false", "no"},
+    dry_run=False,
+)
+raise SystemExit(migrate_to_neon.run(args))
+PYEOF
+  then
+    success "Neon mirror complete for $context"
+  else
+    local rc=$?
+    error "Neon mirror failed for $context"
+    return "$rc"
+  fi
 }
 
 python_query() {
@@ -436,6 +498,7 @@ print_status_table() {
 
 run_step() {
   local step="${1:-}"
+  local sync_after="${2:-true}"
   [[ "$step" =~ ^[1-9]$ ]] || die "Invalid step: ${step:-<empty>} (must be 1–9)"
   local name
   name=$(step_name "$step")
@@ -458,6 +521,10 @@ run_step() {
     8) run_step_8 "$logfile" ;;
     9) run_step_9 "$logfile" ;;
   esac
+
+  if [[ "$sync_after" == "true" ]]; then
+    sync_neon "step $step"
+  fi
 }
 
 run_step_1() {
@@ -868,7 +935,7 @@ mode_interactive() {
   case "$ans" in
     [1-9])
       if prompt_step "$ans"; then
-        run_step "$ans"
+        run_step "$ans" true
       else
         local rc=$?
         [[ $rc -eq 2 ]] || return "$rc"
@@ -891,7 +958,7 @@ mode_step() {
   else
     warn "Current gate does not pass yet: step $step — $(step_name "$step")"
   fi
-  run_step "$step"
+  run_step "$step" true
 }
 
 mode_all() {
@@ -900,7 +967,7 @@ mode_all() {
 
   for i in 1 2 3 4 5 6 7 8 9; do
     if prompt_step "$i"; then
-      run_step "$i" || {
+      run_step "$i" false || {
         error "Step $i failed."
         printf "\n  Continue to next step anyway? [y/N]  > "
         read -r cont
@@ -912,6 +979,8 @@ mode_all() {
     fi
   done
 
+  printf "\n"
+  sync_neon "full pipeline"
   printf "\n"
   header "Pipeline complete"
   print_status_table true
@@ -927,6 +996,7 @@ while [[ $# -gt 0 ]]; do
     --all)     MODE="all" ;;
     --step)    MODE="step"; TARGET_STEP="${2:-}"; shift ;;
     --step=*)  MODE="step"; TARGET_STEP="${1#--step=}" ;;
+    --no-neon-sync) NEON_SYNC=false ;;
     --verbose|-v) VERBOSE=true ;;
     --db)      DB="${2:-}"; shift ;;
     --db=*)    DB="${1#--db=}" ;;
@@ -937,6 +1007,7 @@ while [[ $# -gt 0 ]]; do
       printf "  step N           Run only step N (1–9)\n"
       printf "  N                Run only step N (1–9)\n"
       printf "  --all            Run all steps with confirmation prompts\n"
+      printf "  --no-neon-sync   Skip post-step/post-run SQLite→Neon mirror\n"
       printf "  --verbose, -v    Show full command output\n"
       printf "  --db PATH        Override database path (default: historical_reddit_data.db)\n"
       printf "\n"

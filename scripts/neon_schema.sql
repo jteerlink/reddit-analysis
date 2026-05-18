@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS posts (
     author_karma INTEGER,
     url TEXT,
     num_comments INTEGER,
+    subreddit_parent_id TEXT DEFAULT 'OTHER',
     content_type TEXT DEFAULT 'post' CHECK (content_type IN ('post', 'comment')),
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -23,6 +24,7 @@ CREATE TABLE IF NOT EXISTS comments (
     author TEXT,
     author_karma INTEGER,
     post_id TEXT REFERENCES posts(id),
+    subreddit_parent_id TEXT DEFAULT 'OTHER',
     content_type TEXT DEFAULT 'comment',
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -254,6 +256,8 @@ CREATE TABLE IF NOT EXISTS narrative_events (
     top_terms TEXT,
     top_post_ids TEXT,
     auto_label TEXT,
+    llm_label TEXT,
+    llm_summary TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -281,3 +285,7 @@ CREATE INDEX IF NOT EXISTS idx_subreddit_categories_parent ON subreddit_categori
 
 ALTER TABLE topics ADD COLUMN IF NOT EXISTS llm_label TEXT;
 ALTER TABLE topics ADD COLUMN IF NOT EXISTS llm_prompt_version TEXT;
+ALTER TABLE posts ADD COLUMN IF NOT EXISTS subreddit_parent_id TEXT DEFAULT 'OTHER';
+ALTER TABLE comments ADD COLUMN IF NOT EXISTS subreddit_parent_id TEXT DEFAULT 'OTHER';
+ALTER TABLE narrative_events ADD COLUMN IF NOT EXISTS llm_label TEXT;
+ALTER TABLE narrative_events ADD COLUMN IF NOT EXISTS llm_summary TEXT;
