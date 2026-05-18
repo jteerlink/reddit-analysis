@@ -51,13 +51,14 @@ def _clean_llm_label(content: str) -> str:
 def _topic_sample_texts(conn: Any, topic_id: int, limit: int = 6) -> list[dict]:
     """Return bounded representative text samples for a BERTopic topic."""
     marker = paramstyle()
-    text_col = "p.clean_text"
     probability_order = "ta.probability DESC,"
     try:
         rows = execute(
             conn,
             f"""
-            SELECT p.id, p.content_type, {text_col} AS clean_text, src.subreddit, ta.probability
+            SELECT p.id, p.content_type,
+                   COALESCE(NULLIF(p.clean_text, ''), NULLIF(src.source_text, '')) AS sample_text,
+                   src.subreddit, ta.probability
             FROM topic_assignments ta
             JOIN preprocessed p ON ta.id = p.id
             LEFT JOIN (
@@ -78,7 +79,7 @@ def _topic_sample_texts(conn: Any, topic_id: int, limit: int = 6) -> list[dict]:
 
     samples: list[dict] = []
     for row in rows:
-        text = row["clean_text"] if hasattr(row, "keys") else row[2]
+        text = row["sample_text"] if hasattr(row, "keys") else row[2]
         if not text:
             continue
         samples.append(

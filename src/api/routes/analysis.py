@@ -115,6 +115,22 @@ def _fallback_chart_summary(sentiment_rows: list[dict], volume_rows: list[dict])
     return f"Sentiment is {direction} across the active window. Peak daily volume is {peak_volume:,} items, so interpret thin-volume days cautiously."
 
 
+def _plain_chart_summary(content: str) -> str:
+    text = " ".join(content.split())
+    replacements = {
+        "**": "",
+        "__": "",
+        "`": "",
+        "#": "",
+        "- ": "",
+        "* ": "",
+        "• ": "",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return " ".join(text.split())[:420]
+
+
 @router.get("/narrative-events", response_model=models.NarrativeEventsResponse)
 def narrative_events(limit: int = Query(default=50, ge=1, le=200)):
     with connection(readonly=True) as conn:
@@ -165,7 +181,7 @@ def overview_chart_summary(
     end: Optional[str] = Query(default=None),
 ):
     sentiment_rows = dashboard_db.get_sentiment_daily(tuple(subreddits), 90, start, end, tuple(parents))
-    volume_rows = dashboard_db.get_daily_volume(tuple(subreddits), 90, start, end, tuple(parents))
+    volume_rows = dashboard_db.get_daily_volume(tuple(subreddits), 30, start, end, tuple(parents))
     source_hash = artifact_checksum(
         {
             "kind": "overview_chart_summary",
@@ -236,7 +252,7 @@ def overview_chart_summary(
         )
         try:
             content = chat(config, model, _summary_prompt(sentiment_rows, volume_rows), temperature=0.2, timeout=12)
-            summary = " ".join(content.split())[:420] or _fallback_chart_summary(sentiment_rows, volume_rows)
+            summary = _plain_chart_summary(content) or _fallback_chart_summary(sentiment_rows, volume_rows)
         except Exception as exc:
             logger.warning("overview_chart_summary_llm_failed: %s", exc)
             summary = _fallback_chart_summary(sentiment_rows, volume_rows)

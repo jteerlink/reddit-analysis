@@ -883,8 +883,25 @@ def get_topic_graph(
 def get_emerging_topics(days: int = 7) -> List[dict]:
     try:
         conn = _connect()
+        label_expr = _topic_llm_label_expr(conn, "t")
+        resolved_label_expr = _topic_resolved_label_expr(conn, "t")
         df = pd.read_sql_query(
-            f"SELECT topic_id, keywords, doc_count FROM topics WHERE topic_id != -1 AND {recent_interval_sql('created_at', days)} ORDER BY doc_count DESC",
+            f"""
+            SELECT t.topic_id,
+                   t.keywords,
+                   t.doc_count,
+                   {label_expr} AS llm_label,
+                   {resolved_label_expr} AS label,
+                   CASE
+                        WHEN {label_expr} IS NOT NULL AND {label_expr} != '' THEN 'llm_artifact'
+                        WHEN t.keywords IS NOT NULL AND t.keywords != '' THEN 'deterministic_fallback'
+                        ELSE 'unlabeled'
+                   END AS label_source
+            FROM topics t
+            WHERE t.topic_id != -1
+              AND {recent_interval_sql('t.created_at', days)}
+            ORDER BY t.doc_count DESC
+            """,
             conn,
             params=recent_interval_params(days),
         )
@@ -1468,49 +1485,112 @@ def get_pipeline_health(limit: int = 20) -> dict:
     """Return operational health from persisted batch collection metadata."""
     try:
         readiness = get_table_state(("batch_collections",))
-        if readiness["state"] != "ready":
-            return {
-                "stages": [
-                    {"name": "Storage", "state": "No data", "healthy": False, "detail": readiness.get("reason")},
-                ],
-                "storage": {"recent_batches": 0},
-                "state": readiness["state"],
-                "provenance": {
-                    "state": readiness["state"],
-                    "label": "missing_config",
-                    "source": "batch_collections",
-                    "source_table": "batch_collections",
-                    "source_ids": [],
-                    "schema_version": 1,
-                    "detail": readiness.get("reason"),
-                },
-            }
-        conn = _connect()
-        rows = execute(
-            conn,
-            f"""
-            SELECT subreddit, collection_timestamp, posts_collected, comments_collected,
-                   processing_time_seconds, batch_status, storage_timestamp
-            FROM batch_collections
-            ORDER BY storage_timestamp DESC, collection_timestamp DESC
-            LIMIT {paramstyle()}
-            """,
-            (limit,),
-        ).fetchall()
-        _close(conn)
+        source_table = "batch_collections"
+        has_processing_time = True
+        if readiness["state"] == "ready":
+            conn = _connect()
+            rows = execute(
+                conn,
+                f"""
+                SELECT subreddit, collection_timestamp, posts_collected, comments_collected,
+                       processing_time_seconds, batch_status, storage_timestamp
+                FROM batch_collections
+                ORDER BY storage_timestamp DESC, collection_timestamp DESC
+                LIMIT {paramstyle()}
+                """,
+                (limit,),
+            ).fetchall()
+            _close(conn)
+        else:
+            fallback_readiness = get_table_state(("collection_metadata",))
+            has_processing_time = False
+            conn = _connect()
+            if fallback_readiness["state"] == "ready":
+                source_table = "collection_metadata"
+                rows = execute(
+                    conn,
+                    f"""
+                    SELECT subreddit, collection_timestamp, posts_collected, comments_collected,
+                           NULL AS processing_time_seconds, 'completed' AS batch_status,
+                           collection_timestamp AS storage_timestamp
+                    FROM collection_metadata
+                    ORDER BY collection_timestamp DESC
+                    LIMIT {paramstyle()}
+                    """,
+                    (limit,),
+                ).fetchall()
+            else:
+                source_readiness = get_table_state(("posts", "comments"))
+                if source_readiness["state"] != "ready":
+                    _close(conn)
+                    detail = readiness.get("reason") or fallback_readiness.get("reason") or source_readiness.get("reason")
+                    return {
+                        "stages": [
+                            {"name": "Storage", "state": "No data", "healthy": False, "detail": detail},
+                        ],
+                        "storage": {"recent_batches": 0},
+                        "state": source_readiness["state"],
+                        "provenance": {
+                            "state": source_readiness["state"],
+                            "label": "missing_config",
+                            "source": "batch_collections",
+                            "source_table": "batch_collections",
+                            "source_ids": [],
+                            "schema_version": 1,
+                            "detail": detail,
+                        },
+                    }
+                source_table = "posts_comments"
+                rows = execute(
+                    conn,
+                    f"""
+                    SELECT subreddit, DATE(timestamp) AS collection_timestamp,
+                           SUM(CASE WHEN content_type = 'post' THEN 1 ELSE 0 END) AS posts_collected,
+                           SUM(CASE WHEN content_type = 'comment' THEN 1 ELSE 0 END) AS comments_collected,
+                           NULL AS processing_time_seconds, 'completed' AS batch_status,
+                           MAX(timestamp) AS storage_timestamp
+                    FROM (
+                        SELECT subreddit, timestamp, 'post' AS content_type FROM posts WHERE timestamp IS NOT NULL
+                        UNION ALL
+                        SELECT subreddit, timestamp, 'comment' AS content_type FROM comments WHERE timestamp IS NOT NULL
+                    ) source_records
+                    GROUP BY subreddit, DATE(timestamp)
+                    ORDER BY MAX(timestamp) DESC
+                    LIMIT {paramstyle()}
+                    """,
+                    (limit,),
+                ).fetchall()
+            _close(conn)
         records = [dict(row) if hasattr(row, "keys") else {} for row in rows]
         completed = [row for row in records if str(row.get("batch_status") or "completed") == "completed"]
-        latencies = [
-            float(row.get("processing_time_seconds") or 0)
-            for row in completed
-            if float(row.get("processing_time_seconds") or 0) > 0
-        ]
+        latencies = []
+        if has_processing_time:
+            latencies = [
+                float(row.get("processing_time_seconds") or 0)
+                for row in completed
+                if float(row.get("processing_time_seconds") or 0) > 0
+            ]
         throughputs: list[float] = []
         for row in completed:
             seconds = float(row.get("processing_time_seconds") or 0)
             items = int(row.get("posts_collected") or 0) + int(row.get("comments_collected") or 0)
             if seconds > 0:
                 throughputs.append(items / seconds * 60)
+        if not throughputs and completed:
+            timestamps = [
+                parsed
+                for parsed in (_parse_timestamp(row.get("collection_timestamp")) for row in completed)
+                if parsed
+            ]
+            total_items = sum(
+                int(row.get("posts_collected") or 0) + int(row.get("comments_collected") or 0)
+                for row in completed
+            )
+            if len(timestamps) >= 2:
+                elapsed_minutes = max((max(timestamps) - min(timestamps)).total_seconds() / 60, 1.0)
+                throughputs.append(total_items / elapsed_minutes)
+            elif total_items:
+                throughputs.append(float(total_items))
         latest_storage = next((_parse_timestamp(row.get("storage_timestamp")) for row in records if row.get("storage_timestamp")), None)
         latest_lag = None
         if latest_storage:
@@ -1519,16 +1599,23 @@ def get_pipeline_health(limit: int = 20) -> dict:
         p95_latency = _percentile(latencies, 0.95)
         throughput = (sum(throughputs) / len(throughputs)) if throughputs else None
         stale = latest_lag is not None and latest_lag > 3600
-        healthy = bool(records) and not stale and bool(latencies)
+        healthy = bool(records) and not stale
         state = "ready" if records else "unpopulated"
         storage_state = "Healthy" if healthy else ("Stale" if stale else "No data")
+        detail = None
+        if not records:
+            detail = f"No rows are available in {source_table}."
+        elif source_table == "collection_metadata":
+            detail = "Using collection metadata; per-batch storage duration is unavailable until batch_collections is populated."
+        elif source_table == "posts_comments":
+            detail = "Using stored post/comment timestamps; batch storage duration is unavailable until batch_collections is populated."
         return {
             "stages": [
                 {"name": "Ingestion", "state": "Tracked" if records else "No data", "healthy": bool(records)},
                 {"name": "Processing", "state": "Tracked" if records else "No data", "healthy": bool(records)},
                 {"name": "Sentiment", "state": "See ML run", "healthy": True},
                 {"name": "Topics", "state": "See pipeline", "healthy": True},
-                {"name": "Storage", "state": storage_state, "healthy": healthy, "detail": None if records else "No batch metadata is available."},
+                {"name": "Storage", "state": storage_state, "healthy": healthy, "detail": detail},
             ],
             "storage": {
                 "avg_latency_seconds": avg_latency,
@@ -1544,11 +1631,11 @@ def get_pipeline_health(limit: int = 20) -> dict:
             "provenance": {
                 "state": state,
                 "label": "real_data" if records else "missing_config",
-                "source": "batch_collections",
-                "source_table": "batch_collections",
+                "source": source_table,
+                "source_table": source_table,
                 "source_ids": [str(row.get("subreddit") or "") for row in records[:10]],
                 "schema_version": 1,
-                "detail": None if records else "No batch metadata is available.",
+                "detail": detail,
             },
         }
     except Exception as exc:

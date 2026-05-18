@@ -82,7 +82,14 @@ export function PipelineHealthCard() {
   ];
   const storage = data?.storage;
   const throughput = storage?.throughput_items_per_minute;
-  const latency = storage?.p95_latency_seconds ?? storage?.avg_latency_seconds;
+  const storageLatency = storage?.p95_latency_seconds ?? storage?.avg_latency_seconds;
+  const latency = storageLatency ?? storage?.latest_lag_seconds;
+  const latencyLabel = storageLatency == null && storage?.latest_lag_seconds != null ? "Lag" : "Latency";
+  const latencySparkline = storage?.sparkline_latency_seconds?.length
+    ? storage.sparkline_latency_seconds
+    : storage?.latest_lag_seconds != null
+      ? [storage.latest_lag_seconds]
+      : [];
   const storageDetail = data?.provenance?.detail ?? (storage?.latest_storage_timestamp ? `Latest storage ${storage.latest_storage_timestamp.slice(0, 16).replace("T", " ")}` : "Waiting for batch metadata.");
 
   return (
@@ -124,13 +131,13 @@ export function PipelineHealthCard() {
           </div>
         </div>
         <div className="border-l border-border pl-3">
-          <p className="text-[10px] uppercase text-muted-foreground">Latency</p>
+          <p className="text-[10px] uppercase text-muted-foreground">{latencyLabel}</p>
           <div className="mt-1 flex items-end justify-between gap-2">
             <div>
               <p className="font-mono text-lg font-semibold text-foreground">{latency == null ? "n/a" : (latency / 60).toFixed(1)}</p>
               <p className="font-mono text-[10px] text-muted-foreground">min</p>
             </div>
-            <Sparkline alert label="Latency" values={storage?.sparkline_latency_seconds ?? []} />
+            <Sparkline alert label={latencyLabel} values={latencySparkline} />
           </div>
         </div>
       </div>

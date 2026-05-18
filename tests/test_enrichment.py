@@ -336,9 +336,16 @@ def test_enrich_bertopic_labels_writes_topic_llm_label(conn, local_config):
         "INSERT INTO preprocessed (id, content_type, clean_text) VALUES ('p1', 'post', 'Teams compare AI coding tools for production workflows')"
     )
     conn.execute(
+        "INSERT INTO preprocessed (id, content_type, clean_text) VALUES ('p2', 'post', '')"
+    )
+    conn.execute(
         "INSERT INTO posts (id, title, content, subreddit) VALUES ('p1', 'AI tools', 'Production coding assistant comparison', 'ChatGPT')"
     )
+    conn.execute(
+        "INSERT INTO posts (id, title, content, subreddit) VALUES ('p2', 'Fallback source text', 'Source body should feed labeling', 'ChatGPT')"
+    )
     conn.execute("INSERT INTO topic_assignments (id, topic_id, probability) VALUES ('p1', 1, 0.95)")
+    conn.execute("INSERT INTO topic_assignments (id, topic_id, probability) VALUES ('p2', 1, 0.90)")
     conn.commit()
 
     prompt_texts = []
@@ -356,6 +363,7 @@ def test_enrich_bertopic_labels_writes_topic_llm_label(conn, local_config):
     assert row["llm_prompt_version"] == "tl-v4"
     assert "Representative excerpts:" in prompt_texts[0]
     assert "Teams compare AI coding tools" in prompt_texts[0]
+    assert "Fallback source text" in prompt_texts[0] or "Source body should feed labeling" in prompt_texts[0]
 
 
 def test_enrich_bertopic_labels_is_idempotent(conn, local_config):

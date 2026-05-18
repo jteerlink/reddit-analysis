@@ -168,6 +168,18 @@ def api_db(monkeypatch, tmp_path):
         )
         conn.execute(
             """
+            CREATE TABLE collection_metadata (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                subreddit TEXT NOT NULL,
+                collection_timestamp DATETIME NOT NULL,
+                posts_collected INTEGER DEFAULT 0,
+                comments_collected INTEGER DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE sentiment_forecast (
                 subreddit TEXT,
                 date TEXT,
@@ -247,6 +259,14 @@ def api_db(monkeypatch, tmp_path):
             "INSERT INTO sentiment_forecast (subreddit, date, yhat, yhat_lower, yhat_upper) VALUES (?, ?, ?, ?, ?)",
             ("ChatGPT", (ts.date() + timedelta(days=1)).isoformat(), 0.5, 0.1, 0.9),
         )
+        conn.execute(
+            "INSERT INTO collection_metadata (subreddit, collection_timestamp, posts_collected, comments_collected) VALUES (?, ?, ?, ?)",
+            ("ChatGPT", ts - timedelta(minutes=20), 10, 20),
+        )
+        conn.execute(
+            "INSERT INTO collection_metadata (subreddit, collection_timestamp, posts_collected, comments_collected) VALUES (?, ?, ?, ?)",
+            ("LocalLLaMA", ts, 15, 15),
+        )
 
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("DATABASE_URL_POOLED", raising=False)
@@ -276,6 +296,33 @@ def test_api_db_returns_expected_shapes(api_db):
     assert api_db.get_topic_over_time(1)[0]["doc_count"] == 5
     assert api_db.get_topic_heatmap(30)[0]["topic_id"] == 1
     assert api_db.get_known_subreddits() == ["ChatGPT", "LocalLLaMA"]
+
+
+def test_pipeline_health_falls_back_to_collection_metadata(api_db):
+    health = api_db.get_pipeline_health()
+
+    assert health["state"] == "ready"
+    assert health["provenance"]["source_table"] == "collection_metadata"
+    assert health["storage"]["recent_batches"] == 2
+    assert health["storage"]["throughput_items_per_minute"] is not None
+    assert health["storage"]["latest_lag_seconds"] is not None
+    assert health["stages"][-1]["state"] in {"Healthy", "Stale"}
+
+
+def test_pipeline_health_falls_back_to_source_records(api_db):
+    db_path = os.environ["REDDIT_DB_PATH"]
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP TABLE collection_metadata")
+        conn.commit()
+
+    health = api_db.get_pipeline_health(limit=19)
+
+    assert health["state"] == "ready"
+    assert health["provenance"]["source_table"] == "posts_comments"
+    assert health["storage"]["recent_batches"] == 2
+    assert health["storage"]["throughput_items_per_minute"] is not None
+    assert health["storage"]["latest_lag_seconds"] is not None
+    assert "post/comment timestamps" in health["provenance"]["detail"]
 
 
 def test_sentiment_summary_can_weight_by_engagement(api_db):
