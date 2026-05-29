@@ -145,6 +145,63 @@ run_environment_command() {
   fi
 }
 
+run_step_6_7_dependency_check() {
+  (cd "$PROJECT_ROOT" && "$PYTHON" - <<'PYEOF'
+from importlib.metadata import version
+
+import bertopic
+import cmdstanpy
+import regex
+import ruptures
+import transformers
+from prophet import Prophet
+
+
+def version_tuple(value: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in value.split(".")[:3])
+
+
+regex_version = version("regex")
+if version_tuple(regex_version) < (2025, 10, 22):
+    raise RuntimeError(
+        f"regex>={'.'.join(map(str, (2025, 10, 22)))} is required; found {regex_version}"
+    )
+
+print(f"regex=={regex_version}")
+print(f"transformers=={version('transformers')}")
+print(f"bertopic=={version('bertopic')}")
+print(f"prophet=={version('prophet')}")
+print(f"cmdstanpy=={version('cmdstanpy')}")
+print(f"ruptures=={version('ruptures')}")
+print("Pipeline dependency imports verified")
+PYEOF
+  )
+}
+
+verify_pipeline_dependencies() {
+  local logfile="$1"
+
+  info "Verifying step 6/7 dependency imports..."
+  if $VERBOSE; then
+    if run_step_6_7_dependency_check 2>&1 | tee -a "$logfile"; then
+      success "Step 6/7 dependency imports verified"
+    else
+      local rc=$?
+      error "Pipeline dependency import check failed. Log: $logfile"
+      return "$rc"
+    fi
+  else
+    if run_step_6_7_dependency_check >> "$logfile" 2>&1; then
+      success "Step 6/7 dependency imports verified"
+    else
+      local rc=$?
+      error "Pipeline dependency import check failed. Log: $logfile"
+      tail -40 "$logfile"
+      return "$rc"
+    fi
+  fi
+}
+
 ensure_pipeline_environment() {
   local step="${1:-unknown}"
 
@@ -156,7 +213,11 @@ ensure_pipeline_environment() {
 
   local logfile="$LOG_DIR/environment_setup_$(date +%Y%m%d_%H%M%S).log"
   header "Preparing pipeline environment"
-  dim "Before step $step — $(step_name "$step")"
+  if [[ "$step" =~ ^[1-9]$ ]]; then
+    dim "Before step $step — $(step_name "$step")"
+  else
+    dim "At script startup"
+  fi
   dim "Log: $logfile"
   printf "\n"
 
@@ -176,6 +237,7 @@ ensure_pipeline_environment() {
       "$PYTHON" -m pip install -e ".[ml,production]" || return 1
   fi
 
+  verify_pipeline_dependencies "$logfile" || return 1
   require_db
   success "Environment ready: $($PYTHON --version 2>&1)"
   ENVIRONMENT_READY=true
@@ -185,6 +247,21 @@ ensure_pipeline_environment() {
 require_db() {
   [[ -n "${DATABASE_URL:-}" ]] && return 0
   [[ -f "$DB" ]] || die "Database not found: $DB\n  Set DB_PATH or run from project root."
+}
+
+extract_val_f1() {
+  local logfile="$1"
+
+  awk -F: '
+    /Val F1 \(macro\)/ {
+      value = $2
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      if (value ~ /^[0-9]+([.][0-9]+)?$/) {
+        print value
+        exit
+      }
+    }
+  ' "$logfile"
 }
 
 sync_neon() {
@@ -838,7 +915,8 @@ PYEOF
   printf "\n"
   info "Checking gate: val_f1 ≥ 0.70..."
   local f1
-  f1=$(grep -oP "(?<=Val F1 \(macro\):\s{2})\d+\.\d+" "$logfile" 2>/dev/null || echo "0")
+  f1=$(extract_val_f1 "$logfile")
+  f1="${f1:-0}"
   if gate_4_sentiment_model && "$PYTHON" -c "exit(0 if float('$f1') >= 0.70 else 1)" 2>/dev/null; then
     success "Gate PASSED — val_f1 = $f1"
     mark_done 4
@@ -1167,6 +1245,9 @@ cd "$PROJECT_ROOT"
 load_dotenv_file
 configure_database_environment
 refresh_python
+if [[ "$MODE" != "check" ]]; then
+  ensure_pipeline_environment "startup"
+fi
 
 case "$MODE" in
   check)       mode_check ;;
