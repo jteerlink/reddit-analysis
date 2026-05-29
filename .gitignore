@@ -253,3 +253,5 @@ models/
 .claude
 .fuse*
 .codex2
+models
+*.npy

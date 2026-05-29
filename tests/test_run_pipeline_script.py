@@ -23,3 +23,14 @@ def test_run_pipeline_loads_neon_url_from_dotenv_without_exporting_it():
     assert 'load_dotenv(dotenv_path=Path("$PROJECT_ROOT") / ".env")' in script
     assert 'os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")' in script
     assert "from scripts import migrate_to_neon" in script
+
+
+def test_run_pipeline_prepares_environment_before_any_step_runner():
+    script = Path("scripts/run_pipeline.sh").read_text()
+
+    assert "ENVIRONMENT_READY=false" in script
+    assert "ensure_pipeline_environment() {" in script
+
+    run_step_body = script.split("run_step() {", 1)[1].split("run_step_1() {", 1)[0]
+    assert 'ensure_pipeline_environment "$step"' in run_step_body
+    assert run_step_body.index('ensure_pipeline_environment "$step"') < run_step_body.index('case "$step" in')

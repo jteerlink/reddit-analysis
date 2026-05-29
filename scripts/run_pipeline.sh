@@ -16,7 +16,7 @@ set -euo pipefail
 # ── Paths ──────────────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-DB="${DB_PATH:-$PROJECT_ROOT/historical_reddit_data.db}"
+DB="${DB_PATH:-${REDDIT_DB_PATH:-$PROJECT_ROOT/historical_reddit_data.db}}"
 STATUS_DIR="$PROJECT_ROOT/.pipeline_status"
 LOG_DIR="$PROJECT_ROOT/.pipeline_logs"
 
@@ -33,6 +33,7 @@ TARGET_STEP=""
 VERBOSE=false
 DB_PATH_OVERRIDE=false
 NEON_SYNC=true
+ENVIRONMENT_READY=false
 
 # ── Colors ─────────────────────────────────────────────────────────────────────
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
@@ -51,6 +52,135 @@ header()  { printf "\n${BOLD}%s${RESET}\n" "$*"; }
 dim()     { printf "  ${DIM}%s${RESET}\n" "$*"; }
 
 die() { error "$*"; exit 1; }
+
+trim_value() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "$value"
+}
+
+load_dotenv_file() {
+  local env_file="$PROJECT_ROOT/.env"
+  local line key value
+
+  [[ -f "$env_file" ]] || return 0
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    line="$(trim_value "$line")"
+
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    [[ "$line" == export\ * ]] && line="${line#export }"
+
+    if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+      key="${BASH_REMATCH[1]}"
+      value="$(trim_value "${BASH_REMATCH[2]}")"
+
+      if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+        value="${value:1:${#value}-2}"
+      elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+        value="${value:1:${#value}-2}"
+      fi
+
+      if [[ -z "${!key+x}" ]]; then
+        export "${key}=${value}"
+      fi
+    fi
+  done < "$env_file"
+}
+
+refresh_python() {
+  if [[ -x "${PROJECT_ROOT}/.venv/bin/python3" ]]; then
+    PYTHON="${PROJECT_ROOT}/.venv/bin/python3"
+  elif [[ -x "${PROJECT_ROOT}/.venv/bin/python" ]]; then
+    PYTHON="${PROJECT_ROOT}/.venv/bin/python"
+  elif [[ -z "${PYTHON:-}" ]]; then
+    PYTHON="python3"
+  fi
+}
+
+configure_database_environment() {
+  if [[ "$DB_PATH_OVERRIDE" != "true" ]]; then
+    if [[ -n "${DB_PATH:-}" ]]; then
+      DB="$DB_PATH"
+    elif [[ -n "${REDDIT_DB_PATH:-}" ]]; then
+      DB="$REDDIT_DB_PATH"
+    fi
+  fi
+
+  if [[ "$DB" != postgres://* && "$DB" != postgresql://* && "$DB" != /* ]]; then
+    DB="$PROJECT_ROOT/$DB"
+  fi
+
+  if [[ -z "${DATABASE_URL:-}" && "$DB" != postgres://* && "$DB" != postgresql://* ]]; then
+    export REDDIT_DB_PATH="$DB"
+    export DATABASE_PATH="$DB"
+  fi
+}
+
+run_environment_command() {
+  local logfile="$1"
+  local label="$2"
+  shift 2
+
+  info "$label..."
+  if $VERBOSE; then
+    if (cd "$PROJECT_ROOT" && "$@") 2>&1 | tee -a "$logfile"; then
+      success "$label complete"
+    else
+      local rc=$?
+      error "$label failed. Log: $logfile"
+      return "$rc"
+    fi
+  else
+    if (cd "$PROJECT_ROOT" && "$@") >> "$logfile" 2>&1; then
+      success "$label complete"
+    else
+      local rc=$?
+      error "$label failed. Log: $logfile"
+      tail -20 "$logfile"
+      return "$rc"
+    fi
+  fi
+}
+
+ensure_pipeline_environment() {
+  local step="${1:-unknown}"
+
+  [[ "$ENVIRONMENT_READY" == "true" ]] && return 0
+
+  mkdir -p "$LOG_DIR" "$STATUS_DIR" "$PROJECT_ROOT/models" "$PROJECT_ROOT/data"
+  configure_database_environment
+  export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+
+  local logfile="$LOG_DIR/environment_setup_$(date +%Y%m%d_%H%M%S).log"
+  header "Preparing pipeline environment"
+  dim "Before step $step — $(step_name "$step")"
+  dim "Log: $logfile"
+  printf "\n"
+
+  if command -v uv >/dev/null 2>&1; then
+    if [[ ! -d "$PROJECT_ROOT/.venv" ]]; then
+      run_environment_command "$logfile" "Creating uv virtual environment" uv venv || return 1
+    fi
+    refresh_python
+    run_environment_command "$logfile" "Installing ml + production dependencies" \
+      uv pip install --python "$PYTHON" -e ".[ml,production]" || return 1
+    refresh_python
+  else
+    refresh_python
+    "$PYTHON" -m pip --version >/dev/null 2>&1 \
+      || die "uv is not installed and $PYTHON cannot run pip"
+    run_environment_command "$logfile" "Installing ml + production dependencies with pip" \
+      "$PYTHON" -m pip install -e ".[ml,production]" || return 1
+  fi
+
+  require_db
+  success "Environment ready: $($PYTHON --version 2>&1)"
+  ENVIRONMENT_READY=true
+  printf "\n"
+}
 
 require_db() {
   [[ -n "${DATABASE_URL:-}" ]] && return 0
@@ -510,6 +640,8 @@ run_step() {
   mkdir -p "$LOG_DIR"
   local logfile="$LOG_DIR/step_${step}_$(date +%Y%m%d_%H%M%S).log"
 
+  ensure_pipeline_environment "$step"
+
   case "$step" in
     1) run_step_1 "$logfile" ;;
     2) run_step_2 "$logfile" ;;
@@ -529,18 +661,29 @@ run_step() {
 
 run_step_1() {
   local logfile="$1"
-  info "Installing ml + production dependencies..."
-  if $VERBOSE; then
-    (cd "$PROJECT_ROOT" && uv pip install -e ".[ml,production]") | tee "$logfile"
-  else
-    (cd "$PROJECT_ROOT" && uv pip install -e ".[ml,production]") > "$logfile" 2>&1 \
-      && success "Dependencies installed" \
-      || { error "Install failed. Log: $logfile"; tail -20 "$logfile"; return 1; }
-  fi
+  info "Recording prepared environment details..."
+  {
+    printf 'Python: %s\n' "$PYTHON"
+    "$PYTHON" --version
+    if command -v uv >/dev/null 2>&1; then
+      uv --version
+    fi
+    if [[ -n "${DATABASE_URL:-}" ]]; then
+      printf 'Database: DATABASE_URL configured\n'
+    else
+      printf 'Database: %s\n' "$DB"
+    fi
+    printf 'PYTHONPATH: %s\n' "${PYTHONPATH:-}"
+  } > "$logfile" 2>&1
+  success "Dependencies installed and environment ready"
 
   info "Verifying database..."
-  [[ -f "$DB" ]] && success "Database found: $(du -sh "$DB" | cut -f1) — $DB" \
-    || { error "Database not found at $DB"; return 1; }
+  if [[ -n "${DATABASE_URL:-}" ]]; then
+    success "Database configured through DATABASE_URL"
+  else
+    [[ -f "$DB" ]] && success "Database found: $(du -sh "$DB" | cut -f1) — $DB" \
+      || { error "Database not found at $DB"; return 1; }
+  fi
 
   info "Creating models/ and data/ directories..."
   mkdir -p "$PROJECT_ROOT/models" "$PROJECT_ROOT/data"
@@ -998,8 +1141,8 @@ while [[ $# -gt 0 ]]; do
     --step=*)  MODE="step"; TARGET_STEP="${1#--step=}" ;;
     --no-neon-sync) NEON_SYNC=false ;;
     --verbose|-v) VERBOSE=true ;;
-    --db)      DB="${2:-}"; shift ;;
-    --db=*)    DB="${1#--db=}" ;;
+    --db)      DB="${2:-}"; DB_PATH_OVERRIDE=true; shift ;;
+    --db=*)    DB="${1#--db=}"; DB_PATH_OVERRIDE=true ;;
     --help|-h)
       printf "\nUsage: %s [options]\n\n" "$(basename "$0")"
       printf "  --check          Show gate + freshness status for all steps\n"
@@ -1021,6 +1164,9 @@ done
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 cd "$PROJECT_ROOT"
+load_dotenv_file
+configure_database_environment
+refresh_python
 
 case "$MODE" in
   check)       mode_check ;;
