@@ -6,6 +6,12 @@
       "sourceType": "github",
       "skillPath": "skills/neon-postgres/SKILL.md",
       "computedHash": "391693eee67001639ab65474df185da3ea5cf9ee4b99badecfd64561113edbb4"
+    },
+    "llm-council": {
+      "source": "local",
+      "sourceType": "local",
+      "skillPath": "skills/llm-council/SKILL.md",
+      "computedHash": "5a557be66bf5c75d618572686dc101bc4b5edbe6ec8f524f4ef1f763f455a3cc"
     }
   }
 }
