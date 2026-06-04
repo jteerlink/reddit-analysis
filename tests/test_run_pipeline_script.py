@@ -19,6 +19,27 @@ def test_run_pipeline_supports_disabling_neon_sync():
     assert "Skip post-step/post-run SQLite→Neon mirror" in script
 
 
+def test_run_pipeline_defaults_to_all_steps_without_per_step_approval():
+    script = Path("scripts/run_pipeline.sh").read_text()
+
+    assert 'MODE="all"' in script
+    assert "CONFIRM_STEPS=false" in script
+
+    mode_all = script.split("mode_all() {", 1)[1].split("# ── Argument parsing", 1)[0]
+    assert 'if [[ "$CONFIRM_STEPS" == "true" ]]; then' in mode_all
+    assert mode_all.index('if [[ "$CONFIRM_STEPS" == "true" ]]; then') < mode_all.index('run_step "$i" false')
+    assert 'prompt_step "$i"' in mode_all
+
+
+def test_run_pipeline_can_opt_back_into_interactive_confirmations():
+    script = Path("scripts/run_pipeline.sh").read_text()
+
+    assert "--interactive) MODE=\"interactive\" ;;" in script
+    assert "--confirm-steps) CONFIRM_STEPS=true ;;" in script
+    assert "Show interactive menu instead of default all-step run" in script
+    assert "Ask before each step during all-step runs" in script
+
+
 def test_run_pipeline_loads_neon_url_from_dotenv_without_exporting_it():
     script = Path("scripts/run_pipeline.sh").read_text()
 

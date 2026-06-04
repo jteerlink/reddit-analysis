@@ -2,12 +2,14 @@
 # run_pipeline.sh — Interactive guide for the Reddit Analyzer ML pipeline
 #
 # Usage:
-#   ./scripts/run_pipeline.sh              # interactive menu
+#   ./scripts/run_pipeline.sh              # run all steps without per-step prompts
+#   ./scripts/run_pipeline.sh --interactive  # interactive menu
 #   ./scripts/run_pipeline.sh --check      # show status table only
 #   ./scripts/run_pipeline.sh --step N     # run a specific step (1-9)
 #   ./scripts/run_pipeline.sh step N       # run a specific step (1-9)
 #   ./scripts/run_pipeline.sh N            # run a specific step (1-9)
-#   ./scripts/run_pipeline.sh --all        # run all steps in sequence
+#   ./scripts/run_pipeline.sh --all        # run all steps without per-step prompts
+#   ./scripts/run_pipeline.sh --confirm-steps  # ask before each step during all-step runs
 #   ./scripts/run_pipeline.sh --no-neon-sync  # skip post-run SQLite→Neon mirror
 #   ./scripts/run_pipeline.sh --verbose    # show full command output
 
@@ -28,12 +30,13 @@ else
 fi
 
 # ── Flags ──────────────────────────────────────────────────────────────────────
-MODE="interactive"   # interactive | check | step | all
+MODE="all"   # interactive | check | step | all
 TARGET_STEP=""
 VERBOSE=false
 DB_PATH_OVERRIDE=false
 NEON_SYNC=true
 ENVIRONMENT_READY=false
+CONFIRM_STEPS=false
 
 # ── Colors ─────────────────────────────────────────────────────────────────────
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
@@ -1187,17 +1190,26 @@ mode_all() {
   print_status_table true
 
   for i in 1 2 3 4 5 6 7 8 9; do
-    if prompt_step "$i"; then
-      run_step "$i" false || {
-        error "Step $i failed."
+    if [[ "$CONFIRM_STEPS" == "true" ]]; then
+      if prompt_step "$i"; then
+        :
+      else
+        local rc=$?
+        [[ "$rc" -eq 2 ]] && continue
+        return "$rc"
+      fi
+    fi
+
+    run_step "$i" false || {
+      error "Step $i failed."
+      if [[ "$CONFIRM_STEPS" == "true" ]]; then
         printf "\n  Continue to next step anyway? [y/N]  > "
         read -r cont
         [[ "$cont" =~ ^[Yy]$ ]] || exit 1
-      }
-    else
-      local rc=$?
-      [[ "$rc" -eq 2 ]] || return "$rc"
-    fi
+      else
+        exit 1
+      fi
+    }
   done
 
   printf "\n"
@@ -1215,6 +1227,8 @@ while [[ $# -gt 0 ]]; do
     step)     MODE="step"; TARGET_STEP="${2:-}"; shift ;;
     --check)   MODE="check" ;;
     --all)     MODE="all" ;;
+    --interactive) MODE="interactive" ;;
+    --confirm-steps) CONFIRM_STEPS=true ;;
     --step)    MODE="step"; TARGET_STEP="${2:-}"; shift ;;
     --step=*)  MODE="step"; TARGET_STEP="${1#--step=}" ;;
     --no-neon-sync) NEON_SYNC=false ;;
@@ -1223,11 +1237,14 @@ while [[ $# -gt 0 ]]; do
     --db=*)    DB="${1#--db=}"; DB_PATH_OVERRIDE=true ;;
     --help|-h)
       printf "\nUsage: %s [options]\n\n" "$(basename "$0")"
+      printf "  (no args)        Run all steps without per-step prompts\n"
       printf "  --check          Show gate + freshness status for all steps\n"
       printf "  --step N         Run only step N (1–9)\n"
       printf "  step N           Run only step N (1–9)\n"
       printf "  N                Run only step N (1–9)\n"
-      printf "  --all            Run all steps with confirmation prompts\n"
+      printf "  --all            Run all steps without per-step prompts\n"
+      printf "  --interactive    Show interactive menu instead of default all-step run\n"
+      printf "  --confirm-steps  Ask before each step during all-step runs\n"
       printf "  --no-neon-sync   Skip post-step/post-run SQLite→Neon mirror\n"
       printf "  --verbose, -v    Show full command output\n"
       printf "  --db PATH        Override database path (default: historical_reddit_data.db)\n"
