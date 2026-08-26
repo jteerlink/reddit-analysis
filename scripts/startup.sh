@@ -6,7 +6,6 @@
 #
 # Optional environment overrides:
 #   BACKEND_HOST=localhost BACKEND_PORT=8000 FRONTEND_HOST=localhost FRONTEND_PORT=3000 ./scripts/startup.sh
-#   START_STREAMLIT=1 STREAMLIT_PORT=8501 ./scripts/startup.sh
 
 set -Eeuo pipefail
 
@@ -18,9 +17,6 @@ BACKEND_HOST="${BACKEND_HOST:-localhost}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_HOST="${FRONTEND_HOST:-localhost}"
 FRONTEND_PORT="${FRONTEND_PORT:-3000}"
-STREAMLIT_HOST="${STREAMLIT_HOST:-localhost}"
-STREAMLIT_PORT="${STREAMLIT_PORT:-8501}"
-START_STREAMLIT="${START_STREAMLIT:-0}"
 NEXT_PUBLIC_API_BASE_URL="${NEXT_PUBLIC_API_BASE_URL:-http://${BACKEND_HOST}:${BACKEND_PORT}}"
 
 PIDS=()
@@ -187,7 +183,6 @@ configure_default_database
 
 if command -v uv >/dev/null 2>&1; then
   BACKEND_CMD=(uv run --frozen --extra production uvicorn src.api.app:app --reload --host "${BACKEND_HOST}" --port "${BACKEND_PORT}")
-  STREAMLIT_CMD=(uv run --frozen --extra production streamlit run app.py --server.address "${STREAMLIT_HOST}" --server.port "${STREAMLIT_PORT}")
 else
   if [[ -z "${PYTHON_BIN:-}" ]]; then
     if [[ -x "${ROOT_DIR}/.venv/bin/python" ]]; then
@@ -198,32 +193,21 @@ else
   fi
   require_command "${PYTHON_BIN}"
   BACKEND_CMD=("${PYTHON_BIN}" -m uvicorn src.api.app:app --reload --host "${BACKEND_HOST}" --port "${BACKEND_PORT}")
-  STREAMLIT_CMD=("${PYTHON_BIN}" -m streamlit run app.py --server.address "${STREAMLIT_HOST}" --server.port "${STREAMLIT_PORT}")
 fi
 
 FRONTEND_CMD=(env "NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}" npm --prefix "${DASHBOARD_DIR}" run dev -- --hostname "${FRONTEND_HOST}" --port "${FRONTEND_PORT}")
 
 check_port "Backend" "${BACKEND_PORT}"
 check_port "Next.js frontend" "${FRONTEND_PORT}"
-if [[ "${START_STREAMLIT}" == "1" || "${START_STREAMLIT}" == "true" || "${START_STREAMLIT}" == "yes" ]]; then
-  check_port "Streamlit frontend" "${STREAMLIT_PORT}"
-fi
 
 echo "🚀 Reddit Analyzer dashboard startup"
 echo "   Backend:          http://${BACKEND_HOST}:${BACKEND_PORT}"
 echo "   Next.js frontend: http://${FRONTEND_HOST}:${FRONTEND_PORT}"
 echo "   API base:         ${NEXT_PUBLIC_API_BASE_URL}"
-if [[ "${START_STREAMLIT}" == "1" || "${START_STREAMLIT}" == "true" || "${START_STREAMLIT}" == "yes" ]]; then
-  echo "   Streamlit:        http://${STREAMLIT_HOST}:${STREAMLIT_PORT}"
-fi
 echo
 
 start_service "backend" "${BACKEND_CMD[@]}"
 start_service "nextjs" "${FRONTEND_CMD[@]}"
-
-if [[ "${START_STREAMLIT}" == "1" || "${START_STREAMLIT}" == "true" || "${START_STREAMLIT}" == "yes" ]]; then
-  start_service "streamlit" "${STREAMLIT_CMD[@]}"
-fi
 
 echo
 echo "✅ Services are starting. Press Ctrl+C to stop all services."

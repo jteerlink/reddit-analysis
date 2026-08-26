@@ -14,9 +14,14 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
-from src.db.connection import get_write_connection, is_postgres_connection
+from db.connection import get_write_connection, is_postgres_connection
 
-from .models import DEFAULT_SUBREDDIT_CATEGORIES, RedditPost, RedditComment, subreddit_parent_id_for
+from .models import (
+    DEFAULT_SUBREDDIT_CATEGORIES,
+    RedditComment,
+    RedditPost,
+    subreddit_parent_id_for,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +36,7 @@ def _subreddit_parent_case(column_name: str = "subreddit") -> str:
         for subreddit, parent_id, _display_name, _sort_order in DEFAULT_SUBREDDIT_CATEGORIES
     )
     return f"CASE LOWER({column_name}) {cases} ELSE 'OTHER' END"
+
 
 try:
     import psycopg2
@@ -62,13 +68,19 @@ class _CompatCursor:
     def _translate(self, sql: str) -> str:
         normalized = " ".join(sql.strip().split()).upper()
         translated = sql.replace("?", "%s")
-        translated = translated.replace("INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY")
-        translated = translated.replace("DATETIME DEFAULT CURRENT_TIMESTAMP", "TIMESTAMPTZ DEFAULT NOW()")
+        translated = translated.replace(
+            "INTEGER PRIMARY KEY AUTOINCREMENT", "BIGSERIAL PRIMARY KEY"
+        )
+        translated = translated.replace(
+            "DATETIME DEFAULT CURRENT_TIMESTAMP", "TIMESTAMPTZ DEFAULT NOW()"
+        )
         translated = translated.replace("DATETIME", "TIMESTAMPTZ")
         translated = translated.replace("REAL DEFAULT 0", "DOUBLE PRECISION DEFAULT 0")
         translated = translated.replace("REAL", "DOUBLE PRECISION")
         if normalized.startswith("INSERT OR REPLACE INTO POSTS"):
-            translated = translated.replace("INSERT OR REPLACE INTO posts", "INSERT INTO posts")
+            translated = translated.replace(
+                "INSERT OR REPLACE INTO posts", "INSERT INTO posts"
+            )
             translated += """
                 ON CONFLICT (id) DO UPDATE SET
                     title = EXCLUDED.title,
@@ -84,7 +96,9 @@ class _CompatCursor:
                     content_type = EXCLUDED.content_type
             """
         elif normalized.startswith("INSERT OR REPLACE INTO COMMENTS"):
-            translated = translated.replace("INSERT OR REPLACE INTO comments", "INSERT INTO comments")
+            translated = translated.replace(
+                "INSERT OR REPLACE INTO comments", "INSERT INTO comments"
+            )
             translated += """
                 ON CONFLICT (id) DO UPDATE SET
                     parent_id = EXCLUDED.parent_id,
@@ -99,7 +113,10 @@ class _CompatCursor:
                     content_type = EXCLUDED.content_type
             """
         elif normalized.startswith("INSERT OR REPLACE INTO BATCH_COLLECTIONS"):
-            translated = translated.replace("INSERT OR REPLACE INTO batch_collections", "INSERT INTO batch_collections")
+            translated = translated.replace(
+                "INSERT OR REPLACE INTO batch_collections",
+                "INSERT INTO batch_collections",
+            )
             translated += """
                 ON CONFLICT (subreddit, collection_timestamp) DO UPDATE SET
                     posts_collected = EXCLUDED.posts_collected,
@@ -150,7 +167,7 @@ class RedditDataStorage:
     - Duplicate handling with INSERT OR REPLACE
     """
 
-    def __init__(self, db_path: str = 'reddit_data.db'):
+    def __init__(self, db_path: str = "reddit_data.db"):
         """
         Initialize storage with database path.
 
@@ -164,7 +181,9 @@ class RedditDataStorage:
         if self.db_path.startswith(("postgres://", "postgresql://")):
             if psycopg2 is None:
                 raise RuntimeError("psycopg2-binary is required for PostgreSQL")
-            return _CompatConnection(psycopg2.connect(self.db_path, cursor_factory=DictCursor))
+            return _CompatConnection(
+                psycopg2.connect(self.db_path, cursor_factory=DictCursor)
+            )
         if os.environ.get("DATABASE_URL"):
             return _CompatConnection(get_write_connection())
         return sqlite3.connect(self.db_path)
@@ -172,16 +191,27 @@ class RedditDataStorage:
     def _read_sql(self, query: str, params=None) -> pd.DataFrame:
         with self._connect() as conn:
             raw_conn = conn.raw if isinstance(conn, _CompatConnection) else conn
-            sql = query.replace("?", "%s") if is_postgres_connection(raw_conn) else query
+            sql = (
+                query.replace("?", "%s") if is_postgres_connection(raw_conn) else query
+            )
             return pd.read_sql_query(sql, raw_conn, params=params)
 
     def _database_size_mb(self) -> float:
-        if os.environ.get("DATABASE_URL") or self.db_path.startswith(("postgres://", "postgresql://")):
+        if os.environ.get("DATABASE_URL") or self.db_path.startswith(
+            ("postgres://", "postgresql://")
+        ):
             return 0.0
-        return os.path.getsize(self.db_path) / 1024 / 1024 if os.path.exists(self.db_path) else 0.0
+        return (
+            os.path.getsize(self.db_path) / 1024 / 1024
+            if os.path.exists(self.db_path)
+            else 0.0
+        )
 
     def _using_postgres(self) -> bool:
-        return bool(os.environ.get("DATABASE_URL") or self.db_path.startswith(("postgres://", "postgresql://")))
+        return bool(
+            os.environ.get("DATABASE_URL")
+            or self.db_path.startswith(("postgres://", "postgresql://"))
+        )
 
     def init_database(self):
         """Initialize SQLite database with required tables and indexes"""
@@ -189,7 +219,8 @@ class RedditDataStorage:
             cursor = conn.cursor()
 
             # Posts table
-            cursor.execute('''
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS posts (
                     id TEXT PRIMARY KEY,
                     title TEXT NOT NULL,
@@ -205,10 +236,12 @@ class RedditDataStorage:
                     content_type TEXT DEFAULT 'post',
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
-            ''')
+            """
+            )
 
             # Comments table
-            cursor.execute('''
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS comments (
                     id TEXT PRIMARY KEY,
                     parent_id TEXT,
@@ -224,7 +257,8 @@ class RedditDataStorage:
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (post_id) REFERENCES posts (id)
                 )
-            ''')
+            """
+            )
 
             raw_conn = conn.raw if isinstance(conn, _CompatConnection) else conn
             using_postgres = is_postgres_connection(raw_conn)
@@ -233,7 +267,8 @@ class RedditDataStorage:
             self._backfill_subreddit_parent_ids(cursor)
 
             # API metrics table for tracking usage
-            cursor.execute('''
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS api_metrics (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -242,19 +277,30 @@ class RedditDataStorage:
                     rate_limit_hits INTEGER,
                     circuit_breaker_trips INTEGER
                 )
-            ''')
+            """
+            )
 
             # Create indexes for better query performance
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_posts_timestamp ON posts(timestamp)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_posts_subreddit ON posts(subreddit)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_comments_post_id ON comments(post_id)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_comments_timestamp ON comments(timestamp)')
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_posts_timestamp ON posts(timestamp)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_posts_subreddit ON posts(subreddit)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_comments_post_id ON comments(post_id)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_comments_timestamp ON comments(timestamp)"
+            )
 
             conn.commit()
 
         logger.info(f"Database initialized: {self.db_path}")
 
-    def _column_exists(self, cursor, table_name: str, column_name: str, using_postgres: bool) -> bool:
+    def _column_exists(
+        self, cursor, table_name: str, column_name: str, using_postgres: bool
+    ) -> bool:
         if using_postgres:
             cursor.execute(
                 """
@@ -271,12 +317,21 @@ class RedditDataStorage:
 
         cursor.execute(f"PRAGMA table_info({table_name})")
         rows = cursor.fetchall()
-        return any((row["name"] if hasattr(row, "keys") else row[1]) == column_name for row in rows)
+        return any(
+            (row["name"] if hasattr(row, "keys") else row[1]) == column_name
+            for row in rows
+        )
 
-    def _ensure_subreddit_parent_column(self, cursor, table_name: str, using_postgres: bool):
-        if self._column_exists(cursor, table_name, "subreddit_parent_id", using_postgres):
+    def _ensure_subreddit_parent_column(
+        self, cursor, table_name: str, using_postgres: bool
+    ):
+        if self._column_exists(
+            cursor, table_name, "subreddit_parent_id", using_postgres
+        ):
             return
-        cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN subreddit_parent_id TEXT DEFAULT 'OTHER'")
+        cursor.execute(
+            f"ALTER TABLE {table_name} ADD COLUMN subreddit_parent_id TEXT DEFAULT 'OTHER'"
+        )
 
     def _backfill_subreddit_parent_ids(self, cursor):
         parent_case = _subreddit_parent_case("subreddit")
@@ -310,18 +365,29 @@ class RedditDataStorage:
 
             for post in posts:
                 try:
-                    cursor.execute('''
+                    cursor.execute(
+                        """
                         INSERT OR REPLACE INTO posts
                         (id, title, content, upvotes, timestamp, subreddit, author,
                          author_karma, url, num_comments, subreddit_parent_id, content_type)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        post.id, post.title, post.content, post.upvotes,
-                        post.timestamp, post.subreddit, post.author,
-                        post.author_karma, post.url, post.num_comments,
-                        post.subreddit_parent_id or subreddit_parent_id_for(post.subreddit),
-                        post.content_type
-                    ))
+                    """,
+                        (
+                            post.id,
+                            post.title,
+                            post.content,
+                            post.upvotes,
+                            post.timestamp,
+                            post.subreddit,
+                            post.author,
+                            post.author_karma,
+                            post.url,
+                            post.num_comments,
+                            post.subreddit_parent_id
+                            or subreddit_parent_id_for(post.subreddit),
+                            post.content_type,
+                        ),
+                    )
                     stored_count += 1
                 except Exception as e:
                     logger.error(f"Error storing post {post.id}: {e}")
@@ -350,18 +416,28 @@ class RedditDataStorage:
 
             for comment in comments:
                 try:
-                    cursor.execute('''
+                    cursor.execute(
+                        """
                         INSERT OR REPLACE INTO comments
                         (id, parent_id, content, upvotes, timestamp, subreddit,
                          author, author_karma, post_id, subreddit_parent_id, content_type)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        comment.id, comment.parent_id, comment.content, comment.upvotes,
-                        comment.timestamp, comment.subreddit, comment.author,
-                        comment.author_karma, comment.post_id,
-                        comment.subreddit_parent_id or subreddit_parent_id_for(comment.subreddit),
-                        comment.content_type
-                    ))
+                    """,
+                        (
+                            comment.id,
+                            comment.parent_id,
+                            comment.content,
+                            comment.upvotes,
+                            comment.timestamp,
+                            comment.subreddit,
+                            comment.author,
+                            comment.author_karma,
+                            comment.post_id,
+                            comment.subreddit_parent_id
+                            or subreddit_parent_id_for(comment.subreddit),
+                            comment.content_type,
+                        ),
+                    )
                     stored_count += 1
                 except Exception as e:
                     logger.error(f"Error storing comment {comment.id}: {e}")
@@ -380,16 +456,19 @@ class RedditDataStorage:
         """
         with self._connect() as conn:
             cursor = conn.cursor()
-            cursor.execute('''
+            cursor.execute(
+                """
                 INSERT INTO api_metrics
                 (requests_made, requests_failed, rate_limit_hits, circuit_breaker_trips)
                 VALUES (?, ?, ?, ?)
-            ''', (
-                metrics.get('requests_made', 0),
-                metrics.get('requests_failed', 0),
-                metrics.get('rate_limit_hits', 0),
-                metrics.get('circuit_breaker_trips', 0)
-            ))
+            """,
+                (
+                    metrics.get("requests_made", 0),
+                    metrics.get("requests_failed", 0),
+                    metrics.get("rate_limit_hits", 0),
+                    metrics.get("circuit_breaker_trips", 0),
+                ),
+            )
             conn.commit()
 
     def get_data_summary(self) -> Dict:
@@ -403,36 +482,37 @@ class RedditDataStorage:
             cursor = conn.cursor()
 
             # Posts summary
-            cursor.execute('SELECT COUNT(*) FROM posts')
+            cursor.execute("SELECT COUNT(*) FROM posts")
             total_posts = cursor.fetchone()[0]
 
-            cursor.execute('SELECT COUNT(DISTINCT subreddit) FROM posts')
+            cursor.execute("SELECT COUNT(DISTINCT subreddit) FROM posts")
             unique_subreddits = cursor.fetchone()[0]
 
             # Comments summary
-            cursor.execute('SELECT COUNT(*) FROM comments')
+            cursor.execute("SELECT COUNT(*) FROM comments")
             total_comments = cursor.fetchone()[0]
 
             # Recent data
-            cursor.execute('SELECT MAX(timestamp) FROM posts')
+            cursor.execute("SELECT MAX(timestamp) FROM posts")
             latest_post = cursor.fetchone()[0]
 
-            cursor.execute('SELECT MIN(timestamp) FROM posts')
+            cursor.execute("SELECT MIN(timestamp) FROM posts")
             earliest_post = cursor.fetchone()[0]
 
             db_size_mb = self._database_size_mb()
 
             return {
-                'total_posts': total_posts,
-                'total_comments': total_comments,
-                'unique_subreddits': unique_subreddits,
-                'latest_post': latest_post,
-                'earliest_post': earliest_post,
-                'database_size_mb': db_size_mb
+                "total_posts": total_posts,
+                "total_comments": total_comments,
+                "unique_subreddits": unique_subreddits,
+                "latest_post": latest_post,
+                "earliest_post": earliest_post,
+                "database_size_mb": db_size_mb,
             }
 
-    def query_posts(self, subreddit: str = None, limit: int = 100,
-                    keywords: List[str] = None) -> pd.DataFrame:
+    def query_posts(
+        self, subreddit: str = None, limit: int = 100, keywords: List[str] = None
+    ) -> pd.DataFrame:
         """
         Query posts with optional filters.
 
@@ -444,26 +524,26 @@ class RedditDataStorage:
         Returns:
             DataFrame containing matching posts
         """
-        query = 'SELECT * FROM posts'
+        query = "SELECT * FROM posts"
         params = []
         conditions = []
 
         if subreddit:
-            conditions.append('subreddit = ?')
+            conditions.append("subreddit = ?")
             params.append(subreddit)
 
         if keywords:
             keyword_conditions = []
             for keyword in keywords:
-                keyword_conditions.append('(title LIKE ? OR content LIKE ?)')
-                params.extend([f'%{keyword}%', f'%{keyword}%'])
+                keyword_conditions.append("(title LIKE ? OR content LIKE ?)")
+                params.extend([f"%{keyword}%", f"%{keyword}%"])
             if keyword_conditions:
                 conditions.append(f"({' OR '.join(keyword_conditions)})")
 
         if conditions:
-            query += ' WHERE ' + ' AND '.join(conditions)
+            query += " WHERE " + " AND ".join(conditions)
 
-        query += ' ORDER BY timestamp DESC LIMIT ?'
+        query += " ORDER BY timestamp DESC LIMIT ?"
         params.append(limit)
 
         return self._read_sql(query, params=params)
@@ -479,14 +559,14 @@ class RedditDataStorage:
         Returns:
             DataFrame containing matching comments
         """
-        query = 'SELECT * FROM comments'
+        query = "SELECT * FROM comments"
         params = []
 
         if post_id:
-            query += ' WHERE post_id = ?'
+            query += " WHERE post_id = ?"
             params.append(post_id)
 
-        query += ' ORDER BY timestamp DESC LIMIT ?'
+        query += " ORDER BY timestamp DESC LIMIT ?"
         params.append(limit)
 
         return self._read_sql(query, params=params)
@@ -502,23 +582,25 @@ class RedditDataStorage:
             Path to exported file
         """
         if not filename:
-            filename = f"reddit_data_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            filename = (
+                f"reddit_data_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            )
 
         with self._connect() as conn:
             raw_conn = conn.raw if isinstance(conn, _CompatConnection) else conn
-            posts_df = pd.read_sql_query('SELECT * FROM posts', raw_conn)
-            comments_df = pd.read_sql_query('SELECT * FROM comments', raw_conn)
-            metrics_df = pd.read_sql_query('SELECT * FROM api_metrics', raw_conn)
+            posts_df = pd.read_sql_query("SELECT * FROM posts", raw_conn)
+            comments_df = pd.read_sql_query("SELECT * FROM comments", raw_conn)
+            metrics_df = pd.read_sql_query("SELECT * FROM api_metrics", raw_conn)
 
             export_data = {
-                'posts': posts_df.to_dict('records'),
-                'comments': comments_df.to_dict('records'),
-                'metrics': metrics_df.to_dict('records'),
-                'export_timestamp': datetime.now().isoformat(),
-                'summary': self.get_data_summary()
+                "posts": posts_df.to_dict("records"),
+                "comments": comments_df.to_dict("records"),
+                "metrics": metrics_df.to_dict("records"),
+                "export_timestamp": datetime.now().isoformat(),
+                "summary": self.get_data_summary(),
             }
 
-            with open(filename, 'w') as f:
+            with open(filename, "w") as f:
                 json.dump(export_data, f, indent=2, default=str)
 
             logger.info(f"Data exported to {filename}")
@@ -531,7 +613,7 @@ class RedditDataStorage:
         Returns:
             DataFrame with subreddit statistics
         """
-        query = '''
+        query = """
             SELECT
                 subreddit,
                 COUNT(*) as post_count,
@@ -541,7 +623,7 @@ class RedditDataStorage:
             FROM posts
             GROUP BY subreddit
             ORDER BY post_count DESC
-        '''
+        """
         return self._read_sql(query)
 
     def cleanup_old_data(self, days_to_keep: int = 30) -> int:
@@ -560,17 +642,19 @@ class RedditDataStorage:
             cursor = conn.cursor()
 
             # Delete old posts
-            cursor.execute('DELETE FROM posts WHERE timestamp < ?', (cutoff_date,))
+            cursor.execute("DELETE FROM posts WHERE timestamp < ?", (cutoff_date,))
             posts_deleted = cursor.rowcount
 
             # Delete old comments
-            cursor.execute('DELETE FROM comments WHERE timestamp < ?', (cutoff_date,))
+            cursor.execute("DELETE FROM comments WHERE timestamp < ?", (cutoff_date,))
             comments_deleted = cursor.rowcount
 
             conn.commit()
 
         total_deleted = posts_deleted + comments_deleted
-        logger.info(f"Cleaned up {total_deleted} records older than {days_to_keep} days")
+        logger.info(
+            f"Cleaned up {total_deleted} records older than {days_to_keep} days"
+        )
         return total_deleted
 
     def deduplicate_database(self) -> Dict[str, int]:
@@ -589,13 +673,13 @@ class RedditDataStorage:
         if self._using_postgres():
             logger.info("Skipping rowid-based deduplication on PostgreSQL")
             return {
-                'posts_removed_total': 0,
-                'posts_removed_by_id': 0,
-                'posts_removed_by_content': 0,
-                'comments_removed_total': 0,
-                'comments_removed_by_id': 0,
-                'comments_removed_by_content': 0,
-                'orphaned_comments_removed': 0
+                "posts_removed_total": 0,
+                "posts_removed_by_id": 0,
+                "posts_removed_by_content": 0,
+                "comments_removed_total": 0,
+                "comments_removed_by_id": 0,
+                "comments_removed_by_content": 0,
+                "orphaned_comments_removed": 0,
             }
 
         with self._connect() as conn:
@@ -607,59 +691,69 @@ class RedditDataStorage:
 
             # 1. Remove duplicate posts by ID (keep latest created_at)
             # Note: This handles cases where INSERT OR REPLACE didn't catch duplicates
-            cursor.execute('''
+            cursor.execute(
+                """
                 DELETE FROM posts
                 WHERE rowid NOT IN (
                     SELECT MAX(rowid)
                     FROM posts
                     GROUP BY id
                 )
-            ''')
+            """
+            )
             posts_id_removed = cursor.rowcount
             posts_removed += posts_id_removed
 
             # 2. Remove posts with same title + subreddit + author (potential content duplicates)
-            cursor.execute('''
+            cursor.execute(
+                """
                 DELETE FROM posts
                 WHERE rowid NOT IN (
                     SELECT MIN(rowid)
                     FROM posts
                     GROUP BY title, subreddit, author
                 )
-            ''')
+            """
+            )
             posts_content_removed = cursor.rowcount
             posts_removed += posts_content_removed
 
             # 3. Remove duplicate comments by ID (keep latest created_at)
             # Note: This handles cases where INSERT OR REPLACE didn't catch duplicates
-            cursor.execute('''
+            cursor.execute(
+                """
                 DELETE FROM comments
                 WHERE rowid NOT IN (
                     SELECT MAX(rowid)
                     FROM comments
                     GROUP BY id
                 )
-            ''')
+            """
+            )
             comments_id_removed = cursor.rowcount
             comments_removed += comments_id_removed
 
             # 4. Remove comments with same content + post_id + author (exact duplicates)
-            cursor.execute('''
+            cursor.execute(
+                """
                 DELETE FROM comments
                 WHERE rowid NOT IN (
                     SELECT MIN(rowid)
                     FROM comments
                     GROUP BY content, post_id, author
                 )
-            ''')
+            """
+            )
             comments_content_removed = cursor.rowcount
             comments_removed += comments_content_removed
 
             # 5. Remove orphaned comments (comments whose posts no longer exist)
-            cursor.execute('''
+            cursor.execute(
+                """
                 DELETE FROM comments
                 WHERE post_id NOT IN (SELECT id FROM posts)
-            ''')
+            """
+            )
             orphaned_comments = cursor.rowcount
             comments_removed += orphaned_comments
 
@@ -676,13 +770,13 @@ class RedditDataStorage:
             logger.info(f"  Total comments removed: {comments_removed}")
 
             return {
-                'posts_removed_total': posts_removed,
-                'posts_removed_by_id': posts_id_removed,
-                'posts_removed_by_content': posts_content_removed,
-                'comments_removed_total': comments_removed,
-                'comments_removed_by_id': comments_id_removed,
-                'comments_removed_by_content': comments_content_removed,
-                'orphaned_comments_removed': orphaned_comments
+                "posts_removed_total": posts_removed,
+                "posts_removed_by_id": posts_id_removed,
+                "posts_removed_by_content": posts_content_removed,
+                "comments_removed_total": comments_removed,
+                "comments_removed_by_id": comments_id_removed,
+                "comments_removed_by_content": comments_content_removed,
+                "orphaned_comments_removed": orphaned_comments,
             }
 
     def get_duplicate_stats(self) -> Dict[str, int]:
@@ -694,167 +788,204 @@ class RedditDataStorage:
         """
         if self._using_postgres():
             return {
-                'duplicate_posts_by_id': 0,
-                'duplicate_posts_by_content': 0,
-                'duplicate_comments_by_id': 0,
-                'duplicate_comments_by_content': 0,
-                'orphaned_comments': 0
+                "duplicate_posts_by_id": 0,
+                "duplicate_posts_by_content": 0,
+                "duplicate_comments_by_id": 0,
+                "duplicate_comments_by_content": 0,
+                "orphaned_comments": 0,
             }
         with self._connect() as conn:
             cursor = conn.cursor()
 
             # Count duplicate posts by ID
-            cursor.execute('''
+            cursor.execute(
+                """
                 SELECT COUNT(*) - COUNT(DISTINCT id)
                 FROM posts
-            ''')
+            """
+            )
             duplicate_posts_by_id = cursor.fetchone()[0]
 
             # Count duplicate posts by content
-            cursor.execute('''
+            cursor.execute(
+                """
                 SELECT COUNT(*) - COUNT(DISTINCT title || subreddit || author)
                 FROM posts
-            ''')
+            """
+            )
             duplicate_posts_by_content = cursor.fetchone()[0]
 
             # Count duplicate comments by ID
-            cursor.execute('''
+            cursor.execute(
+                """
                 SELECT COUNT(*) - COUNT(DISTINCT id)
                 FROM comments
-            ''')
+            """
+            )
             duplicate_comments_by_id = cursor.fetchone()[0]
 
             # Count duplicate comments by content
-            cursor.execute('''
+            cursor.execute(
+                """
                 SELECT COUNT(*) - COUNT(DISTINCT content || post_id || author)
                 FROM comments
-            ''')
+            """
+            )
             duplicate_comments_by_content = cursor.fetchone()[0]
 
             # Count orphaned comments
-            cursor.execute('''
+            cursor.execute(
+                """
                 SELECT COUNT(*)
                 FROM comments
                 WHERE post_id NOT IN (SELECT id FROM posts)
-            ''')
+            """
+            )
             orphaned_comments = cursor.fetchone()[0]
 
             return {
-                'duplicate_posts_by_id': duplicate_posts_by_id,
-                'duplicate_posts_by_content': duplicate_posts_by_content,
-                'duplicate_comments_by_id': duplicate_comments_by_id,
-                'duplicate_comments_by_content': duplicate_comments_by_content,
-                'orphaned_comments': orphaned_comments
+                "duplicate_posts_by_id": duplicate_posts_by_id,
+                "duplicate_posts_by_content": duplicate_posts_by_content,
+                "duplicate_comments_by_id": duplicate_comments_by_id,
+                "duplicate_comments_by_content": duplicate_comments_by_content,
+                "orphaned_comments": orphaned_comments,
             }
-    
+
     def get_existing_post_ids(self, subreddit: str = None, days_back: int = 7) -> set:
         """
         Get set of existing post IDs for efficient duplicate checking.
-        
+
         Args:
             subreddit: Filter by specific subreddit (None for all)
             days_back: How many days back to check for IDs
-            
+
         Returns:
             Set of post IDs that already exist in database
         """
         with self._connect() as conn:
             cursor = conn.cursor()
-            
+
             cutoff_date = datetime.now() - timedelta(days=days_back)
-            
+
             if subreddit:
-                cursor.execute('''
+                cursor.execute(
+                    """
                     SELECT id FROM posts 
                     WHERE subreddit = ? AND timestamp > ?
-                ''', (subreddit, cutoff_date))
+                """,
+                    (subreddit, cutoff_date),
+                )
             else:
-                cursor.execute('''
+                cursor.execute(
+                    """
                     SELECT id FROM posts 
                     WHERE timestamp > ?
-                ''', (cutoff_date,))
-            
+                """,
+                    (cutoff_date,),
+                )
+
             return {row[0] for row in cursor.fetchall()}
-    
-    def get_existing_post_ids_in_timeframe(self, subreddit: str, start_date: datetime, end_date: datetime) -> set:
+
+    def get_existing_post_ids_in_timeframe(
+        self, subreddit: str, start_date: datetime, end_date: datetime
+    ) -> set:
         """
         Get existing post IDs within a specific timeframe for historical collection.
-        
+
         Args:
             subreddit: Subreddit to check
             start_date: Start of timeframe
             end_date: End of timeframe
-            
+
         Returns:
             Set of post IDs that already exist in the timeframe
         """
         with self._connect() as conn:
             cursor = conn.cursor()
-            
-            cursor.execute('''
+
+            cursor.execute(
+                """
                 SELECT id FROM posts 
                 WHERE subreddit = ? AND timestamp BETWEEN ? AND ?
-            ''', (subreddit, start_date, end_date))
-            
+            """,
+                (subreddit, start_date, end_date),
+            )
+
             return {row[0] for row in cursor.fetchall()}
-    
-    def get_existing_comment_ids(self, post_ids: List[str] = None, days_back: int = 7) -> set:
+
+    def get_existing_comment_ids(
+        self, post_ids: List[str] = None, days_back: int = 7
+    ) -> set:
         """
         Get set of existing comment IDs for efficient duplicate checking.
-        
+
         Args:
             post_ids: Filter by specific post IDs (None for recent comments)
             days_back: How many days back to check for IDs
-            
+
         Returns:
             Set of comment IDs that already exist in database
         """
         with self._connect() as conn:
             cursor = conn.cursor()
-            
+
             if post_ids:
                 # Use IN clause for specific posts
-                placeholders = ','.join('?' for _ in post_ids)
-                cursor.execute(f'''
+                placeholders = ",".join("?" for _ in post_ids)
+                cursor.execute(
+                    f"""
                     SELECT id FROM comments 
                     WHERE post_id IN ({placeholders})
-                ''', post_ids)
+                """,
+                    post_ids,
+                )
             else:
                 # Use time-based filtering for recent comments
                 cutoff_date = datetime.now() - timedelta(days=days_back)
-                cursor.execute('''
+                cursor.execute(
+                    """
                     SELECT id FROM comments 
                     WHERE timestamp > ?
-                ''', (cutoff_date,))
-            
+                """,
+                    (cutoff_date,),
+                )
+
             return {row[0] for row in cursor.fetchall()}
-    
+
     def get_last_collection_timestamp(self, subreddit: str) -> Optional[datetime]:
         """
         Get the timestamp of the most recent post collected for a subreddit.
-        
+
         Args:
             subreddit: Subreddit to check
-            
+
         Returns:
             Datetime of most recent post, or None if no posts exist
         """
         with self._connect() as conn:
             cursor = conn.cursor()
-            
-            cursor.execute('''
+
+            cursor.execute(
+                """
                 SELECT MAX(timestamp) FROM posts 
                 WHERE subreddit = ?
-            ''', (subreddit,))
-            
+            """,
+                (subreddit,),
+            )
+
             result = cursor.fetchone()[0]
             return datetime.fromisoformat(result) if result else None
-    
-    def update_collection_metadata(self, subreddit: str, collection_time: datetime, 
-                                 posts_collected: int, comments_collected: int):
+
+    def update_collection_metadata(
+        self,
+        subreddit: str,
+        collection_time: datetime,
+        posts_collected: int,
+        comments_collected: int,
+    ):
         """
         Store metadata about collection runs for efficiency tracking.
-        
+
         Args:
             subreddit: Subreddit that was collected
             collection_time: When the collection occurred
@@ -863,9 +994,10 @@ class RedditDataStorage:
         """
         with self._connect() as conn:
             cursor = conn.cursor()
-            
+
             # Create metadata table if it doesn't exist
-            cursor.execute('''
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS collection_metadata (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     subreddit TEXT NOT NULL,
@@ -874,36 +1006,43 @@ class RedditDataStorage:
                     comments_collected INTEGER DEFAULT 0,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
-            ''')
-            
+            """
+            )
+
             # Insert collection metadata
-            cursor.execute('''
+            cursor.execute(
+                """
                 INSERT INTO collection_metadata 
                 (subreddit, collection_timestamp, posts_collected, comments_collected)
                 VALUES (?, ?, ?, ?)
-            ''', (subreddit, collection_time, posts_collected, comments_collected))
-            
+            """,
+                (subreddit, collection_time, posts_collected, comments_collected),
+            )
+
             conn.commit()
-    
-    def get_collection_efficiency_stats(self, subreddit: str = None, days_back: int = 30) -> Dict:
+
+    def get_collection_efficiency_stats(
+        self, subreddit: str = None, days_back: int = 30
+    ) -> Dict:
         """
         Get efficiency statistics for recent collections.
-        
+
         Args:
             subreddit: Filter by specific subreddit (None for all)
             days_back: How many days back to analyze
-            
+
         Returns:
             Dictionary with efficiency metrics
         """
         with self._connect() as conn:
             cursor = conn.cursor()
-            
+
             cutoff_date = datetime.now() - timedelta(days=days_back)
-            
+
             # Get basic collection stats
             if subreddit:
-                cursor.execute('''
+                cursor.execute(
+                    """
                     SELECT 
                         COUNT(*) as collections,
                         SUM(posts_collected) as total_posts,
@@ -912,9 +1051,12 @@ class RedditDataStorage:
                         AVG(comments_collected) as avg_comments_per_run
                     FROM collection_metadata 
                     WHERE subreddit = ? AND collection_timestamp > ?
-                ''', (subreddit, cutoff_date))
+                """,
+                    (subreddit, cutoff_date),
+                )
             else:
-                cursor.execute('''
+                cursor.execute(
+                    """
                     SELECT 
                         COUNT(*) as collections,
                         SUM(posts_collected) as total_posts,
@@ -923,23 +1065,25 @@ class RedditDataStorage:
                         AVG(comments_collected) as avg_comments_per_run
                     FROM collection_metadata 
                     WHERE collection_timestamp > ?
-                ''', (cutoff_date,))
-            
+                """,
+                    (cutoff_date,),
+                )
+
             result = cursor.fetchone()
-            
+
             return {
-                'total_collections': result[0] or 0,
-                'total_posts_collected': result[1] or 0,
-                'total_comments_collected': result[2] or 0,
-                'avg_posts_per_run': result[3] or 0,
-                'avg_comments_per_run': result[4] or 0,
-                'analysis_period_days': days_back
+                "total_collections": result[0] or 0,
+                "total_posts_collected": result[1] or 0,
+                "total_comments_collected": result[2] or 0,
+                "avg_posts_per_run": result[3] or 0,
+                "avg_comments_per_run": result[4] or 0,
+                "analysis_period_days": days_back,
             }
 
     def store_batch(self, batch_result: Dict) -> Dict:
         """
         Store a single subreddit batch with transaction safety and comprehensive error handling.
-        
+
         This method provides atomic storage for batched collections, ensuring data consistency
         and providing detailed storage statistics.
 
@@ -952,74 +1096,87 @@ class RedditDataStorage:
         Raises:
             StorageError: If storage operation fails after rollback
         """
-        subreddit = batch_result['subreddit']
-        posts = batch_result['posts']
-        comments = batch_result['comments']
-        collection_time_str = batch_result['collection_time']
-        
-        logger.info(f"Storing batch for r/{subreddit}: {len(posts)} posts, {len(comments)} comments")
-        
+        subreddit = batch_result["subreddit"]
+        posts = batch_result["posts"]
+        comments = batch_result["comments"]
+        collection_time_str = batch_result["collection_time"]
+
+        logger.info(
+            f"Storing batch for r/{subreddit}: {len(posts)} posts, {len(comments)} comments"
+        )
+
         storage_start_time = datetime.now()
 
         with self._connect() as conn:
             cursor = conn.cursor()
-            
+
             try:
                 # Begin explicit transaction for atomic storage
-                cursor.execute('BEGIN TRANSACTION')
-                
+                cursor.execute("BEGIN TRANSACTION")
+
                 # Store posts with transaction cursor
                 posts_stored = 0
                 if posts:
                     posts_stored = self._store_posts_transaction(cursor, posts)
-                
+
                 # Store comments with transaction cursor
                 comments_stored = 0
                 if comments:
                     comments_stored = self._store_comments_transaction(cursor, comments)
-                
+
                 # Update batch metadata
                 collection_time = datetime.fromisoformat(collection_time_str)
                 storage_time = datetime.now()
                 processing_time = (storage_time - storage_start_time).total_seconds()
-                
-                self._update_batch_metadata(cursor, subreddit, collection_time, 
-                                          posts_stored, comments_stored, processing_time)
-                
+
+                self._update_batch_metadata(
+                    cursor,
+                    subreddit,
+                    collection_time,
+                    posts_stored,
+                    comments_stored,
+                    processing_time,
+                )
+
                 # Commit transaction
-                cursor.execute('COMMIT')
-                
-                total_storage_time = (datetime.now() - storage_start_time).total_seconds()
-                
-                logger.info(f"✅ Batch stored successfully for r/{subreddit} "
-                           f"(posts: {posts_stored}, comments: {comments_stored}, "
-                           f"time: {total_storage_time:.2f}s)")
-                
+                cursor.execute("COMMIT")
+
+                total_storage_time = (
+                    datetime.now() - storage_start_time
+                ).total_seconds()
+
+                logger.info(
+                    f"✅ Batch stored successfully for r/{subreddit} "
+                    f"(posts: {posts_stored}, comments: {comments_stored}, "
+                    f"time: {total_storage_time:.2f}s)"
+                )
+
                 return {
-                    'success': True,
-                    'subreddit': subreddit,
-                    'posts_stored': posts_stored,
-                    'comments_stored': comments_stored,
-                    'collection_time': collection_time_str,
-                    'storage_time': storage_time.isoformat(),
-                    'processing_time_seconds': total_storage_time,
-                    'transaction_id': f"{subreddit}_{collection_time.strftime('%Y%m%d_%H%M%S')}"
+                    "success": True,
+                    "subreddit": subreddit,
+                    "posts_stored": posts_stored,
+                    "comments_stored": comments_stored,
+                    "collection_time": collection_time_str,
+                    "storage_time": storage_time.isoformat(),
+                    "processing_time_seconds": total_storage_time,
+                    "transaction_id": f"{subreddit}_{collection_time.strftime('%Y%m%d_%H%M%S')}",
                 }
-                
+
             except Exception as e:
                 # Rollback transaction on any error
-                cursor.execute('ROLLBACK')
+                cursor.execute("ROLLBACK")
                 error_msg = f"Batch storage failed for r/{subreddit}: {e}"
                 logger.error(error_msg)
-                
+
                 # Create custom StorageError for better error handling
                 from .exceptions import StorageError
+
                 raise StorageError(error_msg) from e
 
     def _store_posts_transaction(self, cursor, posts: List[RedditPost]) -> int:
         """
         Store posts within an existing transaction.
-        
+
         Args:
             cursor: Database cursor within active transaction
             posts: List of RedditPost objects to store
@@ -1033,31 +1190,42 @@ class RedditDataStorage:
         stored_count = 0
         for post in posts:
             try:
-                cursor.execute('''
+                cursor.execute(
+                    """
                     INSERT OR REPLACE INTO posts
                     (id, title, content, upvotes, timestamp, subreddit, author,
                      author_karma, url, num_comments, subreddit_parent_id, content_type)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    post.id, post.title, post.content, post.upvotes,
-                    post.timestamp, post.subreddit, post.author,
-                    post.author_karma, post.url, post.num_comments,
-                    post.subreddit_parent_id or subreddit_parent_id_for(post.subreddit),
-                    post.content_type
-                ))
+                """,
+                    (
+                        post.id,
+                        post.title,
+                        post.content,
+                        post.upvotes,
+                        post.timestamp,
+                        post.subreddit,
+                        post.author,
+                        post.author_karma,
+                        post.url,
+                        post.num_comments,
+                        post.subreddit_parent_id
+                        or subreddit_parent_id_for(post.subreddit),
+                        post.content_type,
+                    ),
+                )
                 stored_count += 1
             except Exception as e:
                 logger.error(f"Error storing post {post.id} in transaction: {e}")
                 # Don't raise here - let transaction-level error handling manage it
-                
+
         return stored_count
 
     def _store_comments_transaction(self, cursor, comments: List[RedditComment]) -> int:
         """
         Store comments within an existing transaction.
-        
+
         Args:
-            cursor: Database cursor within active transaction  
+            cursor: Database cursor within active transaction
             comments: List of RedditComment objects to store
 
         Returns:
@@ -1069,30 +1237,47 @@ class RedditDataStorage:
         stored_count = 0
         for comment in comments:
             try:
-                cursor.execute('''
+                cursor.execute(
+                    """
                     INSERT OR REPLACE INTO comments
                     (id, parent_id, content, upvotes, timestamp, subreddit,
                      author, author_karma, post_id, subreddit_parent_id, content_type)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    comment.id, comment.parent_id, comment.content, comment.upvotes,
-                    comment.timestamp, comment.subreddit, comment.author,
-                    comment.author_karma, comment.post_id,
-                    comment.subreddit_parent_id or subreddit_parent_id_for(comment.subreddit),
-                    comment.content_type
-                ))
+                """,
+                    (
+                        comment.id,
+                        comment.parent_id,
+                        comment.content,
+                        comment.upvotes,
+                        comment.timestamp,
+                        comment.subreddit,
+                        comment.author,
+                        comment.author_karma,
+                        comment.post_id,
+                        comment.subreddit_parent_id
+                        or subreddit_parent_id_for(comment.subreddit),
+                        comment.content_type,
+                    ),
+                )
                 stored_count += 1
             except Exception as e:
                 logger.error(f"Error storing comment {comment.id} in transaction: {e}")
                 # Don't raise here - let transaction-level error handling manage it
-                
+
         return stored_count
 
-    def _update_batch_metadata(self, cursor, subreddit: str, collection_time: datetime, 
-                             posts_stored: int, comments_stored: int, processing_time: float):
+    def _update_batch_metadata(
+        self,
+        cursor,
+        subreddit: str,
+        collection_time: datetime,
+        posts_stored: int,
+        comments_stored: int,
+        processing_time: float,
+    ):
         """
         Update batch collection metadata within transaction.
-        
+
         Args:
             cursor: Database cursor within active transaction
             subreddit: Subreddit name
@@ -1102,7 +1287,8 @@ class RedditDataStorage:
             processing_time: Storage processing time in seconds
         """
         # Create batch_collections table if it doesn't exist
-        cursor.execute('''
+        cursor.execute(
+            """
             CREATE TABLE IF NOT EXISTS batch_collections (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 subreddit TEXT NOT NULL,
@@ -1115,31 +1301,47 @@ class RedditDataStorage:
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(subreddit, collection_timestamp)
             )
-        ''')
-        
+        """
+        )
+
         # Create index for efficient queries
-        cursor.execute('''
+        cursor.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_batch_collections_subreddit 
             ON batch_collections(subreddit)
-        ''')
-        cursor.execute('''
+        """
+        )
+        cursor.execute(
+            """
             CREATE INDEX IF NOT EXISTS idx_batch_collections_timestamp 
             ON batch_collections(collection_timestamp)
-        ''')
-        
+        """
+        )
+
         # Insert batch metadata
-        cursor.execute('''
+        cursor.execute(
+            """
             INSERT OR REPLACE INTO batch_collections 
             (subreddit, collection_timestamp, posts_collected, comments_collected, 
              processing_time_seconds, batch_status)
             VALUES (?, ?, ?, ?, ?, ?)
-        ''', (subreddit, collection_time, posts_stored, comments_stored, 
-              processing_time, 'completed'))
+        """,
+            (
+                subreddit,
+                collection_time,
+                posts_stored,
+                comments_stored,
+                processing_time,
+                "completed",
+            ),
+        )
 
-    def get_collection_resume_state(self, subreddit_list: List[str], hours_back: int = 24) -> Dict:
+    def get_collection_resume_state(
+        self, subreddit_list: List[str], hours_back: int = 24
+    ) -> Dict:
         """
         Check which subreddits have been recently collected for resume functionality.
-        
+
         This method helps implement resume capability by identifying which subreddits
         were successfully collected recently, allowing interrupted collections to continue
         from where they left off.
@@ -1147,46 +1349,52 @@ class RedditDataStorage:
         Args:
             subreddit_list: List of subreddits to check completion status for
             hours_back: How many hours back to consider as "recent" (default 24)
-            
+
         Returns:
             Dictionary with completed and pending subreddits information
         """
         if not subreddit_list:
             return {
-                'completed_subreddits': [],
-                'pending_subreddits': [],
-                'last_collection_times': {},
-                'resume_available': False
+                "completed_subreddits": [],
+                "pending_subreddits": [],
+                "last_collection_times": {},
+                "resume_available": False,
             }
 
         with self._connect() as conn:
             cursor = conn.cursor()
-            
+
             # Check for recent batch collections
             cutoff_time = datetime.now() - timedelta(hours=hours_back)
-            
+
             # Get last successful collection time for each subreddit
-            placeholders = ','.join('?' for _ in subreddit_list)
-            cursor.execute(f'''
+            placeholders = ",".join("?" for _ in subreddit_list)
+            cursor.execute(
+                f"""
                 SELECT subreddit, MAX(collection_timestamp) as last_collection
                 FROM batch_collections 
                 WHERE subreddit IN ({placeholders}) 
                   AND batch_status = 'completed'
                   AND collection_timestamp > ?
                 GROUP BY subreddit
-            ''', subreddit_list + [cutoff_time])
-            
+            """,
+                subreddit_list + [cutoff_time],
+            )
+
             completed_recently = {row[0]: row[1] for row in cursor.fetchall()}
-            
+
             # Determine pending subreddits
             completed_subreddits = list(completed_recently.keys())
-            pending_subreddits = [s for s in subreddit_list if s not in completed_recently]
-            
+            pending_subreddits = [
+                s for s in subreddit_list if s not in completed_recently
+            ]
+
             # Get detailed stats for completed subreddits
             completion_stats = {}
             if completed_subreddits:
-                placeholders = ','.join('?' for _ in completed_subreddits)
-                cursor.execute(f'''
+                placeholders = ",".join("?" for _ in completed_subreddits)
+                cursor.execute(
+                    f"""
                     SELECT subreddit, posts_collected, comments_collected, 
                            collection_timestamp, processing_time_seconds
                     FROM batch_collections 
@@ -1194,135 +1402,157 @@ class RedditDataStorage:
                       AND batch_status = 'completed'
                       AND collection_timestamp > ?
                     ORDER BY collection_timestamp DESC
-                ''', completed_subreddits + [cutoff_time])
-                
+                """,
+                    completed_subreddits + [cutoff_time],
+                )
+
                 for row in cursor.fetchall():
                     subreddit = row[0]
                     if subreddit not in completion_stats:  # Keep most recent
                         completion_stats[subreddit] = {
-                            'posts_collected': row[1],
-                            'comments_collected': row[2],
-                            'collection_timestamp': row[3],
-                            'processing_time_seconds': row[4]
+                            "posts_collected": row[1],
+                            "comments_collected": row[2],
+                            "collection_timestamp": row[3],
+                            "processing_time_seconds": row[4],
                         }
 
-            logger.info(f"Resume state: {len(completed_subreddits)} completed, "
-                       f"{len(pending_subreddits)} pending from last {hours_back}h")
+            logger.info(
+                f"Resume state: {len(completed_subreddits)} completed, "
+                f"{len(pending_subreddits)} pending from last {hours_back}h"
+            )
 
             return {
-                'completed_subreddits': completed_subreddits,
-                'pending_subreddits': pending_subreddits,
-                'last_collection_times': completed_recently,
-                'completion_stats': completion_stats,
-                'resume_available': len(pending_subreddits) > 0,
-                'total_subreddits': len(subreddit_list),
-                'completion_rate': round(len(completed_subreddits) / len(subreddit_list) * 100, 2) if subreddit_list else 0,
-                'hours_back': hours_back
+                "completed_subreddits": completed_subreddits,
+                "pending_subreddits": pending_subreddits,
+                "last_collection_times": completed_recently,
+                "completion_stats": completion_stats,
+                "resume_available": len(pending_subreddits) > 0,
+                "total_subreddits": len(subreddit_list),
+                "completion_rate": (
+                    round(len(completed_subreddits) / len(subreddit_list) * 100, 2)
+                    if subreddit_list
+                    else 0
+                ),
+                "hours_back": hours_back,
             }
 
-    def get_batch_collection_history(self, subreddit: str = None, limit: int = 10) -> List[Dict]:
+    def get_batch_collection_history(
+        self, subreddit: str = None, limit: int = 10
+    ) -> List[Dict]:
         """
         Get recent batch collection history for monitoring and debugging.
-        
+
         Args:
             subreddit: Filter by specific subreddit (None for all)
             limit: Maximum number of records to return
-            
+
         Returns:
             List of batch collection records with details
         """
         with self._connect() as conn:
             cursor = conn.cursor()
-            
-            query = '''
+
+            query = """
                 SELECT subreddit, collection_timestamp, posts_collected, 
                        comments_collected, processing_time_seconds, batch_status,
                        storage_timestamp
                 FROM batch_collections
-            '''
+            """
             params = []
-            
+
             if subreddit:
-                query += ' WHERE subreddit = ?'
+                query += " WHERE subreddit = ?"
                 params.append(subreddit)
-            
-            query += ' ORDER BY collection_timestamp DESC LIMIT ?'
+
+            query += " ORDER BY collection_timestamp DESC LIMIT ?"
             params.append(limit)
-            
+
             cursor.execute(query, params)
-            
+
             history = []
             for row in cursor.fetchall():
-                history.append({
-                    'subreddit': row[0],
-                    'collection_timestamp': row[1],
-                    'posts_collected': row[2],
-                    'comments_collected': row[3],
-                    'processing_time_seconds': row[4],
-                    'batch_status': row[5],
-                    'storage_timestamp': row[6]
-                })
-            
+                history.append(
+                    {
+                        "subreddit": row[0],
+                        "collection_timestamp": row[1],
+                        "posts_collected": row[2],
+                        "comments_collected": row[3],
+                        "processing_time_seconds": row[4],
+                        "batch_status": row[5],
+                        "storage_timestamp": row[6],
+                    }
+                )
+
             return history
 
     def get_failed_subreddits(self, hours_back: int = 24) -> List[Dict]:
         """
         Get list of subreddits that failed in recent collection attempts.
-        
+
         Args:
             hours_back: How many hours back to check for failures
-            
+
         Returns:
             List of failed subreddit information for retry logic
         """
         with self._connect() as conn:
             cursor = conn.cursor()
-            
+
             cutoff_time = datetime.now() - timedelta(hours=hours_back)
-            
-            cursor.execute('''
+
+            cursor.execute(
+                """
                 SELECT subreddit, collection_timestamp, batch_status,
                        posts_collected, comments_collected
                 FROM batch_collections
                 WHERE batch_status != 'completed' 
                   AND collection_timestamp > ?
                 ORDER BY collection_timestamp DESC
-            ''', (cutoff_time,))
-            
+            """,
+                (cutoff_time,),
+            )
+
             failed_subreddits = []
             for row in cursor.fetchall():
-                failed_subreddits.append({
-                    'subreddit': row[0],
-                    'collection_timestamp': row[1],
-                    'batch_status': row[2],
-                    'posts_collected': row[3],
-                    'comments_collected': row[4]
-                })
-            
+                failed_subreddits.append(
+                    {
+                        "subreddit": row[0],
+                        "collection_timestamp": row[1],
+                        "batch_status": row[2],
+                        "posts_collected": row[3],
+                        "comments_collected": row[4],
+                    }
+                )
+
             return failed_subreddits
 
     def cleanup_batch_metadata(self, days_to_keep: int = 30) -> int:
         """
         Clean up old batch collection metadata.
-        
+
         Args:
             days_to_keep: Number of days of metadata to retain
-            
+
         Returns:
             Number of records cleaned up
         """
         cutoff_date = datetime.now() - timedelta(days=days_to_keep)
-        
+
         with self._connect() as conn:
             cursor = conn.cursor()
-            
-            cursor.execute('''
+
+            cursor.execute(
+                """
                 DELETE FROM batch_collections 
                 WHERE collection_timestamp < ?
-            ''', (cutoff_date,))
-            
+            """,
+                (cutoff_date,),
+            )
+
             deleted_count = cursor.rowcount
             conn.commit()
-            
-            logger.info(f"Cleaned up {deleted_count} batch metadata records older than {days_to_keep} days")
+
+            logger.info(
+                f"Cleaned up {deleted_count} batch metadata records older than {days_to_keep} days"
+            )
             return deleted_count

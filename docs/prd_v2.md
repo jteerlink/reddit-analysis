@@ -91,9 +91,9 @@ Aggregate daily sentiment scores and identify trends.
 
 ---
 
-### 4.5 Streamlit Dashboard
+### 4.5 Next.js Dashboard
 
-An on-demand local dashboard (`streamlit run app.py`) with five tabs:
+The local Next.js dashboard provides the same analysis surfaces through the FastAPI backend.
 
 **Overview** — Key metrics (posts collected, current sentiment ratio, top trending topics, last collection timestamp)
 

@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
@@ -23,6 +25,10 @@ from src.db.connection import execute, is_postgres_connection, paramstyle
 from src.reddit_api.models import DEFAULT_SUBREDDIT_CATEGORIES
 
 logger = logging.getLogger(__name__)
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SEMANTIC_MODEL_NAME = "all-MiniLM-L6-v2"
+SEMANTIC_MODEL_DIR_ENV = "REDDIT_ANALYZER_MODEL_DIR"
 
 
 class AnalysisQueryError(RuntimeError):
@@ -45,7 +51,8 @@ def _row_dict(row: Any) -> dict:
 def _provenance(
     state: str = "ready",
     label: str = "real_data",
-    source_table: Optional[str] = None, source_ids: Optional[list[str]] = None,
+    source_table: Optional[str] = None,
+    source_ids: Optional[list[str]] = None,
     **extra,
 ) -> dict:
     return {
@@ -70,6 +77,35 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / denom)
 
 
+def _semantic_model_dir() -> Path:
+    configured = os.environ.get(SEMANTIC_MODEL_DIR_ENV)
+    path = Path(configured) if configured else PROJECT_ROOT / "models"
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+def _semantic_artifact_paths() -> tuple[Path, Path]:
+    model_dir = _semantic_model_dir()
+    return model_dir / "embeddings_index.json", model_dir / "embeddings_cache.npy"
+
+
+@lru_cache(maxsize=1)
+def _semantic_embedding_model():
+    from sentence_transformers import SentenceTransformer
+
+    return SentenceTransformer(SEMANTIC_MODEL_NAME)
+
+
+@lru_cache(maxsize=1)
+def _semantic_artifacts() -> tuple[dict[str, int], np.ndarray]:
+    index_path, cache_path = _semantic_artifact_paths()
+    return json.loads(index_path.read_text()), np.load(cache_path, mmap_mode="r")
+
+
+def _reset_semantic_caches() -> None:
+    _semantic_embedding_model.cache_clear()
+    _semantic_artifacts.cache_clear()
+
+
 def _sql_text(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
@@ -92,7 +128,9 @@ def _column_exists(conn: Any, table_name: str, column_name: str) -> bool:
         return row is not None
 
     rows = execute(conn, f"PRAGMA table_info({table_name})").fetchall()
-    return any((row["name"] if hasattr(row, "keys") else row[1]) == column_name for row in rows)
+    return any(
+        (row["name"] if hasattr(row, "keys") else row[1]) == column_name for row in rows
+    )
 
 
 def activity(conn, limit: int = 20) -> list[dict]:
@@ -149,7 +187,11 @@ def activity(conn, limit: int = 20) -> list[dict]:
             ]
         for row in rows:
             status = row["status"]
-            severity = "success" if status == "succeeded" else ("error" if status == "failed" else "info")
+            severity = (
+                "success"
+                if status == "succeeded"
+                else ("error" if status == "failed" else "info")
+            )
             state = "stale_artifact" if status == "stale" else "ready"
             events.append(
                 {
@@ -157,7 +199,8 @@ def activity(conn, limit: int = 20) -> list[dict]:
                     "type": row["kind"],
                     "severity": severity,
                     "title": f"{row['kind'].replace('_', ' ').title()} {status}",
-                    "detail": row["error_message"] or f"Artifact {row['artifact_id'][:8]} is {status}",
+                    "detail": row["error_message"]
+                    or f"Artifact {row['artifact_id'][:8]} is {status}",
                     "source_ids": [row["artifact_id"]],
                     "state": state,
                     "provenance": _provenance(
@@ -182,7 +225,9 @@ def activity(conn, limit: int = 20) -> list[dict]:
                 "detail": str(exc),
                 "source_ids": [],
                 "state": "error",
-                "provenance": _provenance("error", "missing_config", "analysis_artifacts", detail=str(exc)),
+                "provenance": _provenance(
+                    "error", "missing_config", "analysis_artifacts", detail=str(exc)
+                ),
             }
         ]
 
@@ -198,14 +243,29 @@ def _optional_table_event(
     if missing_analysis_tables(conn, [table_name]):
         return None
     try:
-        count_row = execute(conn, f"SELECT COUNT(*) AS count FROM {table_name}").fetchone()
-        count = int((_row_dict(count_row).get("count") if hasattr(count_row, "keys") else count_row[0]) or 0)
+        count_row = execute(
+            conn, f"SELECT COUNT(*) AS count FROM {table_name}"
+        ).fetchone()
+        count = int(
+            (
+                _row_dict(count_row).get("count")
+                if hasattr(count_row, "keys")
+                else count_row[0]
+            )
+            or 0
+        )
         if count == 0:
             return None
         timestamp = ""
         if timestamp_column:
-            latest = execute(conn, f"SELECT MAX({timestamp_column}) AS latest FROM {table_name}").fetchone()
-            timestamp = (_row_dict(latest).get("latest") if hasattr(latest, "keys") else latest[0]) or ""
+            latest = execute(
+                conn, f"SELECT MAX({timestamp_column}) AS latest FROM {table_name}"
+            ).fetchone()
+            timestamp = (
+                _row_dict(latest).get("latest")
+                if hasattr(latest, "keys")
+                else latest[0]
+            ) or ""
         return {
             "timestamp": str(timestamp),
             "type": event_type,
@@ -214,10 +274,14 @@ def _optional_table_event(
             "detail": detail_template.format(count=count),
             "source_ids": [table_name],
             "state": "ready",
-            "provenance": _provenance("ready", "real_data", table_name, producer_job="operational_activity"),
+            "provenance": _provenance(
+                "ready", "real_data", table_name, producer_job="operational_activity"
+            ),
         }
     except Exception as exc:
-        logger.exception("analysis_operational_activity_failed", extra={"table": table_name})
+        logger.exception(
+            "analysis_operational_activity_failed", extra={"table": table_name}
+        )
         return {
             "timestamp": "",
             "type": event_type,
@@ -226,18 +290,56 @@ def _optional_table_event(
             "detail": str(exc),
             "source_ids": [table_name],
             "state": "error",
-            "provenance": _provenance("error", "missing_config", table_name, detail=str(exc)),
+            "provenance": _provenance(
+                "error", "missing_config", table_name, detail=str(exc)
+            ),
         }
 
 
 def _operational_activity(conn: Any) -> list[dict]:
     candidates = [
-        ("posts", "collection", "Collection data indexed", "{count} posts are available.", "timestamp"),
-        ("comments", "collection", "Comment data indexed", "{count} comments are available.", "timestamp"),
-        ("sentiment_predictions", "ml_run", "Sentiment predictions available", "{count} model predictions are available.", "predicted_at"),
-        ("sentiment_forecast", "forecast", "Sentiment forecast available", "{count} forecast rows are available.", "date"),
-        ("change_points", "drift_readiness", "Change-point signals available", "{count} drift/readiness signals are available.", "date"),
-        ("narrative_events", "narrative_event", "Narrative events available", "{count} persisted narrative events are available.", "peak_date"),
+        (
+            "posts",
+            "collection",
+            "Collection data indexed",
+            "{count} posts are available.",
+            "timestamp",
+        ),
+        (
+            "comments",
+            "collection",
+            "Comment data indexed",
+            "{count} comments are available.",
+            "timestamp",
+        ),
+        (
+            "sentiment_predictions",
+            "ml_run",
+            "Sentiment predictions available",
+            "{count} model predictions are available.",
+            "predicted_at",
+        ),
+        (
+            "sentiment_forecast",
+            "forecast",
+            "Sentiment forecast available",
+            "{count} forecast rows are available.",
+            "date",
+        ),
+        (
+            "change_points",
+            "drift_readiness",
+            "Change-point signals available",
+            "{count} drift/readiness signals are available.",
+            "date",
+        ),
+        (
+            "narrative_events",
+            "narrative_event",
+            "Narrative events available",
+            "{count} persisted narrative events are available.",
+            "peak_date",
+        ),
     ]
     events = [
         event
@@ -247,7 +349,9 @@ def _operational_activity(conn: Any) -> list[dict]:
         )
         if event is not None
     ]
-    return sorted(events, key=lambda item: item.get("timestamp") or "", reverse=True)[:8]
+    return sorted(events, key=lambda item: item.get("timestamp") or "", reverse=True)[
+        :8
+    ]
 
 
 def freshness(conn) -> dict:
@@ -280,7 +384,11 @@ def narrative_events(conn, limit: int = 50) -> list[dict]:
         result = []
         for row in rows:
             delta = row["sentiment_delta"]
-            state = "peaking" if abs(delta or 0) >= 0.5 else ("accelerating" if (delta or 0) > 0 else "cooling")
+            state = (
+                "peaking"
+                if abs(delta or 0) >= 0.5
+                else ("accelerating" if (delta or 0) > 0 else "cooling")
+            )
             result.append(
                 {
                     "event_id": row["event_id"],
@@ -317,9 +425,15 @@ def embedding_map(conn, limit: int = 5000) -> list[dict]:
     try:
         has_categories = not missing_analysis_tables(conn, ["subreddit_categories"])
         has_topics = not missing_analysis_tables(conn, ["topics"])
-        topic_join = "LEFT JOIN topics t ON ta.topic_id = t.topic_id" if has_topics else ""
+        topic_join = (
+            "LEFT JOIN topics t ON ta.topic_id = t.topic_id" if has_topics else ""
+        )
         topic_keywords_expr = "t.keywords" if has_topics else "NULL"
-        topic_label_expr = "t.llm_label" if has_topics and _column_exists(conn, "topics", "llm_label") else "NULL"
+        topic_label_expr = (
+            "t.llm_label"
+            if has_topics and _column_exists(conn, "topics", "llm_label")
+            else "NULL"
+        )
         post_parent_col = (
             "subreddit_parent_id"
             if _column_exists(conn, "posts", "subreddit_parent_id")
@@ -332,14 +446,18 @@ def embedding_map(conn, limit: int = 5000) -> list[dict]:
         )
         if has_categories:
             category_cte = ""
-            category_join = "LEFT JOIN subreddit_categories sc ON sc.subreddit = src.subreddit"
+            category_join = (
+                "LEFT JOIN subreddit_categories sc ON sc.subreddit = src.subreddit"
+            )
         else:
             default_category_rows = ", ".join(
                 f"({_sql_text(subreddit)}, {_sql_text(parent_id)})"
                 for subreddit, parent_id, _display_name, _sort_order in DEFAULT_SUBREDDIT_CATEGORIES
             )
             category_cte = f"default_categories(subreddit, parent_id) AS (VALUES {default_category_rows}),"
-            category_join = "LEFT JOIN default_categories sc ON sc.subreddit = src.subreddit"
+            category_join = (
+                "LEFT JOIN default_categories sc ON sc.subreddit = src.subreddit"
+            )
         rows = execute(
             conn,
             f"""
@@ -446,7 +564,9 @@ def semantic_search(conn, query: str, limit: int = 50) -> list[dict]:
             LIMIT 10000
             """,
         ).fetchall()
-        vector_results = _semantic_vector_results(rows, query, limit)
+        vector_results, fallback_state, fallback_algorithm = _semantic_vector_results(
+            rows, query, limit
+        )
         if vector_results is not None:
             return vector_results
 
@@ -465,7 +585,7 @@ def semantic_search(conn, query: str, limit: int = 50) -> list[dict]:
             scored.append((score, row))
         scored.sort(key=lambda item: item[0], reverse=True)
         return [
-            _semantic_result(row, score, "missing_config", "lexical_overlap_fallback")
+            _semantic_result(row, score, fallback_state, fallback_algorithm)
             for score, row in scored[:limit]
         ]
     except Exception:
@@ -488,42 +608,68 @@ def semantic_search(conn, query: str, limit: int = 50) -> list[dict]:
                 """,
                 (f"%{query}%", limit),
             ).fetchall()
-            return [_semantic_result(row, 0.25, "error", "like_error_fallback") for row in rows]
+            return [
+                _semantic_result(row, 0.25, "error", "like_error_fallback")
+                for row in rows
+            ]
         except Exception:
             logger.exception("semantic_search_error_fallback_failed")
             return []
 
 
-def _semantic_vector_results(rows: list[Any], query: str, limit: int) -> Optional[list[dict]]:
-    index_path = Path("models/embeddings_index.json")
-    cache_path = Path("models/embeddings_cache.npy")
-    if not semantic_vector_backend_ready():
-        return None
+def _semantic_vector_results(
+    rows: list[Any], query: str, limit: int
+) -> tuple[Optional[list[dict]], str, str]:
+    index_path, cache_path = _semantic_artifact_paths()
+    if not index_path.exists() or not cache_path.exists():
+        logger.info("semantic_vector_missing_artifacts: %s %s", index_path, cache_path)
+        return None, "missing_config", "missing_artifact_lexical_fallback"
     try:
-        from sentence_transformers import SentenceTransformer
+        index, embeddings = _semantic_artifacts()
+    except Exception:
+        logger.exception("semantic_vector_artifact_load_failed")
+        return None, "error", "artifact_load_error_lexical_fallback"
 
-        index = json.loads(index_path.read_text())
-        embeddings = np.load(cache_path, mmap_mode="r")
-        query_vector = SentenceTransformer("all-MiniLM-L6-v2").encode([query], normalize_embeddings=True)[0]
+    try:
+        model = _semantic_embedding_model()
+    except ImportError as exc:
+        logger.warning("semantic_vector_dependency_unavailable: %s", exc)
+        return None, "missing_config", "dependency_unavailable_lexical_fallback"
+    except Exception:
+        logger.exception("semantic_vector_model_load_failed")
+        return None, "error", "model_load_error_lexical_fallback"
+
+    try:
+        query_vector = model.encode([query], normalize_embeddings=True)[0]
         scored = []
         for row in rows:
             key = row["embedding_key"] or row["id"]
             position = index.get(key)
             if position is None:
                 continue
-            score = _cosine(np.asarray(query_vector), np.asarray(embeddings[int(position)]))
+            score = _cosine(
+                np.asarray(query_vector), np.asarray(embeddings[int(position)])
+            )
             scored.append((score, row))
         if not scored:
-            return None
+            return None, "missing_config", "no_vector_matches_lexical_fallback"
         scored.sort(key=lambda item: item[0], reverse=True)
-        return [_semantic_result(row, max(0.0, score), "ready", "minilm_cosine") for score, row in scored[:limit]]
+        return (
+            [
+                _semantic_result(row, max(0.0, score), "ready", "minilm_cosine")
+                for score, row in scored[:limit]
+            ],
+            "ready",
+            "minilm_cosine",
+        )
     except Exception:
         logger.exception("semantic_vector_search_unavailable")
-        return None
+        return None, "error", "vector_error_lexical_fallback"
 
 
 def semantic_vector_backend_ready() -> bool:
-    if not Path("models/embeddings_index.json").exists() or not Path("models/embeddings_cache.npy").exists():
+    index_path, cache_path = _semantic_artifact_paths()
+    if not index_path.exists() or not cache_path.exists():
         return False
     try:
         from sentence_transformers import SentenceTransformer  # noqa: F401
@@ -545,7 +691,9 @@ def _semantic_result(row: Any, score: float, state: str, algorithm: str) -> dict
         "confidence": row["confidence"],
         "text_preview": (row["clean_text"] or "")[:240],
         "state": state,
-        "provenance": _provenance(state, label, "preprocessed", [row["id"]], algorithm=algorithm),
+        "provenance": _provenance(
+            state, label, "preprocessed", [row["id"]], algorithm=algorithm
+        ),
     }
 
 
@@ -561,7 +709,9 @@ def thread_analysis(conn, post_id: str) -> dict:
             return {
                 "post_id": post_id,
                 "state": "unpopulated",
-                "provenance": _provenance("unpopulated", "deterministic_fallback", "posts", [post_id]),
+                "provenance": _provenance(
+                    "unpopulated", "deterministic_fallback", "posts", [post_id]
+                ),
             }
         rows = execute(
             conn,
@@ -613,13 +763,24 @@ def thread_analysis(conn, post_id: str) -> dict:
             ),
         }
     except Exception:
-        return {"post_id": post_id, "state": "error", "provenance": _provenance("error", "missing_config", "comments")}
+        return {
+            "post_id": post_id,
+            "state": "error",
+            "provenance": _provenance("error", "missing_config", "comments"),
+        }
 
 
 def latest_brief(conn) -> Optional[dict]:
     try:
-        for kind, label in (("analyst_brief_llm", "llm_artifact"), ("analyst_brief", "deterministic_fallback")):
-            rows = [row for row in list_artifacts(conn, kind=kind, limit=25) if row.get("status") == "succeeded"]
+        for kind, label in (
+            ("analyst_brief_llm", "llm_artifact"),
+            ("analyst_brief", "deterministic_fallback"),
+        ):
+            rows = [
+                row
+                for row in list_artifacts(conn, kind=kind, limit=25)
+                if row.get("status") == "succeeded"
+            ]
             if rows:
                 return _brief_from_artifact(rows[0], label)
         return None
@@ -636,17 +797,30 @@ def briefs(conn, limit: int = 10) -> list[dict]:
             if row.get("status") == "succeeded"
         ]
         llm_rows = [row for row in rows if row.get("kind") == "analyst_brief_llm"]
-        deterministic_rows = [row for row in rows if row.get("kind") != "analyst_brief_llm"]
-        llm_rows.sort(key=lambda row: row.get("freshness_timestamp") or row.get("updated_at") or "", reverse=True)
+        deterministic_rows = [
+            row for row in rows if row.get("kind") != "analyst_brief_llm"
+        ]
+        llm_rows.sort(
+            key=lambda row: row.get("freshness_timestamp")
+            or row.get("updated_at")
+            or "",
+            reverse=True,
+        )
         deterministic_rows.sort(
-            key=lambda row: row.get("freshness_timestamp") or row.get("updated_at") or "",
+            key=lambda row: row.get("freshness_timestamp")
+            or row.get("updated_at")
+            or "",
             reverse=True,
         )
         rows = llm_rows + deterministic_rows
         return [
             _brief_from_artifact(
                 row,
-                "llm_artifact" if row.get("kind") == "analyst_brief_llm" else "deterministic_fallback",
+                (
+                    "llm_artifact"
+                    if row.get("kind") == "analyst_brief_llm"
+                    else "deterministic_fallback"
+                ),
             )
             for row in rows[:limit]
         ]

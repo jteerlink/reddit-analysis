@@ -4,8 +4,64 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.analysis.db import complete_artifact, enqueue_artifact, ensure_analysis_tables
 from src.analysis import queries
+from src.analysis.db import complete_artifact, enqueue_artifact, ensure_analysis_tables
+
+
+def _semantic_search_conn():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript(
+        """
+        CREATE TABLE preprocessed (
+            id TEXT PRIMARY KEY,
+            content_type TEXT,
+            clean_text TEXT,
+            embedding_key TEXT
+        );
+        CREATE TABLE sentiment_predictions (
+            id TEXT PRIMARY KEY,
+            label TEXT,
+            confidence REAL
+        );
+        CREATE TABLE posts (
+            id TEXT PRIMARY KEY,
+            subreddit TEXT,
+            timestamp TEXT
+        );
+        CREATE TABLE comments (
+            id TEXT PRIMARY KEY,
+            subreddit TEXT,
+            timestamp TEXT
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO preprocessed (id, content_type, clean_text, embedding_key) VALUES (?, ?, ?, ?)",
+        ("p1", "post", "alpha open source local model benchmark", "p1"),
+    )
+    conn.execute(
+        "INSERT INTO preprocessed (id, content_type, clean_text, embedding_key) VALUES (?, ?, ?, ?)",
+        ("p2", "post", "open thread about coffee", "p2"),
+    )
+    conn.execute(
+        "INSERT INTO sentiment_predictions (id, label, confidence) VALUES (?, ?, ?)",
+        ("p1", "positive", 0.8),
+    )
+    conn.execute(
+        "INSERT INTO sentiment_predictions (id, label, confidence) VALUES (?, ?, ?)",
+        ("p2", "neutral", 0.5),
+    )
+    conn.execute(
+        "INSERT INTO posts (id, subreddit, timestamp) VALUES (?, ?, ?)",
+        ("p1", "LocalLLaMA", "2026-05-01"),
+    )
+    conn.execute(
+        "INSERT INTO posts (id, subreddit, timestamp) VALUES (?, ?, ?)",
+        ("p2", "ChatGPT", "2026-05-01"),
+    )
+    conn.commit()
+    return conn
 
 
 def test_activity_reports_missing_schema_state():
@@ -41,9 +97,15 @@ def test_activity_includes_operational_events_when_artifacts_are_empty():
         CREATE TABLE change_points (subreddit TEXT, date TEXT, magnitude REAL);
         """
     )
-    conn.execute("INSERT INTO posts (id, timestamp) VALUES ('p1', '2026-05-01T00:00:00Z')")
-    conn.execute("INSERT INTO sentiment_predictions (id, predicted_at) VALUES ('p1', '2026-05-02T00:00:00Z')")
-    conn.execute("INSERT INTO sentiment_forecast (subreddit, date, yhat) VALUES ('ChatGPT', '2026-05-03', 0.2)")
+    conn.execute(
+        "INSERT INTO posts (id, timestamp) VALUES ('p1', '2026-05-01T00:00:00Z')"
+    )
+    conn.execute(
+        "INSERT INTO sentiment_predictions (id, predicted_at) VALUES ('p1', '2026-05-02T00:00:00Z')"
+    )
+    conn.execute(
+        "INSERT INTO sentiment_forecast (subreddit, date, yhat) VALUES ('ChatGPT', '2026-05-03', 0.2)"
+    )
     conn.commit()
 
     events = queries.activity(conn)
@@ -56,9 +118,13 @@ def test_freshness_tracks_latest_success_separately_from_latest_artifact():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     ensure_analysis_tables(conn)
-    succeeded = enqueue_artifact(conn, kind="brief", source_input_hash="success", payload={})
+    succeeded = enqueue_artifact(
+        conn, kind="brief", source_input_hash="success", payload={}
+    )
     complete_artifact(conn, succeeded["artifact_id"], {"ok": True})
-    failed = enqueue_artifact(conn, kind="brief", source_input_hash="failed", payload={})
+    failed = enqueue_artifact(
+        conn, kind="brief", source_input_hash="failed", payload={}
+    )
     conn.execute(
         "UPDATE analysis_artifacts SET status = 'failed', freshness_timestamp = '2099-01-01T00:00:00Z' WHERE artifact_id = ?",
         (failed["artifact_id"],),
@@ -76,7 +142,12 @@ def test_latest_brief_requires_succeeded_artifact():
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     ensure_analysis_tables(conn)
-    enqueue_artifact(conn, kind="analyst_brief", source_input_hash="queued", payload={"brief_id": "queued"})
+    enqueue_artifact(
+        conn,
+        kind="analyst_brief",
+        source_input_hash="queued",
+        payload={"brief_id": "queued"},
+    )
 
     assert queries.latest_brief(conn) is None
 
@@ -92,7 +163,11 @@ def test_latest_brief_prefers_llm_and_preserves_section_metadata():
         payload={"brief_id": "det", "headline": "Deterministic brief", "sections": []},
         provider="deterministic",
     )
-    complete_artifact(conn, deterministic["artifact_id"], {"brief_id": "det", "headline": "Deterministic brief", "sections": []})
+    complete_artifact(
+        conn,
+        deterministic["artifact_id"],
+        {"brief_id": "det", "headline": "Deterministic brief", "sections": []},
+    )
     llm = enqueue_artifact(
         conn,
         kind="analyst_brief_llm",
@@ -111,7 +186,13 @@ def test_latest_brief_prefers_llm_and_preserves_section_metadata():
                 {
                     "title": "Key Findings",
                     "body": "Body",
-                    "evidence": [{"anchor_type": "event_id", "anchor_id": "1", "label": "Known event"}],
+                    "evidence": [
+                        {
+                            "anchor_type": "event_id",
+                            "anchor_id": "1",
+                            "label": "Known event",
+                        }
+                    ],
                 }
             ],
         },
@@ -132,15 +213,27 @@ def test_latest_brief_skips_newer_queued_llm_artifact():
         conn,
         kind="analyst_brief_llm",
         source_input_hash="llm-success",
-        payload={"brief_id": "llm-success", "headline": "Succeeded LLM brief", "sections": []},
+        payload={
+            "brief_id": "llm-success",
+            "headline": "Succeeded LLM brief",
+            "sections": [],
+        },
         provider="ollama",
     )
-    complete_artifact(conn, succeeded["artifact_id"], {"brief_id": "llm-success", "headline": "Succeeded LLM brief", "sections": []})
+    complete_artifact(
+        conn,
+        succeeded["artifact_id"],
+        {"brief_id": "llm-success", "headline": "Succeeded LLM brief", "sections": []},
+    )
     queued = enqueue_artifact(
         conn,
         kind="analyst_brief_llm",
         source_input_hash="llm-queued",
-        payload={"brief_id": "llm-queued", "headline": "Queued LLM brief", "sections": []},
+        payload={
+            "brief_id": "llm-queued",
+            "headline": "Queued LLM brief",
+            "sections": [],
+        },
         provider="ollama",
     )
     conn.execute(
@@ -166,7 +259,11 @@ def test_briefs_returns_llm_and_deterministic_artifacts():
         payload={"brief_id": "det", "headline": "Deterministic brief", "sections": []},
         provider="deterministic",
     )
-    complete_artifact(conn, deterministic["artifact_id"], {"brief_id": "det", "headline": "Deterministic brief", "sections": []})
+    complete_artifact(
+        conn,
+        deterministic["artifact_id"],
+        {"brief_id": "det", "headline": "Deterministic brief", "sections": []},
+    )
     llm = enqueue_artifact(
         conn,
         kind="analyst_brief_llm",
@@ -174,12 +271,19 @@ def test_briefs_returns_llm_and_deterministic_artifacts():
         payload={"brief_id": "llm", "headline": "LLM brief", "sections": []},
         provider="ollama",
     )
-    complete_artifact(conn, llm["artifact_id"], {"brief_id": "llm", "headline": "LLM brief", "sections": []})
+    complete_artifact(
+        conn,
+        llm["artifact_id"],
+        {"brief_id": "llm", "headline": "LLM brief", "sections": []},
+    )
 
     result = queries.briefs(conn)
 
     assert {brief["brief_id"] for brief in result} == {"det", "llm"}
-    assert {brief["provenance"]["label"] for brief in result} == {"deterministic_fallback", "llm_artifact"}
+    assert {brief["provenance"]["label"] for brief in result} == {
+        "deterministic_fallback",
+        "llm_artifact",
+    }
 
 
 def test_briefs_prioritizes_succeeded_llm_over_newer_deterministic_artifact():
@@ -193,7 +297,11 @@ def test_briefs_prioritizes_succeeded_llm_over_newer_deterministic_artifact():
         payload={"brief_id": "llm", "headline": "LLM brief", "sections": []},
         provider="ollama",
     )
-    complete_artifact(conn, llm["artifact_id"], {"brief_id": "llm", "headline": "LLM brief", "sections": []})
+    complete_artifact(
+        conn,
+        llm["artifact_id"],
+        {"brief_id": "llm", "headline": "LLM brief", "sections": []},
+    )
     deterministic = enqueue_artifact(
         conn,
         kind="analyst_brief",
@@ -201,7 +309,11 @@ def test_briefs_prioritizes_succeeded_llm_over_newer_deterministic_artifact():
         payload={"brief_id": "det", "headline": "Deterministic brief", "sections": []},
         provider="deterministic",
     )
-    complete_artifact(conn, deterministic["artifact_id"], {"brief_id": "det", "headline": "Deterministic brief", "sections": []})
+    complete_artifact(
+        conn,
+        deterministic["artifact_id"],
+        {"brief_id": "det", "headline": "Deterministic brief", "sections": []},
+    )
     conn.execute(
         "UPDATE analysis_artifacts SET freshness_timestamp = '2099-01-01T00:00:00Z', updated_at = '2099-01-01T00:00:00Z' WHERE artifact_id = ?",
         (deterministic["artifact_id"],),
@@ -214,53 +326,19 @@ def test_briefs_prioritizes_succeeded_llm_over_newer_deterministic_artifact():
     assert result[0]["provenance"]["label"] == "llm_artifact"
 
 
-def test_semantic_search_uses_nonconstant_lexical_fallback_scores():
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.executescript(
-        """
-        CREATE TABLE preprocessed (
-            id TEXT PRIMARY KEY,
-            content_type TEXT,
-            clean_text TEXT,
-            embedding_key TEXT
-        );
-        CREATE TABLE sentiment_predictions (
-            id TEXT PRIMARY KEY,
-            label TEXT,
-            confidence REAL
-        );
-        CREATE TABLE posts (
-            id TEXT PRIMARY KEY,
-            subreddit TEXT,
-            timestamp TEXT
-        );
-        CREATE TABLE comments (
-            id TEXT PRIMARY KEY,
-            subreddit TEXT,
-            timestamp TEXT
-        );
-        """
-    )
-    conn.execute(
-        "INSERT INTO preprocessed (id, content_type, clean_text, embedding_key) VALUES (?, ?, ?, ?)",
-        ("p1", "post", "open source local model benchmark", "p1"),
-    )
-    conn.execute(
-        "INSERT INTO preprocessed (id, content_type, clean_text, embedding_key) VALUES (?, ?, ?, ?)",
-        ("p2", "post", "open thread about coffee", "p2"),
-    )
-    conn.execute("INSERT INTO sentiment_predictions (id, label, confidence) VALUES (?, ?, ?)", ("p1", "positive", 0.8))
-    conn.execute("INSERT INTO sentiment_predictions (id, label, confidence) VALUES (?, ?, ?)", ("p2", "neutral", 0.5))
-    conn.execute("INSERT INTO posts (id, subreddit, timestamp) VALUES (?, ?, ?)", ("p1", "LocalLLaMA", "2026-05-01"))
-    conn.execute("INSERT INTO posts (id, subreddit, timestamp) VALUES (?, ?, ?)", ("p2", "ChatGPT", "2026-05-01"))
-    conn.commit()
+def test_semantic_search_uses_nonconstant_lexical_fallback_scores(
+    tmp_path, monkeypatch
+):
+    conn = _semantic_search_conn()
+    monkeypatch.setenv(queries.SEMANTIC_MODEL_DIR_ENV, str(tmp_path / "missing-models"))
+    queries._reset_semantic_caches()
 
     results = queries.semantic_search(conn, "open model benchmark", limit=2)
 
     assert [row["id"] for row in results] == ["p1", "p2"]
     assert results[0]["score"] > results[1]["score"]
-    assert results[0]["provenance"]["algorithm"] == "lexical_overlap_fallback"
+    assert results[0]["state"] == "missing_config"
+    assert results[0]["provenance"]["algorithm"] == "missing_artifact_lexical_fallback"
 
 
 def test_semantic_search_uses_vector_cache_when_available(tmp_path, monkeypatch):
@@ -269,55 +347,22 @@ def test_semantic_search_uses_vector_cache_when_available(tmp_path, monkeypatch)
 
     import numpy as np
 
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    conn.executescript(
-        """
-        CREATE TABLE preprocessed (
-            id TEXT PRIMARY KEY,
-            content_type TEXT,
-            clean_text TEXT,
-            embedding_key TEXT
-        );
-        CREATE TABLE sentiment_predictions (
-            id TEXT PRIMARY KEY,
-            label TEXT,
-            confidence REAL
-        );
-        CREATE TABLE posts (
-            id TEXT PRIMARY KEY,
-            subreddit TEXT,
-            timestamp TEXT
-        );
-        CREATE TABLE comments (
-            id TEXT PRIMARY KEY,
-            subreddit TEXT,
-            timestamp TEXT
-        );
-        """
-    )
-    conn.execute(
-        "INSERT INTO preprocessed (id, content_type, clean_text, embedding_key) VALUES (?, ?, ?, ?)",
-        ("p1", "post", "alpha aligned result", "p1"),
-    )
-    conn.execute(
-        "INSERT INTO preprocessed (id, content_type, clean_text, embedding_key) VALUES (?, ?, ?, ?)",
-        ("p2", "post", "orthogonal result", "p2"),
-    )
-    conn.execute("INSERT INTO sentiment_predictions (id, label, confidence) VALUES (?, ?, ?)", ("p1", "positive", 0.8))
-    conn.execute("INSERT INTO sentiment_predictions (id, label, confidence) VALUES (?, ?, ?)", ("p2", "neutral", 0.5))
-    conn.execute("INSERT INTO posts (id, subreddit, timestamp) VALUES (?, ?, ?)", ("p1", "LocalLLaMA", "2026-05-01"))
-    conn.execute("INSERT INTO posts (id, subreddit, timestamp) VALUES (?, ?, ?)", ("p2", "ChatGPT", "2026-05-01"))
-    conn.commit()
+    conn = _semantic_search_conn()
 
     models_dir = tmp_path / "models"
     models_dir.mkdir()
     (models_dir / "embeddings_index.json").write_text('{"p1": 0, "p2": 1}')
-    np.save(models_dir / "embeddings_cache.npy", np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32))
+    np.save(
+        models_dir / "embeddings_cache.npy",
+        np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
+    )
+
+    constructed = []
 
     class FakeSentenceTransformer:
         def __init__(self, model_name):
             self.model_name = model_name
+            constructed.append(model_name)
 
         def encode(self, texts, normalize_embeddings=True):
             return np.array([[1.0, 0.0]], dtype=np.float32)
@@ -325,13 +370,52 @@ def test_semantic_search_uses_vector_cache_when_available(tmp_path, monkeypatch)
     module = types.ModuleType("sentence_transformers")
     module.SentenceTransformer = FakeSentenceTransformer
     monkeypatch.setitem(sys.modules, "sentence_transformers", module)
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(queries.SEMANTIC_MODEL_DIR_ENV, str(models_dir))
+    cwd = tmp_path / "other-cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    queries._reset_semantic_caches()
 
     results = queries.semantic_search(conn, "alpha", limit=2)
+    repeated = queries.semantic_search(conn, "alpha", limit=2)
 
     assert [row["id"] for row in results] == ["p1", "p2"]
     assert results[0]["score"] > results[1]["score"]
     assert results[0]["provenance"]["algorithm"] == "minilm_cosine"
+    assert repeated[0]["provenance"]["algorithm"] == "minilm_cosine"
+    assert constructed == [queries.SEMANTIC_MODEL_NAME]
+
+
+def test_semantic_search_falls_back_when_model_load_fails(tmp_path, monkeypatch):
+    import sys
+    import types
+
+    import numpy as np
+
+    conn = _semantic_search_conn()
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "embeddings_index.json").write_text('{"p1": 0, "p2": 1}')
+    np.save(
+        models_dir / "embeddings_cache.npy",
+        np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
+    )
+
+    class FailingSentenceTransformer:
+        def __init__(self, model_name):
+            raise RuntimeError("model unavailable")
+
+    module = types.ModuleType("sentence_transformers")
+    module.SentenceTransformer = FailingSentenceTransformer
+    monkeypatch.setitem(sys.modules, "sentence_transformers", module)
+    monkeypatch.setenv(queries.SEMANTIC_MODEL_DIR_ENV, str(models_dir))
+    queries._reset_semantic_caches()
+
+    results = queries.semantic_search(conn, "open model benchmark", limit=2)
+
+    assert [row["id"] for row in results] == ["p1", "p2"]
+    assert results[0]["state"] == "error"
+    assert results[0]["provenance"]["algorithm"] == "model_load_error_lexical_fallback"
 
 
 def test_embedding_map_stratifies_limited_points_by_parent_and_subreddit():
@@ -379,14 +463,39 @@ def test_embedding_map_stratifies_limited_points_by_parent_and_subreddit():
         ("claude-1", "ClaudeAI"),
     ]
     for idx, (post_id, subreddit) in enumerate(records):
-        conn.execute("INSERT INTO embedding_2d (post_id, x, y, cluster_id) VALUES (?, ?, ?, ?)", (post_id, idx, idx, 1))
-        conn.execute("INSERT INTO topic_assignments (id, topic_id) VALUES (?, ?)", (post_id, idx % 3))
-        conn.execute("INSERT INTO preprocessed (id, clean_text) VALUES (?, ?)", (post_id, f"{subreddit} sample"))
-        conn.execute("INSERT INTO sentiment_predictions (id, label) VALUES (?, ?)", (post_id, "neutral"))
-        conn.execute("INSERT INTO posts (id, subreddit, timestamp) VALUES (?, ?, ?)", (post_id, subreddit, "2026-05-01"))
+        conn.execute(
+            "INSERT INTO embedding_2d (post_id, x, y, cluster_id) VALUES (?, ?, ?, ?)",
+            (post_id, idx, idx, 1),
+        )
+        conn.execute(
+            "INSERT INTO topic_assignments (id, topic_id) VALUES (?, ?)",
+            (post_id, idx % 3),
+        )
+        conn.execute(
+            "INSERT INTO preprocessed (id, clean_text) VALUES (?, ?)",
+            (post_id, f"{subreddit} sample"),
+        )
+        conn.execute(
+            "INSERT INTO sentiment_predictions (id, label) VALUES (?, ?)",
+            (post_id, "neutral"),
+        )
+        conn.execute(
+            "INSERT INTO posts (id, subreddit, timestamp) VALUES (?, ?, ?)",
+            (post_id, subreddit, "2026-05-01"),
+        )
     conn.commit()
 
     results = queries.embedding_map(conn, limit=4)
 
-    assert [row["parent_id"] for row in results] == ["AI_INFRA", "ANTHROPIC", "OPENAI", "OPEN_SOURCE"]
-    assert {row["subreddit"] for row in results} == {"nvidia", "ClaudeAI", "OpenAI", "LocalLLaMA"}
+    assert [row["parent_id"] for row in results] == [
+        "AI_INFRA",
+        "ANTHROPIC",
+        "OPENAI",
+        "OPEN_SOURCE",
+    ]
+    assert {row["subreddit"] for row in results} == {
+        "nvidia",
+        "ClaudeAI",
+        "OpenAI",
+        "LocalLLaMA",
+    }

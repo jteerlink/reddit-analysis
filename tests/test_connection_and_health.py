@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 import os
 import sqlite3
@@ -49,8 +50,8 @@ def test_health_endpoint_reports_degraded_without_raising(monkeypatch, tmp_path)
     monkeypatch.delenv("DATABASE_URL_POOLED", raising=False)
     monkeypatch.setenv("REDDIT_DB_PATH", str(missing_db))
 
-    import src.db.connection as connection
     import src.api.app as api_app
+    import src.db.connection as connection
 
     importlib.reload(connection)
     api_app = importlib.reload(api_app)
@@ -68,9 +69,7 @@ def test_health_endpoint_reports_degraded_without_raising(monkeypatch, tmp_path)
 def test_pipeline_status_uses_shared_db_boundary(monkeypatch, tmp_path):
     db_path = tmp_path / "pipeline.db"
     with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "CREATE TABLE sentiment_predictions (id TEXT PRIMARY KEY)"
-        )
+        conn.execute("CREATE TABLE sentiment_predictions (id TEXT PRIMARY KEY)")
         conn.execute("INSERT INTO sentiment_predictions (id) VALUES ('a')")
         conn.execute("CREATE TABLE topics (topic_id INTEGER, coherence_score REAL)")
         conn.execute("CREATE TABLE sentiment_forecast (subreddit TEXT)")
@@ -79,8 +78,8 @@ def test_pipeline_status_uses_shared_db_boundary(monkeypatch, tmp_path):
     monkeypatch.delenv("DATABASE_URL_POOLED", raising=False)
     monkeypatch.setenv("REDDIT_DB_PATH", str(db_path))
 
-    import src.db.connection as connection
     import src.api.routes.pipeline as pipeline
+    import src.db.connection as connection
 
     importlib.reload(connection)
     pipeline = importlib.reload(pipeline)
@@ -88,12 +87,60 @@ def test_pipeline_status_uses_shared_db_boundary(monkeypatch, tmp_path):
     assert pipeline._db_count("SELECT COUNT(*) FROM sentiment_predictions") == 1
 
 
-def test_pipeline_run_all_includes_completed_steps():
-    import src.dashboard.pipeline as pipeline
+def test_pipeline_run_generator_rejects_overlapping_runs(monkeypatch):
+    import src.api.routes.pipeline as pipeline
 
-    completed_statuses = {step["num"]: True for step in pipeline.STEPS}
+    async def scenario():
+        lock = asyncio.Lock()
+        monkeypatch.setattr(pipeline, "_PIPELINE_RUN_LOCK", lock)
+        started = asyncio.Event()
+        finish = asyncio.Event()
 
-    assert pipeline._steps_to_run(0, completed_statuses) == [step["num"] for step in pipeline.STEPS]
+        async def fake_stream_step(step_num, queue):
+            await queue.put(f"data: started {step_num}\n\n")
+            started.set()
+            await finish.wait()
+            await queue.put(f"data: finished {step_num}\n\n")
+            return True
+
+        monkeypatch.setattr(pipeline, "_stream_step", fake_stream_step)
+
+        active_run = pipeline._run_generator([1])
+        first_event = await anext(active_run)
+        await asyncio.wait_for(started.wait(), timeout=1)
+
+        busy_events = [event async for event in pipeline._run_generator([2])]
+
+        finish.set()
+        remaining_events = [event async for event in active_run]
+
+        assert first_event == "data: started 1\n\n"
+        assert busy_events == [pipeline.BUSY_EVENT]
+        assert remaining_events == ["data: finished 1\n\n"]
+        assert lock.locked() is False
+
+    asyncio.run(scenario())
+
+
+def test_pipeline_run_generator_releases_lock_after_failed_step(monkeypatch):
+    import src.api.routes.pipeline as pipeline
+
+    async def scenario():
+        lock = asyncio.Lock()
+        monkeypatch.setattr(pipeline, "_PIPELINE_RUN_LOCK", lock)
+
+        async def fake_stream_step(step_num, queue):
+            await queue.put(f"data: failed {step_num}\n\n")
+            return False
+
+        monkeypatch.setattr(pipeline, "_stream_step", fake_stream_step)
+
+        events = [event async for event in pipeline._run_generator([1, 2])]
+
+        assert events == ["data: failed 1\n\n"]
+        assert lock.locked() is False
+
+    asyncio.run(scenario())
 
 
 def test_env_example_does_not_contain_real_neon_secret():

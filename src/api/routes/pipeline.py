@@ -5,7 +5,7 @@ import os
 import sys
 from asyncio import Queue
 from pathlib import Path
-from typing import AsyncGenerator, List
+from typing import AsyncGenerator, List, Optional
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -16,17 +16,67 @@ router = APIRouter()
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 DB_PATH = os.environ.get("REDDIT_DB_PATH", "historical_reddit_data.db")
+SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+BUSY_EVENT = (
+    "event: busy\ndata: Pipeline already running. Wait for current run to finish.\n\n"
+)
+_PIPELINE_RUN_LOCK = asyncio.Lock()
 
 STEPS = [
-    {"num": 1, "name": "Prerequisites", "description": "Install dependencies, verify DB, create directories", "prereq": None},
-    {"num": 2, "name": "Preprocessing", "description": "Clean text, generate sentence embeddings", "prereq": 1},
-    {"num": 3, "name": "Weak Labels", "description": "VADER scoring → data/weak_labels.csv (≥30k rows)", "prereq": 2},
-    {"num": 4, "name": "Train Sentiment Model", "description": "Fine-tune DistilBERT on weak labels (20–40 min on MPS)", "prereq": 3},
-    {"num": 5, "name": "Batch Inference", "description": "Run trained model on all preprocessed records", "prereq": 4},
-    {"num": 6, "name": "Topic Modeling", "description": "BERTopic discovery, coherence scoring, week-over-week tracking", "prereq": 5},
-    {"num": 7, "name": "Time Series & Forecast", "description": "Daily aggregation + 14-day Prophet forecast", "prereq": 6},
-    {"num": 8, "name": "Analysis Artifacts", "description": "Backfill persisted dashboard intelligence artifacts", "prereq": 7},
-    {"num": 9, "name": "LLM Enrichment", "description": "Ollama narrative summaries, thread analysis, analyst brief, topic labels", "prereq": 8},
+    {
+        "num": 1,
+        "name": "Prerequisites",
+        "description": "Install dependencies, verify DB, create directories",
+        "prereq": None,
+    },
+    {
+        "num": 2,
+        "name": "Preprocessing",
+        "description": "Clean text, generate sentence embeddings",
+        "prereq": 1,
+    },
+    {
+        "num": 3,
+        "name": "Weak Labels",
+        "description": "VADER scoring → data/weak_labels.csv (≥30k rows)",
+        "prereq": 2,
+    },
+    {
+        "num": 4,
+        "name": "Train Sentiment Model",
+        "description": "Fine-tune DistilBERT on weak labels (20–40 min on MPS)",
+        "prereq": 3,
+    },
+    {
+        "num": 5,
+        "name": "Batch Inference",
+        "description": "Run trained model on all preprocessed records",
+        "prereq": 4,
+    },
+    {
+        "num": 6,
+        "name": "Topic Modeling",
+        "description": "BERTopic discovery, coherence scoring, week-over-week tracking",
+        "prereq": 5,
+    },
+    {
+        "num": 7,
+        "name": "Time Series & Forecast",
+        "description": "Daily aggregation + 14-day Prophet forecast",
+        "prereq": 6,
+    },
+    {
+        "num": 8,
+        "name": "Analysis Artifacts",
+        "description": "Backfill persisted dashboard intelligence artifacts",
+        "prereq": 7,
+    },
+    {
+        "num": 9,
+        "name": "LLM Enrichment",
+        "description": "Ollama narrative summaries, thread analysis, analyst brief, topic labels",
+        "prereq": 8,
+    },
 ]
 
 
@@ -42,8 +92,15 @@ def _db_count(query: str) -> int:
 def _llm_topic_labels_done() -> bool:
     total = _db_count("SELECT COUNT(*) FROM topics WHERE topic_id != -1")
     if total <= 0:
-        return _db_count("SELECT COUNT(*) FROM analysis_artifacts WHERE status = 'succeeded' AND provider = 'ollama'") > 0
-    labeled = _db_count("SELECT COUNT(*) FROM topics WHERE topic_id != -1 AND llm_label IS NOT NULL AND llm_label != ''")
+        return (
+            _db_count(
+                "SELECT COUNT(*) FROM analysis_artifacts WHERE status = 'succeeded' AND provider = 'ollama'"
+            )
+            > 0
+        )
+    labeled = _db_count(
+        "SELECT COUNT(*) FROM topics WHERE topic_id != -1 AND llm_label IS NOT NULL AND llm_label != ''"
+    )
     return labeled >= total
 
 
@@ -69,11 +126,18 @@ def _step_done(step_num: int) -> bool:
     if step_num == 5:
         return _db_count("SELECT COUNT(*) FROM sentiment_predictions") > 0
     if step_num == 6:
-        return _db_count("SELECT COUNT(*) FROM topics WHERE coherence_score >= 0.50") >= 20
+        return (
+            _db_count("SELECT COUNT(*) FROM topics WHERE coherence_score >= 0.50") >= 20
+        )
     if step_num == 7:
         return _db_count("SELECT COUNT(*) FROM sentiment_forecast") > 0
     if step_num == 8:
-        return _db_count("SELECT COUNT(*) FROM analysis_artifacts WHERE status = 'succeeded'") > 0
+        return (
+            _db_count(
+                "SELECT COUNT(*) FROM analysis_artifacts WHERE status = 'succeeded'"
+            )
+            > 0
+        )
     if step_num == 9:
         return _llm_topic_labels_done()
     return False
@@ -81,7 +145,9 @@ def _step_done(step_num: int) -> bool:
 
 def _step_command(step_num: int) -> List[str]:
     py = sys.executable
-    abs_db = str(Path(DB_PATH) if Path(DB_PATH).is_absolute() else PROJECT_ROOT / DB_PATH)
+    abs_db = str(
+        Path(DB_PATH) if Path(DB_PATH).is_absolute() else PROJECT_ROOT / DB_PATH
+    )
 
     if step_num == 1:
         return ["uv", "pip", "install", "-e", ".[ml,production]", "-q"]
@@ -96,9 +162,19 @@ def _step_command(step_num: int) -> List[str]:
         )
         return [py, "-c", code]
     if step_num == 3:
-        return [py, "scripts/generate_weak_labels.py", "--db", abs_db,
-                "--output", "data/weak_labels.csv", "--threshold", "0.5",
-                "--include-neutral", "--neutral-threshold", "0.1"]
+        return [
+            py,
+            "scripts/generate_weak_labels.py",
+            "--db",
+            abs_db,
+            "--output",
+            "data/weak_labels.csv",
+            "--threshold",
+            "0.5",
+            "--include-neutral",
+            "--neutral-threshold",
+            "0.1",
+        ]
     if step_num == 4:
         code = (
             "import sys; sys.path.insert(0, '.');"
@@ -110,15 +186,44 @@ def _step_command(step_num: int) -> List[str]:
         )
         return [py, "-c", code]
     if step_num == 5:
-        return [py, "scripts/batch_inference.py", "--db", abs_db,
-                "--model-dir", "models/sentiment_v1", "--batch-size", "1000"]
+        return [
+            py,
+            "scripts/batch_inference.py",
+            "--db",
+            abs_db,
+            "--model-dir",
+            "models/sentiment_v1",
+            "--batch-size",
+            "1000",
+        ]
     if step_num == 6:
-        return [py, "scripts/train_topic_model.py", "--db", abs_db,
-                "--cache-dir", "models/", "--days", "90",
-                "--min-cluster-size", "30", "--min-topic-size", "30", "--nr-topics", "auto"]
+        return [
+            py,
+            "scripts/train_topic_model.py",
+            "--db",
+            abs_db,
+            "--cache-dir",
+            "models/",
+            "--days",
+            "90",
+            "--min-cluster-size",
+            "30",
+            "--min-topic-size",
+            "30",
+            "--nr-topics",
+            "auto",
+        ]
     if step_num == 7:
-        return [py, "scripts/run_timeseries.py", "--db", abs_db,
-                "--days", "90", "--forecast-days", "14"]
+        return [
+            py,
+            "scripts/run_timeseries.py",
+            "--db",
+            abs_db,
+            "--days",
+            "90",
+            "--forecast-days",
+            "14",
+        ]
     if step_num == 8:
         return [py, "scripts/run_analysis_jobs.py", "--db", abs_db]
     if step_num == 9:
@@ -146,10 +251,22 @@ def pipeline_status():
     return list(statuses.values())
 
 
+async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
+    if proc.returncode is not None:
+        return
+    proc.terminate()
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+
+
 async def _stream_step(step_num: int, queue: Queue) -> bool:
     step = STEPS[step_num - 1]
     await queue.put(f"data: === Step {step_num}: {step['name']} ===\n\n")
     cmd = _step_command(step_num)
+    proc: Optional[asyncio.subprocess.Process] = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -169,35 +286,66 @@ async def _stream_step(step_num: int, queue: Queue) -> bool:
     except FileNotFoundError as exc:
         await queue.put(f"data: [ERROR] {exc}\n\n")
         return False
+    except asyncio.CancelledError:
+        if proc is not None:
+            await _terminate_process(proc)
+        raise
 
 
 async def _run_generator(steps: List[int]) -> AsyncGenerator[str, None]:
-    queue: Queue = Queue()
+    if _PIPELINE_RUN_LOCK.locked():
+        yield BUSY_EVENT
+        return
+
+    await _PIPELINE_RUN_LOCK.acquire()
+    queue: Queue = Queue(maxsize=100)
 
     async def _worker():
-        for step_num in steps:
-            ok = await _stream_step(step_num, queue)
-            if not ok:
-                break
-        await queue.put(None)
+        cancelled = False
+        try:
+            for step_num in steps:
+                ok = await _stream_step(step_num, queue)
+                if not ok:
+                    break
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+        except Exception as exc:
+            await queue.put(f"event: error\ndata: [ERROR] {exc}\n\n")
+        finally:
+            if not cancelled:
+                await queue.put(None)
 
-    asyncio.create_task(_worker())
-    while True:
-        item = await queue.get()
-        if item is None:
-            break
-        yield item
+    worker = asyncio.create_task(_worker())
+    try:
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            yield item
+    except asyncio.CancelledError:
+        worker.cancel()
+        raise
+    finally:
+        if not worker.done():
+            worker.cancel()
+            try:
+                await worker
+            except asyncio.CancelledError:
+                pass
+        _PIPELINE_RUN_LOCK.release()
 
 
 @router.get("/run/{step_num}")
 async def run_step(step_num: int):
     if step_num < 1 or step_num > len(STEPS):
         from fastapi import HTTPException
+
         raise HTTPException(status_code=400, detail=f"step_num must be 1–{len(STEPS)}")
     return StreamingResponse(
         _run_generator([step_num]),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers=SSE_HEADERS,
     )
 
 
@@ -206,5 +354,5 @@ async def run_all():
     return StreamingResponse(
         _run_generator(list(range(1, len(STEPS) + 1))),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers=SSE_HEADERS,
     )

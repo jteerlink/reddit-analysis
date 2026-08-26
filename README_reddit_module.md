@@ -277,18 +277,6 @@ for post in results['posts']:
     # Store sentiment results
 ```
 
-### Streamlit Dashboard
-```python
-import streamlit as st
-from reddit_api import RedditDataStorage
-
-storage = RedditDataStorage()
-posts = storage.query_posts(limit=100)
-
-st.dataframe(posts)
-st.line_chart(posts.set_index('timestamp')['upvotes'])
-```
-
 ## 🐛 Troubleshooting
 
 ### Common Issues
