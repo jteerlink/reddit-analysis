@@ -21,6 +21,8 @@ def build_report(db_path: str, representative_count: int = 10, run_version: str 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
+        typed = any(row["name"] == "content_type" for row in conn.execute("PRAGMA table_info(topic_assignments)"))
+        type_match = "AND p.content_type = ta.content_type" if typed else ""
         topics = [dict(row) for row in conn.execute("SELECT topic_id, keywords, doc_count, coherence_score, created_at FROM topics ORDER BY topic_id")]
         assignments = [dict(row) for row in conn.execute("SELECT topic_id, probability FROM topic_assignments")]
         total = len(assignments)
@@ -31,7 +33,7 @@ def build_report(db_path: str, representative_count: int = 10, run_version: str 
             if topic_id == -1:
                 continue
             docs = conn.execute(
-                """
+                f"""
                 SELECT ta.id, ta.probability, p.content_type, p.raw_text, p.clean_text,
                        COALESCE(posts.title, '') AS title,
                        COALESCE(posts.content, comments.content, p.raw_text, '') AS original_text,
@@ -39,7 +41,7 @@ def build_report(db_path: str, representative_count: int = 10, run_version: str 
                        COALESCE(posts.timestamp, comments.timestamp) AS timestamp,
                        COALESCE(comments.post_id, comments.parent_id, posts.id, ta.id) AS thread_id
                 FROM topic_assignments ta
-                JOIN preprocessed p ON p.id = ta.id
+                JOIN preprocessed p ON p.id = ta.id {type_match}
                 LEFT JOIN posts ON p.content_type = 'post' AND posts.id = p.id
                 LEFT JOIN comments ON p.content_type = 'comment' AND comments.id = p.id
                 WHERE ta.topic_id = ?

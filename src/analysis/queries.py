@@ -85,7 +85,9 @@ def _semantic_model_dir() -> Path:
 
 def _semantic_artifact_paths() -> tuple[Path, Path]:
     model_dir = _semantic_model_dir()
-    return model_dir / "embeddings_index.json", model_dir / "embeddings_cache.npy"
+    from src.ml.embedding_cache import published_embedding_paths
+
+    return published_embedding_paths(model_dir)
 
 
 @lru_cache(maxsize=1)
@@ -96,8 +98,7 @@ def _semantic_embedding_model():
 
 
 @lru_cache(maxsize=1)
-def _semantic_artifacts() -> tuple[dict[str, int], np.ndarray]:
-    index_path, cache_path = _semantic_artifact_paths()
+def _semantic_artifacts(index_path: Path, cache_path: Path) -> tuple[dict[str, int], np.ndarray]:
     return json.loads(index_path.read_text()), np.load(cache_path, mmap_mode="r")
 
 
@@ -472,17 +473,25 @@ def embedding_map(conn, limit: int = 5000) -> list[dict]:
             category_join = (
                 "LEFT JOIN default_categories sc ON sc.subreddit = src.subreddit"
             )
+        typed = _column_exists(conn, "embedding_2d", "content_type")
+        point_kind = "e.content_type" if typed else "NULL"
+        joins = {
+            alias: f"AND e.content_type = {alias}.content_type"
+            if typed and _column_exists(conn, table, "content_type") else ""
+            for alias, table in (("ta", "topic_assignments"), ("p", "preprocessed"), ("sp", "sentiment_predictions"))
+        }
+        source_type_match = "AND e.content_type = src.content_type" if typed else ""
         rows = execute(
             conn,
             f"""
             WITH src AS (
-                SELECT id, subreddit, {post_parent_col}, DATE(timestamp) AS date FROM posts
+                SELECT id, subreddit, {post_parent_col}, CAST(DATE(timestamp) AS TEXT) AS date, 'post' AS content_type FROM posts
                 UNION ALL
-                SELECT id, subreddit, {comment_parent_col}, DATE(timestamp) AS date FROM comments
+                SELECT id, subreddit, {comment_parent_col}, CAST(DATE(timestamp) AS TEXT) AS date, 'comment' AS content_type FROM comments
             ),
             {category_cte}
             base AS (
-                SELECT e.post_id, e.x, e.y, e.cluster_id, ta.topic_id,
+                SELECT e.post_id, {point_kind} AS content_type, e.x, e.y, e.cluster_id, ta.topic_id,
                        COALESCE(NULLIF({topic_label_expr}, ''), NULLIF({topic_keywords_expr}, '')) AS topic_label,
                        CASE
                            WHEN {topic_label_expr} IS NOT NULL AND {topic_label_expr} != '' THEN 'llm_artifact'
@@ -495,18 +504,18 @@ def embedding_map(conn, limit: int = 5000) -> list[dict]:
                        COALESCE(src.subreddit, 'unknown') AS subreddit_group,
                        src.date, p.clean_text, sp.label
                 FROM embedding_2d e
-                LEFT JOIN topic_assignments ta ON e.post_id = ta.id
+                LEFT JOIN topic_assignments ta ON e.post_id = ta.id {joins["ta"]}
                 {topic_join}
-                LEFT JOIN preprocessed p ON e.post_id = p.id
-                LEFT JOIN sentiment_predictions sp ON e.post_id = sp.id
-                LEFT JOIN src ON e.post_id = src.id
+                LEFT JOIN preprocessed p ON e.post_id = p.id {joins["p"]}
+                LEFT JOIN sentiment_predictions sp ON e.post_id = sp.id {joins["sp"]}
+                LEFT JOIN src ON e.post_id = src.id {source_type_match}
                 {category_join}
             ),
             subreddit_ranked AS (
                 SELECT *,
                        ROW_NUMBER() OVER (
                            PARTITION BY parent_group, subreddit_group
-                           ORDER BY COALESCE(date, '') DESC, post_id
+                           ORDER BY date DESC NULLS LAST, post_id, content_type
                        ) AS subreddit_rank
                 FROM base
             ),
@@ -514,13 +523,13 @@ def embedding_map(conn, limit: int = 5000) -> list[dict]:
                 SELECT *,
                        ROW_NUMBER() OVER (
                            PARTITION BY parent_group
-                           ORDER BY subreddit_rank, subreddit_group, COALESCE(date, '') DESC, post_id
+                           ORDER BY subreddit_rank, subreddit_group, date DESC NULLS LAST, post_id, content_type
                        ) AS parent_rank
                 FROM subreddit_ranked
             )
-            SELECT post_id, x, y, cluster_id, topic_id, topic_label, label_source, subreddit, parent_id, date, clean_text, label
+            SELECT post_id, content_type, x, y, cluster_id, topic_id, topic_label, label_source, subreddit, parent_id, date, clean_text, label
             FROM parent_ranked
-            ORDER BY parent_rank, parent_group, subreddit_rank, subreddit_group, COALESCE(date, '') DESC, post_id
+            ORDER BY parent_rank, parent_group, subreddit_rank, subreddit_group, date DESC NULLS LAST, post_id, content_type
             LIMIT {paramstyle()}
             """,
             (limit,),
@@ -528,6 +537,7 @@ def embedding_map(conn, limit: int = 5000) -> list[dict]:
         return [
             {
                 "id": row["post_id"],
+                "content_type": row["content_type"],
                 "x": float(row["x"]),
                 "y": float(row["y"]),
                 "cluster_id": int(row["cluster_id"]),
@@ -625,6 +635,10 @@ def semantic_search(
         return []
     marker = paramstyle()
     query_tokens = _tokenize(query)
+    sentiment_type_match = (
+        "AND p.content_type = sp.content_type"
+        if _column_exists(conn, "sentiment_predictions", "content_type") else ""
+    )
     try:
         conditions = ["p.clean_text IS NOT NULL"]
         params: list[Any] = []
@@ -656,7 +670,7 @@ def semantic_search(
                    src.original_text, src.source_url, src.parent_id,
                    sp.label, sp.confidence
             FROM preprocessed p
-            LEFT JOIN sentiment_predictions sp ON p.id = sp.id
+            LEFT JOIN sentiment_predictions sp ON p.id = sp.id {sentiment_type_match}
             JOIN src ON p.id = src.id AND p.content_type = src.content_type
             WHERE {' AND '.join(conditions)}
             """,
@@ -696,7 +710,7 @@ def semantic_search(
                        src.timestamp, src.title, src.original_text, src.source_url,
                        src.parent_id, sp.label, sp.confidence
                 FROM preprocessed p
-                LEFT JOIN sentiment_predictions sp ON p.id = sp.id
+                LEFT JOIN sentiment_predictions sp ON p.id = sp.id {sentiment_type_match}
                 JOIN ({_semantic_source_sql(conn)}) src ON p.id = src.id AND p.content_type = src.content_type
                 WHERE p.clean_text LIKE {marker}
                 LIMIT {marker}
@@ -715,12 +729,16 @@ def semantic_search(
 def _semantic_vector_results(
     rows: list[Any], query: str, limit: int
 ) -> tuple[Optional[list[dict]], str, str]:
-    index_path, cache_path = _semantic_artifact_paths()
+    try:
+        index_path, cache_path = _semantic_artifact_paths()
+    except (OSError, ValueError, KeyError):
+        logger.exception("semantic_vector_manifest_load_failed")
+        return None, "error", "artifact_load_error_lexical_fallback"
     if not index_path.exists() or not cache_path.exists():
         logger.info("semantic_vector_missing_artifacts: %s %s", index_path, cache_path)
         return None, "missing_config", "missing_artifact_lexical_fallback"
     try:
-        index, embeddings = _semantic_artifacts()
+        index, embeddings = _semantic_artifacts(index_path, cache_path)
     except Exception:
         logger.exception("semantic_vector_artifact_load_failed")
         return None, "error", "artifact_load_error_lexical_fallback"
@@ -748,7 +766,7 @@ def _semantic_vector_results(
             # Older preprocessing runs stored numeric cache keys while newer
             # runs use Reddit IDs. Prefer the recorded key, then the source ID.
             position = index.get(key)
-            if position is None:
+            if position is None and ":" not in str(key):
                 position = index.get(row["id"])
             if position is not None:
                 try:
@@ -794,7 +812,10 @@ def _semantic_vector_results(
 
 
 def semantic_vector_backend_ready() -> bool:
-    index_path, cache_path = _semantic_artifact_paths()
+    try:
+        index_path, cache_path = _semantic_artifact_paths()
+    except (OSError, ValueError, KeyError):
+        return False
     if not index_path.exists() or not cache_path.exists():
         return False
     try:
@@ -850,7 +871,7 @@ def thread_analysis(conn, post_id: str) -> dict:
             f"""
             SELECT c.id, c.body, sp.label, sp.confidence
             FROM comments c
-            JOIN sentiment_predictions sp ON c.id = sp.id
+            JOIN sentiment_predictions sp ON c.id = sp.id AND sp.content_type = 'comment'
             WHERE c.post_id = {marker}
             ORDER BY sp.confidence ASC, c.score DESC
             LIMIT 200

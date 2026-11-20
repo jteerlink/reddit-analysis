@@ -281,28 +281,6 @@ Date formats:
             print(f"Posts collected: {results['posts_collected']}")
             print(f"Comments collected: {results['comments_collected']}")
             
-            # Display deduplication results
-            if 'deduplication_stats' in results:
-                dedup = results['deduplication_stats']
-                print(f"\n🧹 Deduplication Results:")
-                print(f"Posts removed: {dedup['posts_removed_total']}")
-                print(f"  - By ID: {dedup['posts_removed_by_id']}")
-                print(f"  - By content: {dedup['posts_removed_by_content']}")
-                print(f"Comments removed: {dedup['comments_removed_total']}")
-                print(f"  - By ID: {dedup['comments_removed_by_id']}")
-                print(f"  - By content: {dedup['comments_removed_by_content']}")
-                print(f"  - Orphaned: {dedup['orphaned_comments_removed']}")
-            elif 'deduplication_error' in results:
-                print(f"⚠️ Deduplication encountered an error: {results['deduplication_error']}")
-            
-            if results['errors']:
-                print(f"\nErrors encountered: {len(results['errors'])}")
-                if args.verbose:
-                    for error in results['errors'][:5]:  # Show first 5 errors
-                        print(f"  - {error}")
-                    if len(results['errors']) > 5:
-                        print(f"  ... and {len(results['errors']) - 5} more")
-            
             # Show database summary
             summary = storage.get_data_summary()
             print(f"\n📁 Database Summary:")
@@ -314,7 +292,11 @@ Date formats:
             print("🎉 Historical collection completed successfully!")
             
         else:
-            print("❌ Collection failed!")
+            print(f"Historical collection {results['status']}")
+            for error in results["errors"]:
+                print(error)
+            for interval in results["uncovered_intervals"]:
+                print(f"Uncovered r/{interval['subreddit']} {interval['start']} to {interval['end']}")
             print(f"Error: {results.get('error', 'Unknown error')}")
             sys.exit(1)
     

@@ -87,3 +87,23 @@ def test_topic_diagnostics_keeps_original_representatives_and_version(tmp_path):
     assert result["topics"][0]["representatives"][0]["original_text"] == "Original punctuation!"
     assert result["topics"][0]["human_label"] == ""
     assert result["human_review_complete"] is False
+
+
+
+def test_sentiment_evaluation_uses_typed_predictions(tmp_path):
+    from scripts.evaluate_sentiment import _predictions
+
+    db = tmp_path / "evaluation.db"
+    with sqlite3.connect(db) as conn:
+        conn.executescript("""
+            CREATE TABLE sentiment_predictions (id TEXT, content_type TEXT, label TEXT,
+                confidence REAL, model_version TEXT);
+            INSERT INTO sentiment_predictions VALUES
+              ('both', 'post', 'positive', 0.9, 'v'),
+              ('both', 'comment', 'negative', 0.9, 'v');
+        """)
+    rows = [
+        {"id": "both", "content_type": "post", "human_label": "positive"},
+        {"id": "both", "content_type": "comment", "human_label": "negative"},
+    ]
+    assert evaluate_rows(rows, _predictions(str(db), ["both"]))["metrics"]["accuracy"] == 1

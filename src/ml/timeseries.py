@@ -63,7 +63,7 @@ def _aggregate_daily_sentiment(conn: Any, days: int) -> pd.DataFrame:
             sp.label,
             sp.confidence
         FROM sentiment_predictions sp
-        JOIN preprocessed p ON sp.id = p.id
+        JOIN preprocessed p ON sp.id = p.id AND sp.content_type = p.content_type
         LEFT JOIN posts    po ON p.id = po.id AND p.content_type = 'post'
         LEFT JOIN comments co ON p.id = co.id AND p.content_type = 'comment'
         WHERE {where_recent}
@@ -259,14 +259,23 @@ def _compute_topic_sentiment_trends(conn: Any, days: int) -> pd.DataFrame:
         else "COALESCE(po.timestamp, co.timestamp) >= datetime('now', ?)"
     )
     params = () if is_postgres_connection(conn) else (f"-{days} days",)
+    from .db import _execute
+
+    if is_postgres_connection(conn):
+        typed = _execute(conn, """SELECT 1 FROM information_schema.columns
+            WHERE table_schema = current_schema() AND table_name = 'topic_assignments'
+              AND column_name = 'content_type'""").fetchone() is not None
+    else:
+        typed = any(row[1] == "content_type" for row in conn.execute("PRAGMA table_info(topic_assignments)"))
+    type_match = "AND ta.content_type = p.content_type" if typed else ""
     query = f"""
         SELECT
             ta.topic_id,
             DATE(COALESCE(po.timestamp, co.timestamp)) AS date,
             sp.label
         FROM topic_assignments ta
-        JOIN sentiment_predictions sp ON ta.id = sp.id
-        JOIN preprocessed p ON ta.id = p.id
+        JOIN preprocessed p ON ta.id = p.id {type_match}
+        JOIN sentiment_predictions sp ON ta.id = sp.id AND p.content_type = sp.content_type
         LEFT JOIN posts    po ON p.id = po.id AND p.content_type = 'post'
         LEFT JOIN comments co ON p.id = co.id AND p.content_type = 'comment'
         WHERE {where_recent}

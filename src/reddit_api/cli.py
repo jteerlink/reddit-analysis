@@ -148,7 +148,12 @@ Examples:
                     print(f"   Errors: {len(results['errors'])}")
                 print(f"   Database: {args.db}")
             else:
-                print(f"\\n❌ Historical collection failed: {results.get('error', 'Unknown error')}")
+                print(f"Historical collection {results['status']}")
+                for error in results["errors"]:
+                    print(error)
+                for interval in results["uncovered_intervals"]:
+                    print(f"Uncovered r/{interval['subreddit']} {interval['start']} to {interval['end']}")
+                print(results.get("error", ""))
                 sys.exit(1)
                 
         except Exception as e:

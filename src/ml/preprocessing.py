@@ -10,7 +10,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -181,15 +181,15 @@ class EmbeddingGenerator:
         self.device = device or _detect_device()
         self._model = None  # loaded lazily
 
-        self._cache_path = self.cache_dir / "embeddings_cache.npy"
-        self._index_path = self.cache_dir / "embeddings_index.json"
+
         # New vectors are checkpointed as bounded chunks.  The legacy dense
         # files remain the published cache and are replaced only after a
         # successful conversion of all committed chunks.
         self._chunks_dir = self.cache_dir / "embeddings_chunks"
         self._checkpoint_path = self.cache_dir / "embeddings_checkpoint.json"
-        from .embedding_cache import EmbeddingCheckpointStore
+        from .embedding_cache import EmbeddingCheckpointStore, published_embedding_paths
         self._checkpoint_store = EmbeddingCheckpointStore(self.cache_dir)
+        self._index_path, self._cache_path = published_embedding_paths(self.cache_dir)
 
     def _get_model(self):
         if self._model is None:
@@ -238,26 +238,33 @@ class EmbeddingGenerator:
     def _mark_checkpoint_committed(self, filename: str) -> None:
         self._checkpoint_store.mark_committed(filename)
 
-    def reconcile_checkpoints(self, conn) -> None:
-        self._checkpoint_store.reconcile(conn)
+    def reconcile_checkpoints(self, conn: Any, index: Dict[str, int]) -> None:
+        self._checkpoint_store.reconcile(conn, index)
 
     def finalize_checkpoints(self, embeddings: Optional[np.ndarray], index: Dict[str, int]) -> Tuple[Optional[np.ndarray], Dict[str, int]]:
         merged, index = self._checkpoint_store.finalize(embeddings, index)
-        if merged is not embeddings:
+        if merged is not None and merged is not embeddings:
             self.save_cache(merged, index)
             self._checkpoint_store.cleanup(self._checkpoint_store.last_consumed)
         return merged, index
 
     def save_cache(self, embeddings: np.ndarray, index: Dict[str, int]) -> None:
-        tmp_npy = self._cache_path.with_suffix(".tmp.npy")
-        tmp_json = self._index_path.with_suffix(".tmp.json")
-        np.save(str(tmp_npy), np.asarray(embeddings, dtype=np.float32))
-        with open(tmp_json, "w") as f:
-            json.dump(index, f, sort_keys=True)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_npy, self._cache_path)
-        os.replace(tmp_json, self._index_path)
+        import uuid
+
+        generation = uuid.uuid4().hex
+        directory = self.cache_dir / "embedding_generations" / generation
+        directory.mkdir(parents=True)
+        array_path = directory / "embeddings_cache.npy"
+        index_path = directory / "embeddings_index.json"
+        with array_path.open("wb") as stream:
+            np.save(stream, np.asarray(embeddings, dtype=np.float32))
+            stream.flush()
+            os.fsync(stream.fileno())
+        self._checkpoint_store._atomic_save_json(index_path, index)
+        self._checkpoint_store._atomic_save_json(
+            self.cache_dir / "embeddings_manifest.json", {"generation": generation}
+        )
+        self._index_path, self._cache_path = index_path, array_path
         logger.info("Saved embedding cache: %d vectors", len(embeddings))
 
 
@@ -304,7 +311,7 @@ def run_preprocessing(
     conn = get_connection(db_path)
     try:
         ensure_preprocessed_table(conn)
-        embedder.reconcile_checkpoints(conn)
+        embedder.reconcile_checkpoints(conn, index)
         existing_embeddings, index = embedder.finalize_checkpoints(existing_embeddings, index)
         next_key = max(index.values(), default=-1) + 1
 
@@ -356,12 +363,15 @@ def run_preprocessing(
                     raise ValueError("Embedding count does not match input batch")
                 keys = []
                 for idx in row_indices:
-                    key = db_rows[idx][0]  # use reddit id as embedding_key
+                    record_id, content_type = db_rows[idx][:2]
+                    key = f"{content_type}:{record_id}"
                     db_rows[idx][7] = key
-                    index[key] = next_key  # id → row_index
+
                     next_key += 1
                     keys.append(key)
-                chunk_file = embedder._checkpoint_chunk(batch_embeddings, keys, index)
+                chunk_file = embedder._checkpoint_chunk(
+                    batch_embeddings, keys, dict(zip(keys, range(next_key - len(keys), next_key)))
+                )
 
             upsert_preprocessed(conn, [tuple(r) for r in db_rows])
             if texts_to_embed:

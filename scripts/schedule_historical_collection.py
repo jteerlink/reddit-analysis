@@ -104,6 +104,7 @@ class HistoricalCollectionScheduler:
                 return True
             else:
                 self.logger.error(f"Historical collection failed with return code {result.returncode}")
+                self.logger.error(f"STDOUT: {result.stdout}")
                 self.logger.error(f"STDERR: {result.stderr}")
                 return False
                 

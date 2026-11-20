@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -12,13 +12,27 @@ logger = logging.getLogger(__name__)
 EMBEDDING_DIM = 384
 
 
+def published_embedding_paths(cache_dir: Path) -> tuple[Path, Path]:
+    manifest = cache_dir / "embeddings_manifest.json"
+    try:
+        generation = json.loads(manifest.read_text())["generation"]
+    except FileNotFoundError:
+        directory = cache_dir
+    else:
+        if not isinstance(generation, str) or len(generation) != 32 or any(
+            char not in "0123456789abcdef" for char in generation
+        ):
+            raise ValueError("Invalid embedding generation")
+        directory = cache_dir / "embedding_generations" / generation
+    return directory / "embeddings_index.json", directory / "embeddings_cache.npy"
+
+
 class EmbeddingCache:
     """Read-only wrapper around the published dense embedding cache."""
 
     def __init__(self, cache_dir: str = "models/") -> None:
         base = Path(cache_dir)
-        self._cache_path = base / "embeddings_cache.npy"
-        self._index_path = base / "embeddings_index.json"
+        self._index_path, self._cache_path = published_embedding_paths(base)
         self._embeddings: Optional[np.ndarray] = None
         self._index: Optional[Dict[str, int]] = None
 
@@ -119,7 +133,7 @@ class EmbeddingCheckpointStore:
                 chunk["status"] = "committed"
         self._atomic_save_json(self.checkpoint_path, checkpoint)
 
-    def reconcile(self, conn) -> None:
+    def reconcile(self, conn: Any, published_index: Dict[str, int]) -> None:
         """Resolve a crash between the database and checkpoint commits."""
         from src.db.connection import is_postgres_connection
 
@@ -128,7 +142,7 @@ class EmbeddingCheckpointStore:
         changed = False
         marker = "%s" if is_postgres_connection(conn) else "?"
 
-        def execute(sql: str, params: Tuple[str, ...]):
+        def execute(sql: str, params: Tuple[str, ...]) -> Any:
             if is_postgres_connection(conn):
                 cursor = conn.cursor()
                 cursor.execute(sql, params)
@@ -142,25 +156,29 @@ class EmbeddingCheckpointStore:
             except ValueError:
                 changed = True
                 continue
+            if keys and all(key in published_index for key in keys):
+                path.unlink(missing_ok=True)
+                changed = True
+                continue
             if not keys or not path.exists():
                 if keys and not path.exists():
                     placeholders = ",".join([marker] * len(keys))
                     execute(
-                        f"UPDATE preprocessed SET embedding_key = NULL WHERE id IN ({placeholders})",
+                        f"UPDATE preprocessed SET embedding_key = NULL WHERE embedding_key IN ({placeholders})",
                         tuple(keys),
                     )
                 changed = True
                 continue
             placeholders = ",".join([marker] * len(keys))
-            sql = f"SELECT id, embedding_key FROM preprocessed WHERE id IN ({placeholders})"
+            sql = f"SELECT DISTINCT embedding_key FROM preprocessed WHERE embedding_key IN ({placeholders})"
             if is_postgres_connection(conn):
                 cursor = conn.cursor()
                 cursor.execute(sql, tuple(keys))
                 rows = cursor.fetchall()
             else:
                 rows = conn.execute(sql, tuple(keys)).fetchall()
-            found = {str(row[0]): row[1] for row in rows}
-            if len(found) == len(keys) and all(found.get(key) == key for key in keys):
+            found = {str(row[0]) for row in rows}
+            if found == set(keys):
                 chunk["status"] = "committed"
                 retained.append(chunk)
                 changed = True
@@ -170,7 +188,7 @@ class EmbeddingCheckpointStore:
             else:
                 placeholders = ",".join([marker] * len(found))
                 execute(
-                    f"UPDATE preprocessed SET embedding_key = NULL WHERE id IN ({placeholders})",
+                    f"UPDATE preprocessed SET embedding_key = NULL WHERE embedding_key IN ({placeholders})",
                     tuple(found),
                 )
                 path.unlink(missing_ok=True)

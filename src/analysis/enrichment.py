@@ -52,6 +52,12 @@ def _topic_sample_texts(conn: Any, topic_id: int, limit: int = 6) -> list[dict]:
     """Return bounded representative text samples for a BERTopic topic."""
     marker = paramstyle()
     probability_order = "ta.probability DESC,"
+    from src.analysis.queries import _column_exists
+
+    topic_type_match = (
+        "AND ta.content_type = p.content_type"
+        if _column_exists(conn, "topic_assignments", "content_type") else ""
+    )
     try:
         rows = execute(
             conn,
@@ -60,7 +66,7 @@ def _topic_sample_texts(conn: Any, topic_id: int, limit: int = 6) -> list[dict]:
                    COALESCE(NULLIF(p.clean_text, ''), NULLIF(src.source_text, '')) AS sample_text,
                    src.subreddit, ta.probability
             FROM topic_assignments ta
-            JOIN preprocessed p ON ta.id = p.id
+            JOIN preprocessed p ON ta.id = p.id {topic_type_match}
             LEFT JOIN (
                 SELECT id, subreddit, 'post' AS content_type, COALESCE(title, content, '') AS source_text FROM posts
                 UNION ALL
@@ -171,7 +177,7 @@ def enrich_thread_analysis(
         f"""
         SELECT c.id, sp.label, sp.confidence, c.content AS preview
         FROM comments c
-        JOIN sentiment_predictions sp ON c.id = sp.id
+        JOIN sentiment_predictions sp ON c.id = sp.id AND sp.content_type = 'comment'
         WHERE c.post_id = {marker}
         ORDER BY sp.confidence ASC, c.score DESC
         LIMIT 20

@@ -363,7 +363,7 @@ def get_collection_summary(
                 f"""
                 SELECT MAX(sp.predicted_at) AS ts
                 FROM sentiment_predictions sp
-                JOIN preprocessed p ON sp.id = p.id
+                JOIN preprocessed p ON sp.id = p.id AND sp.content_type = p.content_type
                 JOIN (
                     SELECT id, timestamp, subreddit, 'post' AS content_type FROM posts
                     UNION ALL
@@ -400,6 +400,10 @@ def get_trending_topics(
 ) -> List[dict]:
     try:
         conn = _connect()
+        topic_type_match = (
+            "AND ta.content_type = p.content_type"
+            if _column_exists(conn, "topic_assignments", "content_type") else ""
+        )
         label_expr = _topic_llm_label_expr(conn, "t")
         has_cluster_labels = _table_exists(conn, "cluster_labels")
         cluster_join = "LEFT JOIN cluster_labels cl ON cl.cluster_id = t.topic_id" if has_cluster_labels else ""
@@ -446,7 +450,7 @@ def get_trending_topics(
                 ), scoped_topics AS (
                     SELECT ta.topic_id, COUNT(*) AS doc_count
                     FROM topic_assignments ta
-                    JOIN preprocessed p ON p.id = ta.id
+                    JOIN preprocessed p ON p.id = ta.id {topic_type_match}
                     JOIN src ON src.id = ta.id AND src.content_type = p.content_type
                     {source_where}
                     AND ta.topic_id != -1
@@ -497,7 +501,7 @@ def get_trending_topics(
                 f"""
                 SELECT ta.topic_id, src.subreddit, COUNT(*) AS docs
                 FROM topic_assignments ta
-                JOIN preprocessed p ON ta.id = p.id
+                JOIN preprocessed p ON ta.id = p.id {topic_type_match}
                 JOIN (
                     SELECT id, timestamp, subreddit, 'post' AS content_type FROM posts
                     UNION ALL
@@ -589,8 +593,8 @@ def get_sentiment_summary(
                        {post_count_expr} AS weighted_count,
                        {post_conf_expr} AS confidence_sum
                 FROM posts
-                JOIN preprocessed p ON posts.id = p.id
-                JOIN sentiment_predictions sp ON p.id = sp.id
+                JOIN preprocessed p ON posts.id = p.id AND p.content_type = 'post'
+                JOIN sentiment_predictions sp ON p.id = sp.id AND p.content_type = sp.content_type
                 WHERE {" AND ".join(post_conditions)}
                 GROUP BY sp.label
                 UNION ALL
@@ -599,8 +603,8 @@ def get_sentiment_summary(
                        {comment_count_expr} AS weighted_count,
                        {comment_conf_expr} AS confidence_sum
                 FROM comments
-                JOIN preprocessed p ON comments.id = p.id
-                JOIN sentiment_predictions sp ON p.id = sp.id
+                JOIN preprocessed p ON comments.id = p.id AND p.content_type = 'comment'
+                JOIN sentiment_predictions sp ON p.id = sp.id AND p.content_type = sp.content_type
                 WHERE {" AND ".join(comment_conditions)}
                 GROUP BY sp.label
             )
@@ -877,6 +881,10 @@ def get_topic_graph(
         limit = max(1, min(int(n), 100))
         threshold = max(0.0, min(float(min_similarity), 1.0))
         conn = _connect()
+        topic_type_match = (
+            "AND ta.content_type = src.content_type"
+            if _column_exists(conn, "topic_assignments", "content_type") else ""
+        )
         effective = _merge_subreddits(subreddits, parents)
         label_expr = _topic_llm_label_expr(conn, "t")
         resolved_label_expr = _topic_resolved_label_expr(conn, "t")
@@ -894,10 +902,10 @@ def get_topic_graph(
                 FROM topic_assignments ta
                 JOIN topics t ON ta.topic_id = t.topic_id
                 JOIN (
-                    SELECT id, subreddit FROM posts
+                    SELECT id, subreddit, 'post' AS content_type FROM posts
                     UNION ALL
-                    SELECT id, subreddit FROM comments
-                ) src ON src.id = ta.id
+                    SELECT id, subreddit, 'comment' AS content_type FROM comments
+                ) src ON src.id = ta.id {topic_type_match}
                 WHERE t.topic_id != -1
                   AND src.subreddit IN ({placeholders(len(effective))})
                 GROUP BY t.topic_id, t.keywords, {label_expr}, {resolved_label_expr}, t.coherence_score, t.created_at
@@ -1023,6 +1031,10 @@ def get_topic_over_time(
 ) -> List[dict]:
     try:
         conn = _connect()
+        topic_type_match = (
+            "AND ta.content_type = p.content_type"
+            if _column_exists(conn, "topic_assignments", "content_type") else ""
+        )
         label_expr = _topic_resolved_label_expr(conn, "t")
         conditions = [f"tot.topic_id = {paramstyle()}"]
         params: list = [topic_id]
@@ -1037,7 +1049,7 @@ def get_topic_over_time(
             source_where, source_params = _source_conditions("src", effective)
             conditions.append(
                 f"tot.topic_id IN (SELECT ta.topic_id FROM topic_assignments ta "
-                "JOIN preprocessed p ON p.id = ta.id "
+                f"JOIN preprocessed p ON p.id = ta.id {topic_type_match} "
                 "JOIN (SELECT id, timestamp, subreddit, 'post' AS content_type FROM posts "
                 "UNION ALL SELECT id, timestamp, subreddit, 'comment' AS content_type FROM comments) src "
                 f"ON src.id = ta.id AND src.content_type = p.content_type {source_where} "
@@ -1071,6 +1083,10 @@ def get_topic_heatmap(
 ) -> List[dict]:
     try:
         conn = _connect()
+        topic_type_match = (
+            "AND ta.content_type = p.content_type"
+            if _column_exists(conn, "topic_assignments", "content_type") else ""
+        )
         label_expr = _topic_resolved_label_expr(conn, "t")
         conditions = [
             f"tot.topic_id IN (SELECT topic_id FROM topics WHERE topic_id != -1 ORDER BY doc_count DESC LIMIT {paramstyle()})"
@@ -1087,7 +1103,7 @@ def get_topic_heatmap(
             source_where, source_params = _source_conditions("src", effective)
             conditions.append(
                 "tot.topic_id IN (SELECT ta.topic_id FROM topic_assignments ta "
-                "JOIN preprocessed p ON p.id = ta.id "
+                f"JOIN preprocessed p ON p.id = ta.id {topic_type_match} "
                 "JOIN (SELECT id, timestamp, subreddit, 'post' AS content_type FROM posts "
                 "UNION ALL SELECT id, timestamp, subreddit, 'comment' AS content_type FROM comments) src "
                 f"ON src.id = ta.id AND src.content_type = p.content_type {source_where} "
@@ -1127,6 +1143,10 @@ def get_deep_dive(
 ) -> List[dict]:
     try:
         conn = _connect()
+        topic_type_match = (
+            "AND ta.content_type = p.content_type"
+            if _column_exists(conn, "topic_assignments", "content_type") else ""
+        )
         conditions: list = []
         params: list = []
         join_params: list = []
@@ -1159,7 +1179,7 @@ def get_deep_dive(
             params.append(content_type_filter)
         topic_join = ""
         if topic_id is not None:
-            topic_join = "JOIN topic_assignments ta ON ta.id = p.id AND ta.topic_id = {marker}".format(marker=marker)
+            topic_join = f"JOIN topic_assignments ta ON ta.id = p.id {topic_type_match} AND ta.topic_id = {marker}"
             join_params.append(topic_id)
 
         post_title = "title" if _column_exists(conn, "posts", "title") else "NULL"
@@ -1182,7 +1202,7 @@ def get_deep_dive(
                    src.original_text, src.source_url, p.clean_text,
                    sp.label, sp.confidence
             FROM preprocessed p
-            JOIN sentiment_predictions sp ON p.id = sp.id
+            JOIN sentiment_predictions sp ON p.id = sp.id AND p.content_type = sp.content_type
             JOIN (
                 SELECT id, timestamp, subreddit, 'post' AS content_type,
                        {post_title} AS title, {post_content} AS original_text,
@@ -1218,7 +1238,7 @@ def get_vader_agreement() -> List[dict]:
             SELECT p.clean_text, sp.label,
                    COALESCE(posts.subreddit, comments.subreddit) AS subreddit
             FROM preprocessed p
-            JOIN sentiment_predictions sp ON p.id = sp.id
+            JOIN sentiment_predictions sp ON p.id = sp.id AND p.content_type = sp.content_type
             LEFT JOIN posts ON p.id = posts.id AND p.content_type = 'post'
             LEFT JOIN comments ON p.id = comments.id AND p.content_type = 'comment'
             WHERE p.is_filtered = {false_literal()} AND p.clean_text IS NOT NULL
@@ -1260,7 +1280,7 @@ def get_low_confidence_examples(limit: int = 50) -> List[dict]:
             SELECT p.id, DATE(src.timestamp) AS date, src.subreddit, p.content_type,
                    p.clean_text, sp.label, sp.confidence
             FROM preprocessed p
-            JOIN sentiment_predictions sp ON p.id = sp.id
+            JOIN sentiment_predictions sp ON p.id = sp.id AND p.content_type = sp.content_type
             JOIN (
                 SELECT id, timestamp, subreddit, 'post' AS content_type FROM posts
                 UNION ALL
@@ -1293,7 +1313,7 @@ def get_vader_disagreements(limit: int = 50) -> List[dict]:
             SELECT p.id, DATE(src.timestamp) AS date, src.subreddit, p.content_type,
                    p.clean_text, sp.label, sp.confidence
             FROM preprocessed p
-            JOIN sentiment_predictions sp ON p.id = sp.id
+            JOIN sentiment_predictions sp ON p.id = sp.id AND p.content_type = sp.content_type
             JOIN (
                 SELECT id, timestamp, subreddit, 'post' AS content_type FROM posts
                 UNION ALL
@@ -1344,7 +1364,7 @@ def get_confidence_by_subreddit() -> List[dict]:
                    AVG(sp.confidence) AS mean_confidence,
                    SUM(CASE WHEN sp.confidence < 0.6 THEN 1 ELSE 0 END) AS low_confidence_count
             FROM preprocessed p
-            JOIN sentiment_predictions sp ON p.id = sp.id
+            JOIN sentiment_predictions sp ON p.id = sp.id AND p.content_type = sp.content_type
             JOIN (
                 SELECT id, subreddit, 'post' AS content_type FROM posts
                 UNION ALL
@@ -1465,6 +1485,10 @@ def get_subreddit_graph(
     """Build a subreddit-level co-occurrence graph (author + topic overlap)."""
     try:
         conn = _connect()
+        topic_type_match = (
+            "AND ta.content_type = p.content_type"
+            if _column_exists(conn, "topic_assignments", "content_type") else ""
+        )
         cats = _subreddit_category_frame(conn)
         if cats.empty:
             _close(conn)
@@ -1544,7 +1568,7 @@ def get_subreddit_graph(
             f"""
             SELECT src.subreddit, ta.topic_id, COUNT(*) AS docs
             FROM topic_assignments ta
-            JOIN preprocessed p ON ta.id = p.id
+            JOIN preprocessed p ON ta.id = p.id {topic_type_match}
             JOIN (
                 SELECT id, subreddit, 'post' AS content_type, timestamp FROM posts
                 UNION ALL

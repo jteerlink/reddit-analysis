@@ -267,6 +267,7 @@ def run_topic_modeling(
 
         # --- Step 1: Load all records from rolling window ---
         all_ids: List[str] = []
+        all_content_types: List[str] = []
         all_docs: List[str] = []
         all_embedding_keys: List[str] = []
         all_source_timestamps: List[Optional[str]] = []
@@ -274,6 +275,7 @@ def run_topic_modeling(
         for batch in iter_preprocessed_for_topics(conn, days=days, batch_size=batch_size):
             for row in batch:
                 all_ids.append(row["id"])
+                all_content_types.append(row["content_type"])
                 all_docs.append(row["clean_text"])
                 all_embedding_keys.append(row["embedding_key"])
                 all_source_timestamps.append(row["source_timestamp"])
@@ -307,13 +309,14 @@ def run_topic_modeling(
             resolved = cache.resolve_keys(all_embedding_keys)
             valid = [position is not None for position in resolved]
             all_ids = [x for x, v in zip(all_ids, valid) if v]
+            all_content_types = [x for x, v in zip(all_content_types, valid) if v]
             all_docs = [x for x, v in zip(all_docs, valid) if v]
             all_embedding_keys = [x for x, v in zip(all_embedding_keys, valid) if v]
             all_source_timestamps = [x for x, v in zip(all_source_timestamps, valid) if v]
             total_docs = len(all_docs)
 
         model_version = topic_model_fingerprint(
-            document_ids=all_ids,
+            document_ids=[f"{kind}:{rid}" for kind, rid in zip(all_content_types, all_ids)],
             docs=all_docs,
             embedding_keys=all_embedding_keys,
             embeddings=embeddings,
@@ -388,8 +391,8 @@ def run_topic_modeling(
             upsert_topics(conn, topics_rows, commit=False)
 
             assignment_rows = [
-                (doc_id, int(tid), float(p), model_version)
-                for doc_id, tid, p in zip(all_ids, topic_assignments, probs)
+                (doc_id, kind, int(tid), float(p), model_version)
+                for doc_id, kind, tid, p in zip(all_ids, all_content_types, topic_assignments, probs)
             ]
             for i in range(0, len(assignment_rows), batch_size):
                 upsert_topic_assignments(
@@ -399,27 +402,27 @@ def run_topic_modeling(
             # --- Step 8: Temporal tracking ---
             # Partition already-assigned docs by ISO week; no retraining needed.
             doc_week_topic = []
-            for doc_id, tid, ts_str in zip(all_ids, topic_assignments, all_source_timestamps):
+            for doc_id, kind, tid, ts_str in zip(all_ids, all_content_types, topic_assignments, all_source_timestamps):
                 if int(tid) == OUTLIER_TOPIC_ID or not ts_str:
                     continue
                 week = _week_start(str(ts_str))
                 if week:
-                    doc_week_topic.append((doc_id, int(tid), week))
+                    doc_week_topic.append(((doc_id, kind), int(tid), week))
 
             if doc_week_topic:
-                sentiment_map: Dict[str, float] = {}
-                chunk_ids = [x[0] for x in doc_week_topic]
+                sentiment_map: Dict[Tuple[str, str], float] = {}
+                chunk_ids = list(dict.fromkeys(x[0][0] for x in doc_week_topic))
                 for i in range(0, len(chunk_ids), _SENTIMENT_BATCH):
                     chunk = chunk_ids[i : i + _SENTIMENT_BATCH]
                     marker = "%s" if is_postgres_connection(conn) else "?"
                     placeholders = ",".join([marker] * len(chunk))
                     rows = _execute(
                         conn,
-                        f"SELECT id, label FROM sentiment_predictions WHERE id IN ({placeholders})",
+                        f"SELECT id, content_type, label FROM sentiment_predictions WHERE id IN ({placeholders})",
                         tuple(chunk),
                     ).fetchall()
                     for row in rows:
-                        sentiment_map[row["id"]] = SENTIMENT_SCORE_MAP.get(row["label"], 0.0)
+                        sentiment_map[(row["id"], row["content_type"])] = SENTIMENT_SCORE_MAP.get(row["label"], 0.0)
 
                 week_topic_scores: Dict[Tuple[int, str], List[Optional[float]]] = defaultdict(list)
                 for doc_id, tid, week in doc_week_topic:
@@ -437,6 +440,9 @@ def run_topic_modeling(
                     commit=False,
                 )
 
+            from src.ml.record_identity import clear_topic_refit_requirement
+
+            clear_topic_refit_requirement(conn)
             conn.commit()
         except Exception:
             conn.rollback()

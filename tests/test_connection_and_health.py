@@ -116,7 +116,7 @@ def test_pipeline_run_generator_rejects_overlapping_runs(monkeypatch):
 
         assert first_event == "data: started 1\n\n"
         assert busy_events == [pipeline.BUSY_EVENT]
-        assert remaining_events == ["data: finished 1\n\n"]
+        assert remaining_events == ["data: finished 1\n\n", "event: result\ndata: succeeded\n\n"]
         assert lock.locked() is False
 
     asyncio.run(scenario())
@@ -137,7 +137,7 @@ def test_pipeline_run_generator_releases_lock_after_failed_step(monkeypatch):
 
         events = [event async for event in pipeline._run_generator([1, 2])]
 
-        assert events == ["data: failed 1\n\n"]
+        assert events == ["data: failed 1\n\n", "event: result\ndata: failed\n\n"]
         assert lock.locked() is False
 
     asyncio.run(scenario())
@@ -149,3 +149,27 @@ def test_env_example_does_not_contain_real_neon_secret():
     assert "DATABASE_URL=postgresql://user:password@" in env_example
     assert "DATABASE_URL_POOLED=postgresql://user:password@" in env_example
     assert "neon.tech" not in env_example.lower()
+
+
+def test_pipeline_execution_requires_post_and_operator_token(monkeypatch, tmp_path):
+    from src.api.app import app
+    from src.api.routes import pipeline
+
+    monkeypatch.setattr(pipeline, "PROJECT_ROOT", tmp_path)
+
+    async def stub_step(step, queue):
+        await queue.put(f"data: ran {step}\n\n")
+        return True
+
+    monkeypatch.setattr(pipeline, "_stream_step", stub_step)
+    client = TestClient(app)
+    url = "/pipeline/run/1"
+    monkeypatch.delenv("PIPELINE_OPERATOR_TOKEN", raising=False)
+    assert client.get(url).status_code == 405
+    assert client.post(url).status_code == 503
+    monkeypatch.setenv("PIPELINE_OPERATOR_TOKEN", "fixture-token")
+    assert client.post(url).status_code == 401
+    assert client.post(url, headers={"Authorization": "Bearer incorrect"}).status_code == 401
+    response = client.post(url, headers={"Authorization": "Bearer fixture-token"})
+    assert response.status_code == 200
+    assert "event: result\ndata: succeeded" in response.text

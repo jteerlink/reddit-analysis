@@ -274,3 +274,35 @@ def test_run_batch_inference_idempotent(temp_db):
     count = conn.execute("SELECT COUNT(*) FROM sentiment_predictions").fetchone()[0]
     conn.close()
     assert count == 3
+
+
+def test_failed_candidate_inference_preserves_model_pointer_and_predictions(tmp_path, temp_db, monkeypatch):
+    from src.ml import sentiment
+
+    monkeypatch.setattr(sentiment, "_detect_device", lambda: "cpu")
+    old = tmp_path / "old"
+    new = tmp_path / "candidate"
+    for directory in (old, new):
+        directory.mkdir()
+        (directory / "config.json").write_text(json.dumps({"model": directory.name}))
+
+    def predict(texts, **kwargs):
+        return [{"label": "positive", "confidence": 0.9, "logits": [0, 0, 1]} for _ in texts]
+
+    monkeypatch.setattr(sentiment, "predict_batch", lambda texts, *_args, **kwargs: predict(texts, **kwargs))
+    run_batch_inference(temp_db, str(old), mlflow_tracking=False)
+    with sqlite3.connect(temp_db) as conn:
+        conn.execute("CREATE TABLE sentiment_model_candidate (slot INTEGER PRIMARY KEY, model_dir TEXT)")
+        conn.execute("INSERT INTO sentiment_model_candidate VALUES (1, ?)", (str(new),))
+        before = conn.execute("SELECT * FROM sentiment_predictions ORDER BY id").fetchall()
+
+    def failed_predict(*_args, **_kwargs):
+        raise RuntimeError("inference failed")
+
+    monkeypatch.setattr(sentiment, "predict_batch", failed_predict)
+    with pytest.raises(RuntimeError, match="inference failed"):
+        run_batch_inference(temp_db, str(new), mlflow_tracking=False, rescore_existing=True, promote_candidate=True)
+    assert sentiment.pipeline_model_dir(temp_db) == str(old)
+    with sqlite3.connect(temp_db) as conn:
+        assert conn.execute("SELECT * FROM sentiment_predictions ORDER BY id").fetchall() == before
+    assert sentiment.pipeline_candidate_dir(temp_db) == str(new)

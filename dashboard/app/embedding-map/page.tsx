@@ -29,6 +29,10 @@ const CLUSTER_COLORS = [
   "#10a37f", "#e26464", "#76b900", "#94a3b8", "#f472b6",
 ];
 
+function pointKey(point: EmbeddingPoint) {
+  return `${point.content_type ?? ""}:${point.id}`;
+}
+
 function clusterColor(clusterId: number | null | undefined) {
   if (clusterId == null || Number.isNaN(clusterId)) return CLUSTER_COLORS[0];
   return CLUSTER_COLORS[Math.abs(clusterId) % CLUSTER_COLORS.length];
@@ -253,11 +257,11 @@ export default function EmbeddingMapPage() {
                 {filteredPoints.map((point) => {
                   const rawLeft = ((point.x - minX) / Math.max(maxX - minX, 0.001)) * 96 + 2;
                   const rawTop = 98 - ((point.y - minY) / Math.max(maxY - minY, 0.001)) * 96;
-                  const isActive = activePoint?.id === point.id;
+                  const isActive = activePoint !== null && pointKey(activePoint) === pointKey(point);
                   const fallbackClass = pointFill(point);
                   return (
                     <button
-                      key={point.id}
+                      key={pointKey(point)}
                       type="button"
                       aria-label={`Inspect ${point.subreddit ?? "unknown"} ${topicName(point)}`}
                       onPointerEnter={() => setHoveredPoint(point)}
@@ -266,7 +270,7 @@ export default function EmbeddingMapPage() {
                       onMouseLeave={() => setHoveredPoint(null)}
                       onFocus={() => setHoveredPoint(point)}
                       onBlur={() => setHoveredPoint(null)}
-                      onClick={() => setSelectedPoint((current) => current?.id === point.id ? null : point)}
+                      onClick={() => setSelectedPoint((current) => current !== null && pointKey(current) === pointKey(point) ? null : point)}
                       className={`absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-1 ring-black/40 transition-transform hover:z-20 hover:scale-150 focus-visible:z-20 focus-visible:scale-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal-green ${fallbackClass ?? ""} ${isActive ? "z-20 scale-150 opacity-100 ring-2 ring-foreground" : "opacity-72"}`}
                       style={{ left: `${rawLeft}%`, top: `${rawTop}%`, ...pointStyle(point) }}
                     />

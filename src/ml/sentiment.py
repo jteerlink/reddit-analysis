@@ -301,12 +301,74 @@ def _softmax(x: np.ndarray) -> np.ndarray:
     return e / e.sum(axis=-1, keepdims=True)
 
 
+def _stored_pipeline_model(db_path: str, *, candidate: bool) -> str | None:
+    import os
+    import sqlite3
+
+    from .db import get_connection, _execute
+    from src.db.connection import is_postgres_connection
+
+    if db_path.startswith(("postgres://", "postgresql://")) or os.environ.get("DATABASE_URL"):
+        conn = get_connection(db_path)
+    else:
+        path = Path(db_path).resolve()
+        if not path.is_file():
+            return None
+        conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+    table = "sentiment_model_candidate" if candidate else "sentiment_model_active"
+    try:
+        query = (f"SELECT to_regclass('{table}')" if is_postgres_connection(conn)
+                 else f"SELECT name FROM sqlite_master WHERE name = '{table}'")
+        exists = _execute(conn, query).fetchone()
+        if exists and exists[0]:
+            model = _execute(conn, f"SELECT model_dir FROM {table} WHERE slot = 1").fetchone()
+            if model:
+                return str(model[0])
+        return None
+    finally:
+        conn.close()
+
+
+def pipeline_model_dir(db_path: str) -> str:
+    """Resolve the model published alongside the current predictions."""
+    return _stored_pipeline_model(db_path, candidate=False) or "models/sentiment_v1"
+
+
+def train_pipeline_candidate(db_path: str) -> dict:
+    """Train in a new directory and stage a database-specific candidate."""
+    from uuid import uuid4
+    from .db import get_connection, _execute, _marker
+
+    directory = Path("models/sentiment_generations") / uuid4().hex
+    result = train("data/weak_labels.csv", str(directory), mlflow_tracking=True)
+    if not result["val_f1"] >= 0.70:
+        raise ValueError(f"Candidate validation F1 below 0.70: {result['val_f1']:.4f}")
+    conn = get_connection(db_path)
+    try:
+        marker = _marker(conn)
+        _execute(conn, """CREATE TABLE IF NOT EXISTS sentiment_model_candidate (
+            slot INTEGER PRIMARY KEY, model_dir TEXT NOT NULL
+        )""")
+        _execute(conn, f"""INSERT INTO sentiment_model_candidate (slot, model_dir)
+            VALUES (1, {marker}) ON CONFLICT (slot) DO UPDATE SET model_dir = excluded.model_dir""",
+            (str(directory.resolve()),))
+        conn.commit()
+    finally:
+        conn.close()
+    return result
+
+
+def pipeline_candidate_dir(db_path: str) -> str | None:
+    return _stored_pipeline_model(db_path, candidate=True)
+
+
 def run_batch_inference(
     db_path: str,
     model_dir: str,
     batch_size: int = 1000,
     mlflow_tracking: bool = True,
     rescore_existing: bool = False,
+    promote_candidate: bool = False,
 ) -> Dict:
     """
     Batch-inference orchestrator: score all unscored preprocessed records.
@@ -333,7 +395,9 @@ def run_batch_inference(
             raise ValueError("Model version changed; explicitly rescore_existing to promote it")
         # A private staging table keeps the published generation intact on failure.
         _execute(conn, "CREATE TEMP TABLE sentiment_stage AS SELECT * FROM sentiment_predictions WHERE 1=0")
-        eligibility = "" if rescore_existing else "AND id NOT IN (SELECT id FROM sentiment_predictions)"
+        eligibility = "" if rescore_existing else """AND NOT EXISTS (
+            SELECT 1 FROM sentiment_predictions sp WHERE sp.id = preprocessed.id
+              AND sp.content_type = preprocessed.content_type)"""
         cursor = _execute(conn, f"""SELECT id, content_type, clean_text FROM preprocessed
             WHERE is_filtered = {_false(conn)} AND clean_text IS NOT NULL
               AND clean_text != '' {eligibility}""")
@@ -360,6 +424,18 @@ def run_batch_inference(
         if rescore_existing:
             _execute(conn, "DELETE FROM sentiment_predictions")
         _execute(conn, f"INSERT INTO sentiment_predictions ({columns}) SELECT {columns} FROM sentiment_stage")
+        _execute(conn, """CREATE TABLE IF NOT EXISTS sentiment_model_active (
+            slot INTEGER PRIMARY KEY, model_dir TEXT NOT NULL, model_version TEXT NOT NULL
+        )""")
+        _execute(conn, f"""INSERT INTO sentiment_model_active (slot, model_dir, model_version)
+            VALUES (1, {marker}, {marker}) ON CONFLICT (slot) DO UPDATE SET
+            model_dir = excluded.model_dir, model_version = excluded.model_version""",
+            (str(Path(model_dir).resolve()), model_version))
+        if promote_candidate:
+            consumed = _execute(conn, f"""DELETE FROM sentiment_model_candidate
+                WHERE slot = 1 AND model_dir = {marker}""", (str(Path(model_dir).resolve()),))
+            if consumed.rowcount != 1:
+                raise ValueError("The trained candidate changed before publication")
         conn.commit()
     except Exception:
         conn.rollback()

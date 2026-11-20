@@ -181,6 +181,15 @@ fi
 load_dotenv_file
 configure_default_database
 
+# Allow the dashboard to attach the token only for a loopback startup.
+PIPELINE_LOCAL_ORIGIN=""
+if [[ -n "${PIPELINE_OPERATOR_TOKEN:-}" &&
+      ( "${FRONTEND_HOST}" == localhost || "${FRONTEND_HOST}" == 127.0.0.1 ) &&
+      ( "${BACKEND_HOST}" == localhost || "${BACKEND_HOST}" == 127.0.0.1 ) &&
+      "${NEXT_PUBLIC_API_BASE_URL}" == "http://${BACKEND_HOST}:${BACKEND_PORT}" ]]; then
+  PIPELINE_LOCAL_ORIGIN="http://${FRONTEND_HOST}:${FRONTEND_PORT}"
+fi
+
 if command -v uv >/dev/null 2>&1; then
   BACKEND_CMD=(uv run --frozen --extra production uvicorn src.api.app:app --reload --host "${BACKEND_HOST}" --port "${BACKEND_PORT}")
 else
@@ -195,7 +204,7 @@ else
   BACKEND_CMD=("${PYTHON_BIN}" -m uvicorn src.api.app:app --reload --host "${BACKEND_HOST}" --port "${BACKEND_PORT}")
 fi
 
-FRONTEND_CMD=(env "NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}" npm --prefix "${DASHBOARD_DIR}" run dev -- --hostname "${FRONTEND_HOST}" --port "${FRONTEND_PORT}")
+FRONTEND_CMD=(env "NEXT_PUBLIC_API_BASE_URL=${NEXT_PUBLIC_API_BASE_URL}" "PIPELINE_LOCAL_ORIGIN=${PIPELINE_LOCAL_ORIGIN}" npm --prefix "${DASHBOARD_DIR}" run dev -- --hostname "${FRONTEND_HOST}" --port "${FRONTEND_PORT}")
 
 check_port "Backend" "${BACKEND_PORT}"
 check_port "Next.js frontend" "${FRONTEND_PORT}"

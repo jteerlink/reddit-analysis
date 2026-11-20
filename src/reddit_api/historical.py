@@ -6,17 +6,24 @@ with user-specified time frames, enhanced rate limiting, and progress tracking.
 """
 
 import logging
+import os
 import time
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Union
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+from typing import List, NotRequired, Optional, Tuple, TypedDict, Union
 from dataclasses import dataclass, field
 
-from .client import RateLimitedRedditClient
 from .collector import RedditDataCollector
-from .models import RedditConfig, RedditPost, RedditComment
+from .models import RedditConfig, RedditPost
 from .storage import RedditDataStorage
 
 logger = logging.getLogger(__name__)
+
+
+def _utc(value: datetime) -> datetime:
+    if value.tzinfo is None and (name := os.environ.get("REDDIT_COLLECTION_TIMEZONE")):
+        value = value.replace(tzinfo=ZoneInfo(name))
+    return value.astimezone(timezone.utc)
 
 
 @dataclass
@@ -25,12 +32,14 @@ class TimeFrame:
     start_date: datetime
     end_date: datetime
     
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate time frame."""
+        self.start_date = _utc(self.start_date)
+        self.end_date = _utc(self.end_date)
         if self.start_date >= self.end_date:
             raise ValueError("Start date must be before end date")
         
-        if self.end_date > datetime.now():
+        if self.end_date > datetime.now(timezone.utc):
             raise ValueError("End date cannot be in the future")
     
     @classmethod
@@ -47,7 +56,7 @@ class TimeFrame:
     def from_relative(cls, days_back: int, end_date: Optional[datetime] = None) -> 'TimeFrame':
         """Create TimeFrame relative to current time or specified end date."""
         if end_date is None:
-            end_date = datetime.now()
+            end_date = datetime.now(timezone.utc)
         start_date = end_date - timedelta(days=days_back)
         return cls(start_date, end_date)
     
@@ -57,6 +66,8 @@ class TimeFrame:
     
     def split_into_chunks(self, chunk_days: int = 7) -> List['TimeFrame']:
         """Split time frame into smaller chunks for processing."""
+        if chunk_days <= 0:
+            raise ValueError("chunk_days must be positive")
         chunks = []
         current_start = self.start_date
         
@@ -66,6 +77,28 @@ class TimeFrame:
             current_start = current_end
         
         return chunks
+
+
+class HistoricalChunkResult(TypedDict):
+    posts_collected: int
+    comments_collected: int
+    errors: list[str]
+    uncovered_intervals: list[dict[str, str]]
+    reached: int
+
+
+class HistoricalCollectionResult(TypedDict):
+    success: bool
+    status: str
+    time_frame: TimeFrame
+    chunks_processed: int
+    posts_collected: int
+    comments_collected: int
+    errors: list[str]
+    uncovered_intervals: list[dict[str, str]]
+    start_time: datetime
+    end_time: datetime | None
+    error: NotRequired[str]
 
 
 @dataclass
@@ -81,7 +114,7 @@ class HistoricalCollectionProgress:
     start_time: datetime = field(default_factory=datetime.now)
     last_update: datetime = field(default_factory=datetime.now)
     
-    def update_progress(self, chunk_complete: bool = False, posts: int = 0, comments: int = 0, errors: int = 0):
+    def update_progress(self, chunk_complete: bool = False, posts: int = 0, comments: int = 0, errors: int = 0) -> None:
         """Update collection progress."""
         if chunk_complete:
             self.completed_chunks += 1
@@ -154,7 +187,7 @@ class HistoricalRedditCollector:
         comments_per_post: int = 10,
         chunk_days: int = 7,
         resume_from_checkpoint: bool = True
-    ) -> Dict:
+    ) -> HistoricalCollectionResult:
         """
         Collect historical Reddit data for specified time frame.
         
@@ -181,21 +214,24 @@ class HistoricalRedditCollector:
         
         # Split time frame into manageable chunks
         chunks = time_frame.split_into_chunks(chunk_days)
-        self.progress.total_chunks = len(chunks)
+        self.progress = HistoricalCollectionProgress(total_chunks=len(chunks))
         
         logger.info(f"Processing {len(chunks)} time chunks of ~{chunk_days} days each")
         
-        results = {
-            'success': True,
+        results: HistoricalCollectionResult = {
+            'success': False,
+            'status': 'failed',
             'time_frame': time_frame,
             'chunks_processed': 0,
             'posts_collected': 0,
             'comments_collected': 0,
             'errors': [],
+            'uncovered_intervals': [],
             'start_time': datetime.now(),
             'end_time': None
         }
         
+        reached = 0
         try:
             for i, chunk in enumerate(chunks):
                 self.progress.current_chunk_start = chunk.start_date
@@ -212,9 +248,11 @@ class HistoricalRedditCollector:
                 results['posts_collected'] += chunk_results['posts_collected']
                 results['comments_collected'] += chunk_results['comments_collected']
                 results['errors'].extend(chunk_results['errors'])
+                results['uncovered_intervals'].extend(chunk_results['uncovered_intervals'])
+                reached += chunk_results['reached']
                 
                 self.progress.update_progress(
-                    chunk_complete=True,
+                    chunk_complete=not (chunk_results["errors"] or chunk_results["uncovered_intervals"]),
                     posts=chunk_results['posts_collected'],
                     comments=chunk_results['comments_collected'],
                     errors=len(chunk_results['errors'])
@@ -239,22 +277,19 @@ class HistoricalRedditCollector:
             results['error'] = str(e)
         
         finally:
-            results['end_time'] = datetime.now()
-            duration = results['end_time'] - results['start_time']
+            ended_at = datetime.now()
+            results['end_time'] = ended_at
+            duration = ended_at - results['start_time']
             logger.info(f"Historical collection completed in {duration.total_seconds():.1f} seconds")
             logger.info(f"Total collected: {results['posts_collected']} posts, {results['comments_collected']} comments")
             
-            # Run post-collection deduplication if collection was successful
-            if results['success']:
-                logger.info("Running post-collection database deduplication...")
-                try:
-                    dedup_stats = self.storage.deduplicate_database()
-                    results['deduplication_stats'] = dedup_stats
-                    logger.info(f"Deduplication completed: {dedup_stats['posts_removed_total']} posts, {dedup_stats['comments_removed_total']} comments removed")
-                except Exception as e:
-                    logger.warning(f"Deduplication failed: {e}")
-                    results['deduplication_error'] = str(e)
-        
+        issues = results["errors"] or results["uncovered_intervals"] or results.get("error")
+        status = ("partial" if reached else "failed") if issues else "complete"
+        results["status"] = status
+        results["success"] = status == "complete"
+        if issues:
+            results.setdefault("error", str(issues[0] if isinstance(issues, list) else issues))
+
         return results
     
     def _collect_chunk(
@@ -264,102 +299,97 @@ class HistoricalRedditCollector:
         keywords: List[str],
         posts_per_subreddit: int,
         comments_per_post: int
-    ) -> Dict:
+    ) -> HistoricalChunkResult:
         """Collect data for a single time chunk."""
-        chunk_results = {
-            'posts_collected': 0,
-            'comments_collected': 0,
-            'errors': []
+        results: HistoricalChunkResult = {
+            "posts_collected": 0,
+            "comments_collected": 0,
+            "errors": [],
+            "uncovered_intervals": [],
+            "reached": 0,
         }
-        
         for subreddit in subreddits:
+            posts: list[RedditPost] = []
             try:
-                # Collect posts with time filtering
-                posts = self._collect_time_filtered_posts(
+                posts, oldest = self._collect_time_filtered_posts(
                     subreddit, chunk, posts_per_subreddit, keywords
                 )
-                
-                if posts:
-                    stored_posts = self.storage.store_posts(posts)
-                    chunk_results['posts_collected'] += stored_posts
-                    
-                    logger.debug(f"Stored {stored_posts} posts from r/{subreddit}")
-                    
-                    # Collect comments for posts
-                    for post in posts[:min(len(posts), 10)]:  # Limit comment collection
-                        try:
-                            comments = self.collector.collect_post_comments(post.id, limit=comments_per_post)
-                            if comments:
-                                stored_comments = self.storage.store_comments(comments)
-                                chunk_results['comments_collected'] += stored_comments
-                                
-                                logger.debug(f"Stored {stored_comments} comments for post {post.id}")
-                            
-                            # Rate limit between comment collections
-                            self._apply_request_delay()
-                            
-                        except Exception as e:
-                            error_msg = f"Failed to collect comments for post {post.id}: {e}"
-                            logger.warning(error_msg)
-                            chunk_results['errors'].append(error_msg)
-                            self._handle_request_error()
-                
-                # Rate limit between subreddits
-                self._apply_request_delay()
-                
-            except Exception as e:
-                error_msg = f"Failed to collect from r/{subreddit}: {e}"
-                logger.warning(error_msg)
-                chunk_results['errors'].append(error_msg)
-                self._handle_request_error()
-        
-        return chunk_results
-    
-    def _collect_time_filtered_posts(
-        self,
-        subreddit: str,
-        time_frame: TimeFrame,
-        limit: int,
-        keywords: List[str]
-    ) -> List[RedditPost]:
-        """Collect posts filtered by time frame with pre-filtering for efficiency."""
-        # Get existing post IDs for this timeframe to avoid duplicates
-        existing_ids = self.storage.get_existing_post_ids_in_timeframe(
-            subreddit, time_frame.start_date, time_frame.end_date
-        )
-        
-        logger.info(f"Historical pre-filtering: {len(existing_ids)} existing posts in timeframe")
-        
-        # Reddit's search is limited for historical data, so we collect recent posts
-        # and filter by timestamp. For true historical data, you'd need Reddit's
-        # historical data API or pushshift.io (now discontinued)
-        
-        posts = self.collector.collect_subreddit_posts(
-            subreddit_name=subreddit,
-            limit=limit * 3,  # Collect more to account for timeframe and duplicate filtering
-            sort='new',  # Get newest first for better time filtering
-            use_pre_filtering=True  # Enable the new pre-filtering
-        )
-        
-        # Filter posts by time frame and keywords
-        filtered_posts = []
-        for post in posts:
-            # Check time frame
-            if time_frame.start_date <= post.timestamp <= time_frame.end_date:
-                # Check keywords if specified
-                if keywords:
-                    combined_text = f"{post.title} {post.content}"
-                    if self._contains_keywords(combined_text, keywords):
-                        filtered_posts.append(post)
+                if oldest is not None and oldest > chunk.start_date:
+                    results["uncovered_intervals"].append({
+                        "subreddit": subreddit,
+                        "start": chunk.start_date.isoformat(),
+                        "end": min(oldest, chunk.end_date).isoformat(),
+                        "oldest_seen": oldest.isoformat(),
+                    })
                 else:
-                    filtered_posts.append(post)
-                
-                if len(filtered_posts) >= limit:
-                    break
-        
-        logger.debug(f"Filtered {len(posts)} posts to {len(filtered_posts)} within time frame and keywords")
-        return filtered_posts
-    
+                    results["reached"] += 1
+                if posts:
+                    stored = self.storage.store_posts(posts)
+                    results["posts_collected"] += stored
+                    results["reached"] += bool(stored)
+                    if stored != len(posts):
+                        results["errors"].append(f"Stored {stored} of {len(posts)} posts from r/{subreddit}")
+            except Exception as exc:
+                results["errors"].append(f"Failed to collect from r/{subreddit}: {exc}")
+                self._handle_request_error()
+
+            if comments_per_post > 0:
+                self._collect_chunk_comments(subreddit, chunk, keywords, posts, comments_per_post, results)
+            self._apply_request_delay()
+        return results
+
+    def _collect_chunk_comments(
+        self, subreddit: str, chunk: TimeFrame, keywords: List[str],
+        posts: List[RedditPost], limit: int, results: HistoricalChunkResult,
+    ) -> None:
+        post_ids = {post.id: None for post in posts[:10]}
+        try:
+            if len(post_ids) < 10:
+                # The wider query includes legacy local timestamps. Filter exact UTC bounds below.
+                margin = timedelta(days=1)
+                for post_id, title, content, timestamp in self.storage.get_post_candidates(
+                    subreddit, chunk.start_date - margin, chunk.end_date + margin
+                ):
+                    if timestamp is None:
+                        continue
+                    date = _utc(timestamp if isinstance(timestamp, datetime) else datetime.fromisoformat(timestamp))
+                    if chunk.start_date <= date < chunk.end_date and self._contains_keywords(f"{title} {content}", keywords):
+                        post_ids[post_id] = None
+                    if len(post_ids) == 10:
+                        break
+        except Exception as exc:
+            results["errors"].append(f"Failed to read stored posts from r/{subreddit}: {exc}")
+
+        for post_id in post_ids:
+            try:
+                comments = self.collector.collect_post_comments(post_id, limit=limit, raise_on_error=True)
+                if comments:
+                    stored = self.storage.store_comments(comments)
+                    results["comments_collected"] += stored
+                    results["reached"] += bool(stored)
+                    if stored != len(comments):
+                        results["errors"].append(f"Stored {stored} of {len(comments)} comments for {post_id}")
+                self._apply_request_delay()
+            except Exception as exc:
+                results["errors"].append(f"Failed to collect comments for {post_id}: {exc}")
+                self._handle_request_error()
+
+    def _collect_time_filtered_posts(
+        self, subreddit: str, time_frame: TimeFrame, limit: int, keywords: List[str]
+    ) -> tuple[list[RedditPost], datetime | None]:
+        submissions = self.collector.fetch_new_submissions(subreddit, limit * 3)
+        oldest = None
+        posts: list[RedditPost] = []
+        for submission in submissions:
+            timestamp = datetime.fromtimestamp(submission.created_utc, timezone.utc)
+            oldest = timestamp if oldest is None else min(oldest, timestamp)
+            if len(posts) >= limit or not time_frame.start_date <= timestamp < time_frame.end_date:
+                continue
+            post = self.collector._extract_post_data(submission)
+            if post and self._contains_keywords(f"{post.title} {post.content}", keywords):
+                posts.append(post)
+        return posts, oldest
+
     def _contains_keywords(self, text: str, keywords: List[str]) -> bool:
         """
         Check if text contains any target keywords (case-insensitive).
@@ -377,7 +407,7 @@ class HistoricalRedditCollector:
         text_lower = text.lower()
         return any(keyword.lower() in text_lower for keyword in keywords)
     
-    def _apply_request_delay(self):
+    def _apply_request_delay(self) -> None:
         """Apply delay between API requests."""
         time.sleep(self.current_delay)
         
@@ -385,13 +415,13 @@ class HistoricalRedditCollector:
         if self.current_delay > self.base_delay:
             self.current_delay = max(self.base_delay, self.current_delay * 0.9)
     
-    def _apply_inter_chunk_delay(self):
+    def _apply_inter_chunk_delay(self) -> None:
         """Apply delay between processing chunks."""
         chunk_delay = max(5.0, self.current_delay * 2)  # At least 5 seconds between chunks
         logger.debug(f"Applying inter-chunk delay: {chunk_delay:.1f}s")
         time.sleep(chunk_delay)
     
-    def _handle_request_error(self):
+    def _handle_request_error(self) -> None:
         """Handle API request errors with exponential backoff."""
         self.current_delay = min(self.max_delay, self.current_delay * self.backoff_multiplier)
         logger.warning(f"Request failed, increasing delay to {self.current_delay:.1f}s")
@@ -423,7 +453,7 @@ def collect_historical_data(
     posts_per_subreddit: int = 100,
     comments_per_post: int = 10,
     chunk_days: int = 7
-) -> Dict:
+) -> HistoricalCollectionResult:
     """
     Convenient function for historical Reddit data collection.
     

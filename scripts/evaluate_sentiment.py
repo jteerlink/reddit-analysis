@@ -12,6 +12,7 @@ import csv
 import json
 import sqlite3
 from pathlib import Path
+from collections import Counter
 from typing import Iterable
 
 LABELS = {"negative", "neutral", "positive"}
@@ -22,32 +23,57 @@ def _read_sample(path: str) -> list[dict[str, str]]:
         return list(csv.DictReader(stream))
 
 
+def _record_key(row: dict) -> tuple[str, str]:
+    return str(row.get("id", "")), str(row.get("content_type") or "")
+
+
+def _index_by_record(rows: list[dict]) -> dict:
+    counts = Counter(_record_key(row)[0] for row in rows)
+    result: dict[str | tuple[str, str], dict] = {_record_key(row): row for row in rows}
+    result.update({_record_key(row)[0]: row for row in rows if counts[_record_key(row)[0]] == 1})
+    return result
+
+
+def _matching_record(index: dict, row: dict, *, allow_legacy: bool = True) -> dict:
+    identifier, kind = _record_key(row)
+    match = index.get((identifier, kind))
+    if match is not None:
+        return match
+    legacy = index.get(identifier, {}) if allow_legacy else {}
+    return legacy if not kind or not legacy.get("content_type") else {}
+
+
 def _merge_reference(rows: list[dict[str, str]], reference_path: str | None) -> list[dict[str, str]]:
     if not reference_path:
         return rows
-    reference = {row.get("id", ""): row for row in _read_sample(reference_path)}
+    reference = _index_by_record(_read_sample(reference_path))
     merged = []
+    counts = Counter(_record_key(row)[0] for row in rows)
     for row in rows:
-        combined = dict(reference.get(row.get("id", ""), {}))
+        combined = dict(_matching_record(reference, row, allow_legacy=counts[_record_key(row)[0]] == 1))
         combined.update(row)
         merged.append(combined)
     return merged
 
 
-def _predictions(db_path: str, ids: list[str]) -> dict[str, dict]:
+def _predictions(db_path: str, ids: list[str]) -> dict:
     if not ids or not Path(db_path).exists():
         return {}
+    ids = list(dict.fromkeys(ids))
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
         marks = ",".join("?" for _ in ids)
-        return {
-            row["id"]: dict(row)
+        typed = any(row[1] == "content_type" for row in conn.execute("PRAGMA table_info(sentiment_predictions)"))
+        content_type = "content_type" if typed else "NULL AS content_type"
+        rows = [
+            dict(row)
             for row in conn.execute(
-                f"SELECT id, label, confidence, model_version FROM sentiment_predictions WHERE id IN ({marks})",
+                f"SELECT id, {content_type}, label, confidence, model_version FROM sentiment_predictions WHERE id IN ({marks})",
                 ids,
             )
-        }
+        ]
+        return _index_by_record(rows)
     finally:
         conn.close()
 
@@ -75,19 +101,24 @@ def _metrics(y_true: list[str], y_pred: list[str]) -> dict:
     }
 
 
-def evaluate_rows(rows: Iterable[dict[str, str]], prediction_rows: dict[str, dict] | None = None) -> dict:
+def evaluate_rows(rows: Iterable[dict[str, str]], prediction_rows: dict | None = None) -> dict:
     rows = list(rows)
     prediction_rows = prediction_rows or {}
     reviewed = []
     missing_predictions = []
+    versions = set()
+    counts = Counter(_record_key(row)[0] for row in rows)
     for row in rows:
         human = str(row.get("human_label") or "").strip().lower()
         if human not in LABELS:
             continue
-        prediction = row.get("model_label") or prediction_rows.get(str(row.get("id")), {}).get("label")
+        record = _matching_record(prediction_rows, row, allow_legacy=counts[_record_key(row)[0]] == 1)
+        prediction = row.get("model_label") or record.get("label")
         if prediction not in LABELS:
             missing_predictions.append(str(row.get("id", "")))
             continue
+        if record.get("model_version"):
+            versions.add(str(record["model_version"]))
         vader = str(row.get("vader_label") or "").strip().lower()
         reviewed.append((row, human, str(prediction), vader if vader in LABELS else None))
 
@@ -97,7 +128,7 @@ def evaluate_rows(rows: Iterable[dict[str, str]], prediction_rows: dict[str, dic
         "human_label_count": len(reviewed),
         "missing_human_label_count": sum(1 for row in rows if str(row.get("human_label") or "").strip().lower() not in LABELS),
         "missing_prediction_ids": missing_predictions,
-        "model_versions": sorted({str(prediction_rows.get(str(row.get("id")), {}).get("model_version")) for row, _, _, _ in reviewed if prediction_rows.get(str(row.get("id")), {}).get("model_version")}),
+        "model_versions": sorted(versions),
         "metrics": None,
         "vader_agreement": None,
         "errors": [],

@@ -21,7 +21,7 @@ Refreshes process new records and reuse existing model artifacts. A full rebuild
 ```
 
 Individual operations remain available with `--step N` (or `step N`). Use `--check` for gate and freshness status and `--no-neon-sync` to keep a run local.
-To deliberately promote a replacement sentiment model, set `PIPELINE_RESCORE_EXISTING=true` for step 5; normal refreshes refuse to mix model fingerprints.
+Step 4 stages a candidate sentiment model. Step 5 rescores and promotes that candidate together with its predictions. A full rebuild runs both steps, and a routine refresh reuses the active model.
 
 Create an annotation-ready sample and reports without training or collection:
 
@@ -33,6 +33,18 @@ python scripts/backtest_forecasts.py --db historical_reddit_data.db
 ```
 
 The sample is approximately 250 rows, stratified by community, time, content type, and VADER class. It reserves thread/time holdouts and leaves `human_label` blank. The annotation CSV contains original title/text/source URL and is blinded from model/VADER labels; the separate reference CSV is used only when scoring. Until labels are independently reviewed, the sentiment report remains explicitly unverified; VADER agreement is reported separately from model accuracy. Topic diagnostics include original representative text and require manual review before labels can be promoted.
+
+### Enable pipeline execution in the dashboard
+
+1. From the repository root, run `openssl rand -hex 32` to generate an operator token. Add the output to the local `.env` file as `PIPELINE_OPERATOR_TOKEN=<generated-token>`. If `.env` already has a token value, use it. Keep the token in `.env`, which Git ignores.
+2. Start the dashboard and backend with `./scripts/startup.sh`. Restart them after changing `.env`.
+3. Open `http://localhost:3000/pipeline` and choose a step, **Refresh pipeline**, or **Rebuild pipeline**. With the default local startup, the dashboard server reads the token from `.env` automatically, including after page reloads.
+
+For a dashboard started outside the local startup script or bound to a network interface, enter the token in the **Operator token** field. On macOS, use this command from the repository root to copy the saved token to your clipboard.
+
+```bash
+sed -n 's/^PIPELINE_OPERATOR_TOKEN=//p' .env | pbcopy
+```
 
 ## 🚀 Quick Start with UV (Recommended)
 

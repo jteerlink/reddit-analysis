@@ -17,6 +17,7 @@ import pandas as pd
 from dateutil import parser as date_parser
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 SCHEMA_PATH = PROJECT_ROOT / "scripts" / "neon_schema.sql"
 SEED_PATH = PROJECT_ROOT / "scripts" / "seed_subreddit_categories.sql"
 DEFAULT_BATCH_SIZE = 250
@@ -28,6 +29,7 @@ MIGRATION_ORDER = [
     "comments",
     "preprocessed",
     "sentiment_predictions",
+    "sentiment_model_active",
     "api_metrics",
     "collection_metadata",
     "batch_collections",
@@ -201,11 +203,11 @@ def _insert_batch(
     columns = list(batch.columns)
     quoted_columns = ", ".join(f'"{col}"' for col in columns)
     conflict = "ON CONFLICT DO NOTHING"
-    if table == "preprocessed" and "id" in columns and len(columns) > 1:
+    if table == "preprocessed" and {"id", "content_type"}.issubset(columns):
         updates = ", ".join(
-            f'"{column}" = EXCLUDED."{column}"' for column in columns if column != "id"
+            f'"{column}" = EXCLUDED."{column}"' for column in columns if column not in {"id", "content_type"}
         )
-        conflict = f'ON CONFLICT (id) DO UPDATE SET {updates}'
+        conflict = f'ON CONFLICT (id, content_type) DO UPDATE SET {updates}' if updates else conflict
     sql = f'INSERT INTO "{table}" ({quoted_columns}) VALUES %s {conflict}'
     rows = _row_values(table, batch, json_adapter)
     with pg_conn.cursor() as cursor:
@@ -280,6 +282,25 @@ def _target_count(pg_conn, table: str) -> int:
         return int(cursor.fetchone()[0])
 
 
+def _typed_source_frame(conn, table: str, frame: pd.DataFrame) -> pd.DataFrame:
+    if table not in {"sentiment_predictions", "topic_assignments", "embedding_2d"}:
+        return frame
+    if "content_type" in frame and frame["content_type"].notna().all():
+        return frame
+    key = "post_id" if table == "embedding_2d" else "id"
+    if _table_exists(conn, "preprocessed"):
+        known = pd.read_sql_query("SELECT id, content_type FROM preprocessed", conn)
+        kinds = known.drop_duplicates().drop_duplicates("id", keep=False)
+        inferred = frame[key].map(kinds.set_index("id")["content_type"])
+        if "content_type" in frame:
+            frame["content_type"] = frame["content_type"].fillna(inferred)
+        else:
+            frame["content_type"] = inferred
+    elif "content_type" not in frame:
+        frame["content_type"] = None
+    return frame[frame["content_type"].notna()]
+
+
 def run(args: argparse.Namespace) -> int:
     # Support both direct script execution and import by the pipeline/tests.
     try:
@@ -322,6 +343,9 @@ def run(args: argparse.Namespace) -> int:
         psycopg2, Json, execute_values = _load_psycopg2()
         pg_conn = psycopg2.connect(database_url)
         try:
+            from src.ml.record_identity import migrate_record_identity
+
+            migrate_record_identity(pg_conn)
             if args.create_schema:
                 schema_sql = Path(args.schema).read_text()
                 seed_sql = Path(args.seed).read_text()
@@ -340,7 +364,7 @@ def run(args: argparse.Namespace) -> int:
                     print(f"{table}: missing in source, skipped")
                     continue
                 df = pd.read_sql_query(f'SELECT * FROM "{table}"', sqlite_conn)
-                df = _transform(table, df)
+                df = _transform(table, _typed_source_frame(sqlite_conn, table, df))
                 if table in DERIVED_TABLES:
                     derived_frames[table] = df
                     continue
@@ -361,6 +385,15 @@ def run(args: argparse.Namespace) -> int:
                 print(
                     f"{table}: source={len(df)} target={_target_count(pg_conn, table)}"
                 )
+            if "sentiment_predictions" in derived_frames:
+                with pg_conn.cursor() as cursor:
+                    cursor.execute("""CREATE TABLE IF NOT EXISTS sentiment_model_active (
+                        slot INTEGER PRIMARY KEY, model_dir TEXT NOT NULL, model_version TEXT NOT NULL
+                    )""")
+                pg_conn.commit()
+                derived_frames.setdefault("sentiment_model_active", pd.DataFrame())
+            else:
+                derived_frames.pop("sentiment_model_active", None)
             if derived_frames:
                 pg_conn = publish_snapshot(
                     pg_conn, derived_frames,

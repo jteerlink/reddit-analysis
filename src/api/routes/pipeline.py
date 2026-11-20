@@ -1,13 +1,16 @@
 """Pipeline status and run endpoints with SSE streaming."""
 
 import asyncio
+import hmac
+import fcntl
 import os
 import sys
 from asyncio import Queue
 from pathlib import Path
-from typing import AsyncGenerator, List, Optional
+from typing import AsyncGenerator, List, Optional, TypedDict
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import StreamingResponse
 
 from src.db.connection import connection, database_reachable, execute, get_backend
@@ -15,14 +18,21 @@ from src.db.connection import connection, database_reachable, execute, get_backe
 router = APIRouter()
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
-DB_PATH = os.environ.get("REDDIT_DB_PATH", "historical_reddit_data.db")
+DB_PATH = os.environ.get("REDDIT_DB_PATH") or os.environ.get("DATABASE_PATH") or "historical_reddit_data.db"
 SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 BUSY_EVENT = (
     "event: busy\ndata: Pipeline already running. Wait for current run to finish.\n\n"
 )
 _PIPELINE_RUN_LOCK = asyncio.Lock()
 
-STEPS = [
+class PipelineStep(TypedDict):
+    num: int
+    name: str
+    description: str
+    prereq: int | None
+
+
+STEPS: list[PipelineStep] = [
     {
         "num": 1,
         "name": "Prerequisites",
@@ -104,14 +114,38 @@ def _llm_topic_labels_done() -> bool:
     return labeled >= total
 
 
+def _pipeline_db_path() -> Path:
+    path = Path(DB_PATH)
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
+def _sentiment_model_ready(*, include_candidate: bool = False) -> bool:
+    from src.ml.sentiment import pipeline_candidate_dir, pipeline_model_dir
+
+    db = str(_pipeline_db_path())
+    try:
+        if get_backend() == "sqlite" and not Path(db).is_file():
+            return False
+        if include_candidate and pipeline_candidate_dir(db):
+            return True
+        return (PROJECT_ROOT / pipeline_model_dir(db) / "config.json").is_file()
+    except Exception:
+        return False
+
+
 def _step_done(step_num: int) -> bool:
-    abs_db = Path(DB_PATH) if Path(DB_PATH).is_absolute() else PROJECT_ROOT / DB_PATH
+    abs_db = _pipeline_db_path()
     if step_num == 1:
         if get_backend() == "postgres":
             return database_reachable(readonly=True)
         return abs_db.exists()
     if step_num == 2:
-        return (PROJECT_ROOT / "models" / "embeddings_cache.npy").exists()
+        from src.ml.embedding_cache import published_embedding_paths
+
+        try:
+            return all(path.exists() for path in published_embedding_paths(PROJECT_ROOT / "models"))
+        except (OSError, ValueError, KeyError):
+            return False
     if step_num == 3:
         csv = PROJECT_ROOT / "data" / "weak_labels.csv"
         if not csv.exists():
@@ -122,7 +156,7 @@ def _step_done(step_num: int) -> bool:
         except Exception:
             return False
     if step_num == 4:
-        return (PROJECT_ROOT / "models" / "sentiment_v1" / "config.json").exists()
+        return _sentiment_model_ready(include_candidate=True)
     if step_num == 5:
         return _db_count("SELECT COUNT(*) FROM sentiment_predictions") > 0
     if step_num == 6:
@@ -143,11 +177,9 @@ def _step_done(step_num: int) -> bool:
     return False
 
 
-def _step_command(step_num: int) -> List[str]:
+def _step_command(step_num: int, promote_candidate: bool = False) -> List[str]:
     py = sys.executable
-    abs_db = str(
-        Path(DB_PATH) if Path(DB_PATH).is_absolute() else PROJECT_ROOT / DB_PATH
-    )
+    abs_db = str(_pipeline_db_path())
 
     if step_num == 1:
         return ["uv", "pip", "install", "-e", ".[ml,production]", "-q"]
@@ -155,7 +187,7 @@ def _step_command(step_num: int) -> List[str]:
         code = (
             "import sys; sys.path.insert(0, '.');"
             "from src.ml.preprocessing import run_preprocessing;"
-            f"r = run_preprocessing(db_path='{abs_db}', cache_dir='models/',"
+            f"r = run_preprocessing(db_path={abs_db!r}, cache_dir='models/',"
             "batch_size=1000, embed_batch_size=256, mlflow_tracking=True);"
             "print(f\"Total: {{r['total']:,}}  Filtered: {{r['filtered']:,}}"
             "  Kept: {{r['kept']:,}}  Device: {{r['device']}}\")"
@@ -176,25 +208,11 @@ def _step_command(step_num: int) -> List[str]:
             "0.1",
         ]
     if step_num == 4:
-        code = (
-            "import sys; sys.path.insert(0, '.');"
-            "from src.ml.sentiment import train;"
-            "r = train(weak_labels_path='data/weak_labels.csv',"
-            "model_dir='models/sentiment_v1', val_split=0.2, epochs=3,"
-            "lr=2e-5, batch_size=16, max_length=256, mlflow_tracking=True);"
-            "print(f\"Val F1 (macro): {{r['val_f1']:.4f}}  Device: {{r['device']}}\")"
-        )
-        return [py, "-c", code]
+        return [py, "scripts/batch_inference.py", "--db", abs_db, "--train-candidate"]
     if step_num == 5:
         return [
-            py,
-            "scripts/batch_inference.py",
-            "--db",
-            abs_db,
-            "--model-dir",
-            "models/sentiment_v1",
-            "--batch-size",
-            "1000",
+            py, "scripts/batch_inference.py", "--db", abs_db, "--batch-size", "1000",
+            *(["--promote-candidate"] if promote_candidate else []),
         ]
     if step_num == 6:
         return [
@@ -232,7 +250,7 @@ def _step_command(step_num: int) -> List[str]:
 
 
 @router.get("/status")
-def pipeline_status():
+def pipeline_status() -> list[dict]:
     statuses = {}
     for step in STEPS:
         num = step["num"]
@@ -262,10 +280,10 @@ async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
         await proc.wait()
 
 
-async def _stream_step(step_num: int, queue: Queue) -> bool:
+async def _stream_step(step_num: int, queue: Queue, promote_candidate: bool = False) -> bool:
     step = STEPS[step_num - 1]
     await queue.put(f"data: === Step {step_num}: {step['name']} ===\n\n")
-    cmd = _step_command(step_num)
+    cmd = _step_command(step_num, promote_candidate)
     proc: Optional[asyncio.subprocess.Process] = None
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -286,32 +304,53 @@ async def _stream_step(step_num: int, queue: Queue) -> bool:
     except FileNotFoundError as exc:
         await queue.put(f"data: [ERROR] {exc}\n\n")
         return False
-    except asyncio.CancelledError:
+    finally:
         if proc is not None:
             await _terminate_process(proc)
-        raise
 
 
-async def _run_generator(steps: List[int]) -> AsyncGenerator[str, None]:
+async def _run_generator(steps: List[int], promote_candidate: bool = False, refresh: bool = False) -> AsyncGenerator[str, None]:
     if _PIPELINE_RUN_LOCK.locked():
+        yield BUSY_EVENT
+        return
+
+    lock_path = PROJECT_ROOT / ".pipeline_status" / "workspace.lock"
+    lock_path.parent.mkdir(exist_ok=True)
+    lock = lock_path.open("a")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.close()
         yield BUSY_EVENT
         return
 
     await _PIPELINE_RUN_LOCK.acquire()
     queue: Queue = Queue(maxsize=100)
 
-    async def _worker():
+    async def _worker() -> None:
         cancelled = False
         try:
             for step_num in steps:
-                ok = await _stream_step(step_num, queue)
+                if refresh and step_num == 6:
+                    current = await asyncio.to_thread(_db_count, "SELECT COUNT(*) FROM topics")
+                    pending = await asyncio.to_thread(_db_count, "SELECT COUNT(*) FROM topic_refit_required")
+                    if current and not pending:
+                        continue
+                if promote_candidate and step_num == 5:
+                    ok = await _stream_step(step_num, queue, True)
+                else:
+                    ok = await _stream_step(step_num, queue)
                 if not ok:
+                    await queue.put("event: result\ndata: failed\n\n")
                     break
+            else:
+                await queue.put("event: result\ndata: succeeded\n\n")
         except asyncio.CancelledError:
             cancelled = True
             raise
         except Exception as exc:
-            await queue.put(f"event: error\ndata: [ERROR] {exc}\n\n")
+            await queue.put(f"data: [ERROR] {exc}\n\n")
+            await queue.put("event: result\ndata: failed\n\n")
         finally:
             if not cancelled:
                 await queue.put(None)
@@ -333,26 +372,51 @@ async def _run_generator(steps: List[int]) -> AsyncGenerator[str, None]:
                 await worker
             except asyncio.CancelledError:
                 pass
+        lock.close()
         _PIPELINE_RUN_LOCK.release()
 
 
-@router.get("/run/{step_num}")
-async def run_step(step_num: int):
-    if step_num < 1 or step_num > len(STEPS):
-        from fastapi import HTTPException
+_bearer = HTTPBearer(auto_error=False)
 
+
+def authorize_operator(credentials: HTTPAuthorizationCredentials | None = Depends(_bearer)) -> None:
+    token = os.environ.get("PIPELINE_OPERATOR_TOKEN")
+    if not token:
+        raise HTTPException(status_code=503, detail="Pipeline execution is disabled")
+    if credentials is None or not hmac.compare_digest(
+        credentials.credentials.encode(), token.encode()
+    ):
+        raise HTTPException(
+            status_code=401, detail="Invalid operator token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+@router.post("/run/{step_num}", dependencies=[Depends(authorize_operator)])
+async def run_step(step_num: int) -> StreamingResponse:
+    if not 1 <= step_num <= len(STEPS):
         raise HTTPException(status_code=400, detail=f"step_num must be 1–{len(STEPS)}")
+    prereq = STEPS[step_num - 1]["prereq"]
+    prereq_ok = prereq is None or await asyncio.to_thread(_step_done, prereq)
+    if not prereq_ok:
+        raise HTTPException(status_code=409, detail="Pipeline prerequisite is incomplete")
     return StreamingResponse(
-        _run_generator([step_num]),
+        _run_generator([step_num], promote_candidate=step_num == 5),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )
 
 
-@router.get("/run-all")
-async def run_all():
+@router.post("/run-all", dependencies=[Depends(authorize_operator)])
+async def run_all(rebuild: bool = False) -> StreamingResponse:
+    steps = list(range(1, len(STEPS) + 1))
+    if not rebuild:
+        if await asyncio.to_thread(_step_done, 1):
+            steps.remove(1)
+        if await asyncio.to_thread(_sentiment_model_ready):
+            steps.remove(4)
     return StreamingResponse(
-        _run_generator(list(range(1, len(STEPS) + 1))),
+        _run_generator(steps, promote_candidate=4 in steps, refresh=not rebuild),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )

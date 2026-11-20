@@ -499,3 +499,55 @@ def test_embedding_map_stratifies_limited_points_by_parent_and_subreddit():
         "OpenAI",
         "LocalLLaMA",
     }
+
+
+def test_embedding_manifest_refresh_is_atomic(tmp_path, monkeypatch):
+    import numpy as np
+    import pytest
+
+    from src.analysis import queries
+    from src.ml.preprocessing import EmbeddingGenerator
+
+    monkeypatch.setenv(queries.SEMANTIC_MODEL_DIR_ENV, str(tmp_path))
+    embedder = EmbeddingGenerator(cache_dir=str(tmp_path), device="cpu")
+    embedder.save_cache(np.ones((1, 384)), {"old": 0})
+    first_paths = queries._semantic_artifact_paths()
+    assert queries._semantic_artifacts(*first_paths)[0] == {"old": 0}
+
+    original = embedder._checkpoint_store._atomic_save_json
+
+    def fail_manifest(path, value):
+        if path.name == "embeddings_manifest.json":
+            raise OSError("publication failed")
+        original(path, value)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(embedder._checkpoint_store, "_atomic_save_json", fail_manifest)
+        with pytest.raises(OSError, match="publication failed"):
+            embedder.save_cache(np.zeros((1, 384)), {"new": 0})
+    assert queries._semantic_artifact_paths() == first_paths
+    embedder.save_cache(np.zeros((1, 384)), {"new": 0})
+    assert queries._semantic_artifacts(*queries._semantic_artifact_paths())[0] == {"new": 0}
+
+
+def test_semantic_search_matches_sentiment_by_record_type(tmp_path, monkeypatch):
+    from src.analysis import queries
+
+    monkeypatch.setenv(queries.SEMANTIC_MODEL_DIR_ENV, str(tmp_path))
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.executescript("""
+        CREATE TABLE posts (id TEXT, subreddit TEXT, timestamp TEXT);
+        CREATE TABLE comments (id TEXT, subreddit TEXT, timestamp TEXT);
+        INSERT INTO posts VALUES ('same', 'example', '2020-01-01');
+        INSERT INTO comments VALUES ('same', 'example', '2020-01-02');
+        CREATE TABLE preprocessed (id TEXT, content_type TEXT, clean_text TEXT, embedding_key TEXT);
+        INSERT INTO preprocessed VALUES ('same','post','collision post',NULL), ('same','comment','collision reply',NULL);
+        CREATE TABLE sentiment_predictions (id TEXT, content_type TEXT, label TEXT, confidence REAL);
+        INSERT INTO sentiment_predictions VALUES ('same','post','positive',0.8), ('same','comment','negative',0.9);
+    """)
+    hits = queries.semantic_search(conn, "collision", limit=10)
+    assert {(hit["id"], hit["content_type"], hit["label"]) for hit in hits} == {
+        ("same", "post", "positive"),
+        ("same", "comment", "negative"),
+    }

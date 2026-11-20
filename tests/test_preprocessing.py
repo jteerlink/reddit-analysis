@@ -306,3 +306,34 @@ def test_run_preprocessing_idempotent(temp_db):
     count = conn.execute("SELECT COUNT(*) FROM preprocessed").fetchone()[0]
     conn.close()
     assert count == 5
+
+
+def test_legacy_derived_key_upgrade_retains_post_and_comment_with_same_id(tmp_path):
+    from src.ml.db import get_connection, ensure_preprocessed_table, ensure_sentiment_table, upsert_preprocessed
+    from src.ml.db import upsert_sentiment, iter_unscored_records
+
+    path = str(tmp_path / "identity.db")
+    conn = get_connection(path)
+    conn.executescript("""
+        CREATE TABLE preprocessed (
+            id TEXT PRIMARY KEY, content_type TEXT NOT NULL, raw_text TEXT, clean_text TEXT,
+            token_count INTEGER, is_filtered INTEGER NOT NULL DEFAULT 0, filter_reason TEXT,
+            embedding_key TEXT, processed_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO preprocessed (id, content_type, clean_text, embedding_key)
+        VALUES ('shared', 'post', 'legacy post', 'shared');
+        CREATE TABLE topic_assignments (
+            id TEXT PRIMARY KEY, topic_id INTEGER, FOREIGN KEY (id) REFERENCES preprocessed(id)
+        );
+        INSERT INTO topic_assignments VALUES ('shared', 2);
+    """)
+    ensure_preprocessed_table(conn)
+    ensure_sentiment_table(conn)
+    upsert_preprocessed(conn, [("shared", "comment", "raw", "comment", 1, 0, None, "comment:shared")])
+    upsert_sentiment(conn, [("shared", "post", "positive", 0.9, "[]", "legacy")])
+    assert [(row["id"], row["content_type"]) for batch in iter_unscored_records(conn) for row in batch] == [
+        ("shared", "comment")
+    ]
+    assert conn.execute("SELECT content_type FROM topic_assignments").fetchone()[0] == "post"
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    conn.close()

@@ -77,26 +77,25 @@ def _executemany(conn, sql: str, rows: List[Tuple]) -> None:
 def _upsert(conn, table: str, columns: list[str], conflict: list[str], update: list[str], rows: List[Tuple], commit: bool = True) -> None:
     if not rows:
         return
-    if is_postgres_connection(conn):
-        marker = ", ".join([_marker(conn)] * len(columns))
-        assignments = ", ".join(f"{col} = EXCLUDED.{col}" for col in update)
-        sql = (
-            f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({marker}) "
-            f"ON CONFLICT ({', '.join(conflict)}) DO UPDATE SET {assignments}"
-        )
-    else:
-        marker = ", ".join(["?"] * len(columns))
-        sql = f"INSERT OR REPLACE INTO {table} ({', '.join(columns)}) VALUES ({marker})"
+    marker = ", ".join([_marker(conn)] * len(columns))
+    assignments = ", ".join(f"{column} = EXCLUDED.{column}" for column in update)
+    sql = (
+        f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({marker}) "
+        f"ON CONFLICT ({', '.join(conflict)}) DO UPDATE SET {assignments}"
+    )
     _executemany(conn, sql, rows)
     if commit:
         conn.commit()
 
 
 def ensure_preprocessed_table(conn) -> None:
+    from .record_identity import migrate_record_identity
+
+    migrate_record_identity(conn)
     if is_postgres_connection(conn):
         _execute(conn, """
             CREATE TABLE IF NOT EXISTS preprocessed (
-                id TEXT PRIMARY KEY,
+                id TEXT NOT NULL,
                 content_type TEXT NOT NULL,
                 raw_text TEXT,
                 clean_text TEXT,
@@ -104,13 +103,14 @@ def ensure_preprocessed_table(conn) -> None:
                 is_filtered BOOLEAN NOT NULL DEFAULT FALSE,
                 filter_reason TEXT,
                 embedding_key TEXT,
-                processed_at TIMESTAMPTZ DEFAULT NOW()
+                processed_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (id, content_type)
             )
         """)
     else:
         _execute(conn, """
             CREATE TABLE IF NOT EXISTS preprocessed (
-                id TEXT PRIMARY KEY,
+                id TEXT NOT NULL,
                 content_type TEXT NOT NULL,
                 raw_text TEXT,
                 clean_text TEXT,
@@ -118,7 +118,8 @@ def ensure_preprocessed_table(conn) -> None:
                 is_filtered INTEGER NOT NULL DEFAULT 0,
                 filter_reason TEXT,
                 embedding_key TEXT,
-                processed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                processed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (id, content_type)
             )
         """)
     _execute(conn, "CREATE INDEX IF NOT EXISTS idx_preprocessed_filtered ON preprocessed(is_filtered)")
@@ -129,13 +130,17 @@ def iter_raw_records(conn, batch_size: int = 1000) -> Generator[List, None, None
     query = f"""
         SELECT id, title, content, 'post' AS content_type, author, subreddit
         FROM posts
-        WHERE id NOT IN (SELECT id FROM preprocessed)
-           OR id IN (SELECT id FROM preprocessed WHERE is_filtered = {_false(conn)} AND embedding_key IS NULL)
+        WHERE NOT EXISTS (
+            SELECT 1 FROM preprocessed p WHERE p.id = posts.id AND p.content_type = 'post'
+              AND (p.is_filtered <> {_false(conn)} OR p.embedding_key IS NOT NULL)
+        )
         UNION ALL
         SELECT id, NULL AS title, content, 'comment' AS content_type, author, subreddit
         FROM comments
-        WHERE id NOT IN (SELECT id FROM preprocessed)
-           OR id IN (SELECT id FROM preprocessed WHERE is_filtered = {_false(conn)} AND embedding_key IS NULL)
+        WHERE NOT EXISTS (
+            SELECT 1 FROM preprocessed p WHERE p.id = comments.id AND p.content_type = 'comment'
+              AND (p.is_filtered <> {_false(conn)} OR p.embedding_key IS NOT NULL)
+        )
     """
     cursor = _execute(conn, query)
     while True:
@@ -156,32 +161,37 @@ def upsert_preprocessed(conn, rows: List[Tuple]) -> None:
         "filter_reason",
         "embedding_key",
     ]
-    _upsert(conn, "preprocessed", columns, ["id"], columns[1:], rows)
+    _upsert(conn, "preprocessed", columns, ["id", "content_type"], columns[2:], rows)
 
 
 def ensure_sentiment_table(conn) -> None:
+    from .record_identity import migrate_record_identity
+
+    migrate_record_identity(conn)
     if is_postgres_connection(conn):
         _execute(conn, """
             CREATE TABLE IF NOT EXISTS sentiment_predictions (
-                id TEXT PRIMARY KEY,
-                content_type TEXT,
+                id TEXT NOT NULL,
+                content_type TEXT NOT NULL,
                 label TEXT,
                 confidence DOUBLE PRECISION,
                 logits JSONB,
                 model_version TEXT,
-                predicted_at TIMESTAMPTZ DEFAULT NOW()
+                predicted_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (id, content_type)
             )
         """)
     else:
         _execute(conn, """
             CREATE TABLE IF NOT EXISTS sentiment_predictions (
-                id TEXT PRIMARY KEY,
-                content_type TEXT,
+                id TEXT NOT NULL,
+                content_type TEXT NOT NULL,
                 label TEXT,
                 confidence REAL,
                 logits TEXT,
                 model_version TEXT,
-                predicted_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                predicted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (id, content_type)
             )
         """)
     _execute(conn, "CREATE INDEX IF NOT EXISTS idx_sentiment_label ON sentiment_predictions(label)")
@@ -195,7 +205,8 @@ def iter_unscored_records(conn, batch_size: int = 1000) -> Generator[List, None,
         WHERE is_filtered = {_false(conn)}
           AND clean_text IS NOT NULL
           AND clean_text != ''
-          AND id NOT IN (SELECT id FROM sentiment_predictions)
+          AND NOT EXISTS (SELECT 1 FROM sentiment_predictions sp
+            WHERE sp.id = preprocessed.id AND sp.content_type = preprocessed.content_type)
     """
     cursor = _execute(conn, query)
     while True:
@@ -212,10 +223,13 @@ def upsert_sentiment(conn, rows: List[Tuple]) -> None:
             for row in rows
         ]
     columns = ["id", "content_type", "label", "confidence", "logits", "model_version"]
-    _upsert(conn, "sentiment_predictions", columns, ["id"], columns[1:], rows)
+    _upsert(conn, "sentiment_predictions", columns, ["id", "content_type"], columns[2:], rows)
 
 
 def ensure_topics_tables(conn) -> None:
+    from .record_identity import migrate_record_identity
+
+    migrate_record_identity(conn)
     if is_postgres_connection(conn):
         _execute(conn, """
             CREATE TABLE IF NOT EXISTS topics (
@@ -229,11 +243,14 @@ def ensure_topics_tables(conn) -> None:
         """)
         _execute(conn, """
             CREATE TABLE IF NOT EXISTS topic_assignments (
-                id TEXT PRIMARY KEY REFERENCES preprocessed(id),
+                id TEXT NOT NULL,
+                content_type TEXT NOT NULL DEFAULT 'post',
                 topic_id INTEGER NOT NULL,
                 probability DOUBLE PRECISION,
                 model_version TEXT,
-                assigned_at TIMESTAMPTZ DEFAULT NOW()
+                assigned_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (id, content_type),
+                FOREIGN KEY (id, content_type) REFERENCES preprocessed(id, content_type)
             )
         """)
         _execute(conn, """
@@ -259,12 +276,14 @@ def ensure_topics_tables(conn) -> None:
         """)
         _execute(conn, """
             CREATE TABLE IF NOT EXISTS topic_assignments (
-                id TEXT PRIMARY KEY,
+                id TEXT NOT NULL,
+                content_type TEXT NOT NULL DEFAULT 'post',
                 topic_id INTEGER NOT NULL,
                 probability REAL,
                 model_version TEXT,
                 assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (id) REFERENCES preprocessed(id)
+                PRIMARY KEY (id, content_type),
+                FOREIGN KEY (id, content_type) REFERENCES preprocessed(id, content_type)
             )
         """)
         _execute(conn, """
@@ -327,10 +346,11 @@ def upsert_topics(conn, rows: List[Tuple], commit: bool = True) -> None:
 
 
 def upsert_topic_assignments(conn, rows: List[Tuple], commit: bool = True) -> None:
-    columns = ["id", "topic_id", "probability"]
-    if rows and len(rows[0]) >= 4:
-        columns.append("model_version")
-    _upsert(conn, "topic_assignments", columns, ["id"], columns[1:], rows, commit=commit)
+    from .record_identity import normalize_topic_rows
+
+    rows = normalize_topic_rows(conn, rows)
+    columns = ["id", "content_type", "topic_id", "probability", "model_version"]
+    _upsert(conn, "topic_assignments", columns, ["id", "content_type"], columns[2:], rows, commit=commit)
 
 
 def upsert_topic_over_time(conn, rows: List[Tuple], commit: bool = True) -> None:

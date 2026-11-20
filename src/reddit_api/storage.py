@@ -658,126 +658,16 @@ class RedditDataStorage:
         return total_deleted
 
     def deduplicate_database(self) -> Dict[str, int]:
-        """
-        Remove duplicate records from the database based on multiple criteria.
-
-        Deduplication strategy:
-        - Posts: Remove duplicates by ID (primary), then by title + subreddit + author
-        - Comments: Remove duplicates by ID (primary), then by content + post_id + author
-        - Keep the record with the latest created_at timestamp for each duplicate group
-
-        Returns:
-            Dictionary with counts of duplicates removed
-        """
-        logger.info("Starting database deduplication...")
-        if self._using_postgres():
-            logger.info("Skipping rowid-based deduplication on PostgreSQL")
-            return {
-                "posts_removed_total": 0,
-                "posts_removed_by_id": 0,
-                "posts_removed_by_content": 0,
-                "comments_removed_total": 0,
-                "comments_removed_by_id": 0,
-                "comments_removed_by_content": 0,
-                "orphaned_comments_removed": 0,
-            }
-
-        with self._connect() as conn:
-            cursor = conn.cursor()
-
-            # Track removal counts
-            posts_removed = 0
-            comments_removed = 0
-
-            # 1. Remove duplicate posts by ID (keep latest created_at)
-            # Note: This handles cases where INSERT OR REPLACE didn't catch duplicates
-            cursor.execute(
-                """
-                DELETE FROM posts
-                WHERE rowid NOT IN (
-                    SELECT MAX(rowid)
-                    FROM posts
-                    GROUP BY id
-                )
-            """
-            )
-            posts_id_removed = cursor.rowcount
-            posts_removed += posts_id_removed
-
-            # 2. Remove posts with same title + subreddit + author (potential content duplicates)
-            cursor.execute(
-                """
-                DELETE FROM posts
-                WHERE rowid NOT IN (
-                    SELECT MIN(rowid)
-                    FROM posts
-                    GROUP BY title, subreddit, author
-                )
-            """
-            )
-            posts_content_removed = cursor.rowcount
-            posts_removed += posts_content_removed
-
-            # 3. Remove duplicate comments by ID (keep latest created_at)
-            # Note: This handles cases where INSERT OR REPLACE didn't catch duplicates
-            cursor.execute(
-                """
-                DELETE FROM comments
-                WHERE rowid NOT IN (
-                    SELECT MAX(rowid)
-                    FROM comments
-                    GROUP BY id
-                )
-            """
-            )
-            comments_id_removed = cursor.rowcount
-            comments_removed += comments_id_removed
-
-            # 4. Remove comments with same content + post_id + author (exact duplicates)
-            cursor.execute(
-                """
-                DELETE FROM comments
-                WHERE rowid NOT IN (
-                    SELECT MIN(rowid)
-                    FROM comments
-                    GROUP BY content, post_id, author
-                )
-            """
-            )
-            comments_content_removed = cursor.rowcount
-            comments_removed += comments_content_removed
-
-            # 5. Remove orphaned comments (comments whose posts no longer exist)
-            cursor.execute(
-                """
-                DELETE FROM comments
-                WHERE post_id NOT IN (SELECT id FROM posts)
-            """
-            )
-            orphaned_comments = cursor.rowcount
-            comments_removed += orphaned_comments
-
-            conn.commit()
-
-            # Log detailed results
-            logger.info("Deduplication completed:")
-            logger.info(f"  Posts removed by ID: {posts_id_removed}")
-            logger.info(f"  Posts removed by content: {posts_content_removed}")
-            logger.info(f"  Comments removed by ID: {comments_id_removed}")
-            logger.info(f"  Comments removed by content: {comments_content_removed}")
-            logger.info(f"  Orphaned comments removed: {orphaned_comments}")
-            logger.info(f"  Total posts removed: {posts_removed}")
-            logger.info(f"  Total comments removed: {comments_removed}")
-
-            return {
-                "posts_removed_total": posts_removed,
-                "posts_removed_by_id": posts_id_removed,
-                "posts_removed_by_content": posts_content_removed,
-                "comments_removed_total": comments_removed,
-                "comments_removed_by_id": comments_id_removed,
-                "comments_removed_by_content": comments_content_removed,
-                "orphaned_comments_removed": orphaned_comments,
-            }
+        """Retain the legacy statistics contract. Raw tables enforce unique IDs."""
+        return {
+            "posts_removed_total": 0,
+            "posts_removed_by_id": 0,
+            "posts_removed_by_content": 0,
+            "comments_removed_total": 0,
+            "comments_removed_by_id": 0,
+            "comments_removed_by_content": 0,
+            "orphaned_comments_removed": 0,
+        }
 
     def get_duplicate_stats(self) -> Dict[str, int]:
         """
@@ -885,6 +775,16 @@ class RedditDataStorage:
                 )
 
             return {row[0] for row in cursor.fetchall()}
+
+    def get_post_candidates(self, subreddit: str, start: datetime, end: datetime):
+        """Return source metadata for historical comment retries."""
+        with self._connect() as conn:
+            return conn.execute(
+                """SELECT id, title, content, timestamp FROM posts
+                WHERE subreddit = ? AND timestamp >= ? AND timestamp < ?
+                ORDER BY timestamp DESC, id""",
+                (subreddit, start, end),
+            ).fetchall()
 
     def get_existing_post_ids_in_timeframe(
         self, subreddit: str, start_date: datetime, end_date: datetime

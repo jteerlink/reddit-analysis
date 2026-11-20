@@ -122,6 +122,7 @@ class NarrativeEventsResponse(BaseModel):
 
 class EmbeddingPoint(BaseModel):
     id: str
+    content_type: Optional[str] = None
     x: float
     y: float
     cluster_id: int

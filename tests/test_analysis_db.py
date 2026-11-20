@@ -33,7 +33,7 @@ def test_analysis_schema_and_backfill_lifecycle_are_idempotent():
     assert claimed["status"] == "running"
     assert claimed["lease_owner"] == "worker-1"
 
-    completed = complete_artifact(conn, claimed["artifact_id"], {"done": True})
+    completed = complete_artifact(conn, claimed["artifact_id"], {"done": True}, claim=("worker-1", claimed["attempts"]))
     assert completed["status"] == "succeeded"
     assert completed["checksum"]
 
@@ -82,7 +82,7 @@ def test_analysis_lifecycle_retries_transient_failures_until_terminal():
         max_attempts=1,
     )
     claimed = claim_next_artifact(conn, worker_id="worker-1")
-    failed = fail_artifact(conn, claimed["artifact_id"], "timeout", "provider timed out")
+    failed = fail_artifact(conn, claimed["artifact_id"], "timeout", "provider timed out", claim=("worker-1", claimed["attempts"]))
 
     assert failed["artifact_id"] == artifact["artifact_id"]
     assert failed["status"] == "failed"
@@ -329,3 +329,33 @@ def test_deterministic_brief_includes_evidence_sections():
     assert payload["sections"][1]["evidence"][0]["anchor_type"] == "event_id"
     assert "10 comments" in payload["sections"][2]["body"]
     assert "docs" not in payload["sections"][2]["body"]
+
+
+def test_artifact_attempt_fences_reclaimed_work_and_honors_retry_delay():
+    import pytest
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_analysis_tables(conn)
+    artifact = enqueue_artifact(conn, kind="brief", source_input_hash="lease-expiration")
+    first = claim_next_artifact(conn, "worker", lease_seconds=-1)
+    second = claim_next_artifact(conn, "worker")
+    assert second["attempts"] == first["attempts"] + 1
+    with pytest.raises(ValueError, match="no longer current"):
+        complete_artifact(conn, artifact["artifact_id"], {}, claim=("worker", first["attempts"]))
+    fail_artifact(conn, artifact["artifact_id"], "timeout", "retry later", 3600,
+                  claim=("worker", second["attempts"]))
+    assert claim_next_artifact(conn, "worker") is None
+
+
+
+def test_final_expired_attempt_is_marked_failed():
+    from src.analysis.db import get_artifact
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    ensure_analysis_tables(conn)
+    artifact = enqueue_artifact(conn, kind="brief", source_input_hash="exhausted-attempt", max_attempts=1)
+    assert claim_next_artifact(conn, "worker", lease_seconds=-1)
+    assert claim_next_artifact(conn, "worker") is None
+    assert get_artifact(conn, artifact["artifact_id"])["status"] == "failed"

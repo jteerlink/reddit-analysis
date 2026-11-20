@@ -721,6 +721,17 @@ export const generatedApiSchemas = {
         "title": "Cluster Id",
         "type": "integer"
       },
+      "content_type": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Content Type"
+      },
       "date": {
         "anyOf": [
           {

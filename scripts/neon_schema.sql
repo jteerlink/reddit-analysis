@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS batch_collections (
 );
 
 CREATE TABLE IF NOT EXISTS preprocessed (
-    id TEXT PRIMARY KEY,
+    id TEXT NOT NULL,
     content_type TEXT NOT NULL,
     raw_text TEXT,
     clean_text TEXT,
@@ -70,17 +70,25 @@ CREATE TABLE IF NOT EXISTS preprocessed (
     is_filtered BOOLEAN NOT NULL DEFAULT FALSE,
     filter_reason TEXT,
     embedding_key TEXT,
-    processed_at TIMESTAMPTZ DEFAULT NOW()
+    processed_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (id, content_type)
 );
 
 CREATE TABLE IF NOT EXISTS sentiment_predictions (
-    id TEXT PRIMARY KEY,
-    content_type TEXT,
+    id TEXT NOT NULL,
+    content_type TEXT NOT NULL,
     label TEXT,
     confidence DOUBLE PRECISION,
     logits JSONB,
     model_version TEXT,
-    predicted_at TIMESTAMPTZ DEFAULT NOW()
+    predicted_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (id, content_type)
+);
+
+CREATE TABLE IF NOT EXISTS sentiment_model_active (
+    slot INTEGER PRIMARY KEY,
+    model_dir TEXT NOT NULL,
+    model_version TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS topics (
@@ -101,10 +109,13 @@ CREATE TABLE IF NOT EXISTS subreddit_categories (
 );
 
 CREATE TABLE IF NOT EXISTS topic_assignments (
-    id TEXT PRIMARY KEY REFERENCES preprocessed(id),
+    id TEXT NOT NULL,
+    content_type TEXT NOT NULL,
     topic_id INTEGER NOT NULL,
     probability DOUBLE PRECISION,
-    assigned_at TIMESTAMPTZ DEFAULT NOW()
+    assigned_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (id, content_type),
+    FOREIGN KEY (id, content_type) REFERENCES preprocessed(id, content_type)
 );
 
 CREATE TABLE IF NOT EXISTS topic_over_time (
@@ -242,10 +253,12 @@ CREATE TABLE IF NOT EXISTS artifact_status_history (
 );
 
 CREATE TABLE IF NOT EXISTS embedding_2d (
-    post_id TEXT PRIMARY KEY,
+    post_id TEXT NOT NULL,
+    content_type TEXT NOT NULL,
     x DOUBLE PRECISION NOT NULL,
     y DOUBLE PRECISION NOT NULL,
-    cluster_id INTEGER NOT NULL
+    cluster_id INTEGER NOT NULL,
+    PRIMARY KEY (post_id, content_type)
 );
 
 CREATE TABLE IF NOT EXISTS cluster_labels (

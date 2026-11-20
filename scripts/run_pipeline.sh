@@ -414,7 +414,7 @@ gate_1_prerequisites() {
 
 gate_2_preprocessing() {
   # Gate: embeddings cache exists
-  [[ -f "$PROJECT_ROOT/models/embeddings_cache.npy" ]] || return 1
+  [[ -f "$PROJECT_ROOT/models/embeddings_manifest.json" || -f "$PROJECT_ROOT/models/embeddings_cache.npy" ]] || return 1
   return 0
 }
 
@@ -437,8 +437,7 @@ except:
 
 gate_4_sentiment_model() {
   # Gate: model directory and config file exist
-  [[ -d "$PROJECT_ROOT/models/sentiment_v1" ]] || return 1
-  [[ -f "$PROJECT_ROOT/models/sentiment_v1/config.json" ]] || return 1
+  "$PYTHON" -c 'import sys; from pathlib import Path; from src.ml.sentiment import pipeline_model_dir; sys.exit(not (Path(pipeline_model_dir(sys.argv[1])) / "config.json").is_file())' "$DB" || return 1
   return 0
 }
 
@@ -536,7 +535,8 @@ freshness_3_weak_labels() {
 }
 
 freshness_4_sentiment_model() {
-  local model_dir="$PROJECT_ROOT/models/sentiment_v1"
+  local model_dir
+  model_dir=$("$PYTHON" -c 'import sys; from src.ml.sentiment import pipeline_model_dir; print(pipeline_model_dir(sys.argv[1]))' "$DB") || return 0
   [[ -d "$model_dir" ]] || { echo "—"; return; }
   local csv="$PROJECT_ROOT/data/weak_labels.csv"
   [[ -f "$csv" ]] || { printf "${GREEN}Fresh${RESET}"; return; }
@@ -678,7 +678,7 @@ step_gate_desc() {
     1) echo "project Python reachable, database exists, models/ and data/ present" ;;
     2) echo "models/embeddings_cache.npy exists" ;;
     3) echo "data/weak_labels.csv exists with ≥ 30,000 rows" ;;
-    4) echo "models/sentiment_v1/config.json exists" ;;
+    4) echo "Active sentiment model config exists" ;;
     5) echo "sentiment_predictions table has rows" ;;
     6) echo "≥ 20 topics with coherence ≥ 0.50 in topics table" ;;
     7) echo "sentiment_forecast table has rows" ;;
@@ -692,7 +692,7 @@ step_hint() {
   case "$step" in
     2) echo "Run: uv pip install -e \".[ml,production]\"  |  Check DB path with: ls -lh $DB" ;;
     3) echo "Lower --threshold to 0.4 in the weak labels step to get more labeled rows" ;;
-    4) echo "Lower --threshold 0.4 in weak labels step or check models/sentiment_v1/ for partial output" ;;
+    4) echo "Lower --threshold 0.4 in weak labels step or inspect the candidate training logs" ;;
     5) echo "Reduce --batch-size to 8 if OOM on training; use --batch-size 512 for inference" ;;
     6) echo "Try: TOPIC_MIN_CLUSTER_SIZE=15 TOPIC_MIN_TOPIC_SIZE=15 ./scripts/run_pipeline.sh --step 6" ;;
     7) echo "Ensure batch inference ran first to populate sentiment_predictions" ;;
@@ -895,49 +895,9 @@ run_step_4() {
   info "Training sentiment model (20–40 min on MPS, longer on CPU)..."
   printf "  ${DIM}Logs: $logfile${RESET}\n\n"
   if $VERBOSE; then
-    (cd "$PROJECT_ROOT" && "$PYTHON" - <<'PYEOF'
-from src.ml.sentiment import train
-result = train(
-    weak_labels_path="data/weak_labels.csv",
-    model_dir="models/sentiment_v1",
-    val_split=0.2,
-    epochs=3,
-    lr=2e-5,
-    batch_size=16,
-    max_length=256,
-    mlflow_tracking=True,
-)
-print(f"Val F1 (macro):  {result['val_f1']:.4f}")
-print(f"  F1 positive:   {result['val_f1_positive']:.4f}")
-print(f"  F1 neutral:    {result['val_f1_neutral']:.4f}")
-print(f"  F1 negative:   {result['val_f1_negative']:.4f}")
-print(f"Device:          {result['device']}")
-print(f"Model saved to:  {result['model_dir']}")
-PYEOF
-) | tee "$logfile"
+    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/batch_inference.py --db "$DB" --train-candidate) | tee "$logfile" || return 1
   else
-    (cd "$PROJECT_ROOT" && "$PYTHON" - <<'PYEOF'
-from src.ml.sentiment import train
-result = train(
-    weak_labels_path="data/weak_labels.csv",
-    model_dir="models/sentiment_v1",
-    val_split=0.2,
-    epochs=3,
-    lr=2e-5,
-    batch_size=16,
-    max_length=256,
-    mlflow_tracking=True,
-)
-print(f"Val F1 (macro):  {result['val_f1']:.4f}")
-print(f"  F1 positive:   {result['val_f1_positive']:.4f}")
-print(f"  F1 neutral:    {result['val_f1_neutral']:.4f}")
-print(f"  F1 negative:   {result['val_f1_negative']:.4f}")
-print(f"Device:          {result['device']}")
-print(f"Model saved to:  {result['model_dir']}")
-PYEOF
-) > "$logfile" 2>&1 \
-      && { grep -E "Val F1|F1 (positive|neutral|negative)|Device" "$logfile" | \
-           while read -r line; do success "$line"; done; } \
+    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/batch_inference.py --db "$DB" --train-candidate) > "$logfile" 2>&1 \
       || { error "Training failed. Log: $logfile"; tail -20 "$logfile"; return 1; }
   fi
 
@@ -946,15 +906,10 @@ PYEOF
   local f1
   f1=$(extract_val_f1 "$logfile")
   f1="${f1:-0}"
-  if gate_4_sentiment_model && "$PYTHON" -c "exit(0 if float('$f1') >= 0.70 else 1)" 2>/dev/null; then
+  if "$PYTHON" -c "exit(0 if float('$f1') >= 0.70 else 1)" 2>/dev/null; then
     success "Gate PASSED — val_f1 = $f1"
+    TRAINED_CANDIDATE=true
     mark_done 4
-  elif gate_4_sentiment_model; then
-    warn "Model saved but val_f1 = $f1 (below 0.70 target)"
-    warn "$(step_hint 4)"
-    printf "  Continue anyway? [y/N] "
-    read -r ans
-    [[ "$ans" =~ ^[Yy]$ ]] && mark_done 4 || return 1
   else
     error "Gate FAILED — model directory not found"
     warn "$(step_hint 4)"
@@ -965,20 +920,21 @@ PYEOF
 run_step_5() {
   local logfile="$1"
   local rescore_args=()
+  if [[ "$MODE" != "all" || "$FULL_REBUILD" == "true" || "${TRAINED_CANDIDATE:-false}" == "true" ]]; then
+    rescore_args=(--promote-candidate)
+  fi
   if [[ "${PIPELINE_RESCORE_EXISTING:-false}" == "true" ]]; then
-    rescore_args=(--rescore-existing)
+    rescore_args+=(--rescore-existing)
     warn "Explicit rescore requested; replacing the active model generation"
   fi
   info "Running batch inference across all preprocessed records..."
   if $VERBOSE; then
     (cd "$PROJECT_ROOT" && "$PYTHON" scripts/batch_inference.py \
       --db "$DB" \
-      --model-dir models/sentiment_v1 \
       --batch-size 1000 "${rescore_args[@]}") | tee "$logfile"
   else
     (cd "$PROJECT_ROOT" && "$PYTHON" scripts/batch_inference.py \
       --db "$DB" \
-      --model-dir models/sentiment_v1 \
       --batch-size 1000 "${rescore_args[@]}") > "$logfile" 2>&1 \
       && success "Batch inference complete" \
       || { error "Batch inference failed. Log: $logfile"; tail -20 "$logfile"; return 1; }
@@ -1266,7 +1222,8 @@ should_skip_refresh() {
       # A prior topic result is reusable even when the experimental coherence
       # gate is below its aspirational threshold; --full-rebuild is required
       # to refit it deliberately.
-      [[ "$(table_exists topics)" == "yes" ]] &&
+      [[ "$(table_exists topic_refit_required)" != "yes" ]] &&
+        [[ "$(table_exists topics)" == "yes" ]] &&
         [[ "$(python_query 'SELECT COUNT(*) FROM topics' 2>/dev/null || echo 0)" -gt 0 ]]
       ;;
     *) return 1 ;;
@@ -1321,6 +1278,10 @@ load_dotenv_file
 configure_database_environment
 refresh_python
 if [[ "$MODE" != "check" ]]; then
+  mkdir -p "$STATUS_DIR"
+  exec 9>>"$STATUS_DIR/workspace.lock"
+  "$PYTHON" -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)' ||
+    die "Pipeline already running"
   ensure_pipeline_environment "startup"
 fi
 

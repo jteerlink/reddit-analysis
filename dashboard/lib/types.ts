@@ -190,6 +190,7 @@ export interface ConfidenceBySubredditResponse {
 
 export interface EmbeddingPoint {
   id: string;
+  content_type?: string | null;
   x: number;
   y: number;
   cluster_id: number;

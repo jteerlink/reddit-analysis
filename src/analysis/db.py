@@ -236,10 +236,12 @@ def ensure_analysis_tables(conn: Any) -> None:
     """)
     execute(conn, f"""
         CREATE TABLE IF NOT EXISTS embedding_2d (
-            post_id TEXT PRIMARY KEY,
+            post_id TEXT NOT NULL,
+            content_type TEXT NOT NULL DEFAULT 'post',
             x {real_type} NOT NULL,
             y {real_type} NOT NULL,
-            cluster_id INTEGER NOT NULL
+            cluster_id INTEGER NOT NULL,
+            PRIMARY KEY (post_id, content_type)
         )
     """)
     execute(conn, """
@@ -418,45 +420,50 @@ def claim_next_artifact(
     max_concurrency: int = 1,
 ) -> Optional[dict]:
     """Claim one queued/stale artifact. Designed for a single local worker by default."""
-    marker = paramstyle()
+    postgres = is_postgres_connection(conn)
+    marker = "%s" if postgres else "?"
     now = _now()
     lease_until = _expired_iso(lease_seconds)
+    if postgres:
+        execute(conn, "SELECT pg_advisory_xact_lock(hashtext(%s))", (worker_id,))
+    elif not conn.in_transaction:
+        execute(conn, "BEGIN IMMEDIATE")
+    expired = execute(
+        conn,
+        f"""UPDATE analysis_artifacts SET status = 'failed', lease_owner = NULL,
+            lease_expires_at = NULL, updated_at = {marker}, error_category = 'lease_expired',
+            error_message = 'Final attempt lease expired'
+            WHERE status = 'running' AND lease_expires_at <= {marker}
+              AND attempts >= max_attempts RETURNING artifact_id""",
+        (now, now),
+    ).fetchall()
+    for row in expired:
+        _record_history(conn, row[0], "running", "failed", "lease_expired", None)
     running = execute(
         conn,
-        f"SELECT COUNT(*) FROM analysis_artifacts WHERE status = {marker} AND lease_owner = {marker}",
-        ("running", worker_id),
+        f"""SELECT COUNT(*) FROM analysis_artifacts WHERE status = 'running'
+        AND lease_owner = {marker} AND lease_expires_at > {marker}""",
+        (worker_id, now),
     ).fetchone()[0]
     if int(running or 0) >= max_concurrency:
+        conn.commit()
         return None
 
-    if is_postgres_connection(conn):
-        row = execute(
-            conn,
-            """
-            SELECT *
-            FROM analysis_artifacts
-            WHERE status IN ('queued', 'stale')
-               OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < %s)
-            ORDER BY created_at ASC
-            LIMIT 1
-            FOR UPDATE SKIP LOCKED
-            """,
-            (now,),
-        ).fetchone()
-    else:
-        row = execute(
-            conn,
-            """
-            SELECT *
-            FROM analysis_artifacts
-            WHERE status IN ('queued', 'stale')
-               OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?)
-            ORDER BY created_at ASC
-            LIMIT 1
-            """,
-            (now,),
-        ).fetchone()
+    eligible = f"""
+        attempts < max_attempts
+        AND (retry_after IS NULL OR retry_after <= {marker})
+        AND (status IN ('queued', 'stale')
+             OR (status = 'running' AND lease_expires_at <= {marker}))
+    """
+    row_lock = "FOR UPDATE SKIP LOCKED" if postgres else ""
+    row = execute(
+        conn,
+        f"""SELECT * FROM analysis_artifacts WHERE {eligible}
+        ORDER BY created_at, artifact_id LIMIT 1 {row_lock}""",
+        (now, now),
+    ).fetchone()
     if not row:
+        conn.commit()
         return None
 
     row_dict = _row_dict(row)
@@ -471,15 +478,13 @@ def claim_next_artifact(
             lease_owner = {marker},
             lease_expires_at = {marker},
             updated_at = {marker},
+            retry_after = NULL,
             error_category = NULL,
             error_message = NULL
         WHERE artifact_id = {marker}
-          AND (
-              status IN ('queued', 'stale')
-              OR (status = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at < {marker})
-          )
+          AND ({eligible})
         """,
-        (worker_id, lease_until, now, artifact_id, now),
+        (worker_id, lease_until, now, artifact_id, now, now),
     )
     if getattr(updated, "rowcount", 0) != 1:
         conn.rollback()
@@ -490,14 +495,27 @@ def claim_next_artifact(
     return get_artifact(conn, artifact_id)
 
 
-def complete_artifact(conn: Any, artifact_id: str, payload: dict) -> dict:
+def _artifact_claim_guard(
+    marker: str, claim: tuple[str, int] | None, now: str
+) -> tuple[str, tuple]:
+    if claim is None:
+        return "status != 'running'", ()
+    return (
+        f"status = 'running' AND lease_owner = {marker} AND attempts = {marker} "
+        f"AND lease_expires_at > {marker}",
+        (*claim, now),
+    )
+
+
+def complete_artifact(conn: Any, artifact_id: str, payload: dict, *, claim: tuple[str, int] | None = None) -> dict:
     marker = paramstyle()
     now = _now()
     payload_text = _json(payload)
     checksum = artifact_checksum(payload)
     row = get_artifact(conn, artifact_id)
     previous = row["status"] if row else None
-    execute(
+    guard, params = _artifact_claim_guard(marker, claim, now)
+    updated = execute(
         conn,
         f"""
         UPDATE analysis_artifacts
@@ -505,20 +523,24 @@ def complete_artifact(conn: Any, artifact_id: str, payload: dict) -> dict:
             payload = {marker},
             checksum = {marker},
             freshness_timestamp = {marker},
+            retry_after = NULL,
             lease_owner = NULL,
             lease_expires_at = NULL,
             updated_at = {marker}
-        WHERE artifact_id = {marker}
+        WHERE artifact_id = {marker} AND ({guard})
         """,
-        (payload_text, checksum, now, now, artifact_id),
+        (payload_text, checksum, now, now, artifact_id, *params),
     )
+    if updated.rowcount != 1:
+        conn.rollback()
+        raise ValueError("Artifact claim is missing or no longer current")
     _record_history(conn, artifact_id, previous, "succeeded", "complete", None)
     conn.commit()
     logger.info("analysis_artifact_succeeded", extra={"artifact_id": artifact_id})
     return get_artifact(conn, artifact_id) or {}
 
 
-def fail_artifact(conn: Any, artifact_id: str, category: str, message: str, retry_after_seconds: int = 300) -> dict:
+def fail_artifact(conn: Any, artifact_id: str, category: str, message: str, retry_after_seconds: int = 300, *, claim: tuple[str, int] | None = None) -> dict:
     marker = paramstyle()
     now = _now()
     row = get_artifact(conn, artifact_id)
@@ -528,7 +550,8 @@ def fail_artifact(conn: Any, artifact_id: str, category: str, message: str, retr
     retryable = category in {"timeout", "provider_unavailable", "rate_limited"}
     status = "queued" if retryable and attempts < max_attempts else "failed"
     retry_after = _expired_iso(retry_after_seconds) if status == "queued" else None
-    execute(
+    guard, params = _artifact_claim_guard(marker, claim, now)
+    updated = execute(
         conn,
         f"""
         UPDATE analysis_artifacts
@@ -539,10 +562,13 @@ def fail_artifact(conn: Any, artifact_id: str, category: str, message: str, retr
             lease_owner = NULL,
             lease_expires_at = NULL,
             updated_at = {marker}
-        WHERE artifact_id = {marker}
+        WHERE artifact_id = {marker} AND ({guard})
         """,
-        (status, category, message[:1000], retry_after, now, artifact_id),
+        (status, category, message[:1000], retry_after, now, artifact_id, *params),
     )
+    if updated.rowcount != 1:
+        conn.rollback()
+        raise ValueError("Artifact claim is missing or no longer current")
     _record_history(conn, artifact_id, previous, status, category, None)
     conn.commit()
     logger.warning("analysis_artifact_failed", extra={"artifact_id": artifact_id, "category": category, "status": status})

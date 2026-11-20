@@ -6,7 +6,7 @@ Handles collection of posts and comments from Reddit with filtering and processi
 
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List
 
 from .client import RateLimitedRedditClient
@@ -65,7 +65,7 @@ class RedditDataCollector:
                 title=submission.title,
                 content=submission.selftext or "",
                 upvotes=submission.score,
-                timestamp=datetime.fromtimestamp(submission.created_utc),
+                timestamp=datetime.fromtimestamp(submission.created_utc, timezone.utc),
                 subreddit=subreddit,
                 author=str(submission.author) if submission.author else "[deleted]",
                 author_karma=self._get_author_karma(submission.author),
@@ -96,7 +96,7 @@ class RedditDataCollector:
                     parent_id=comment.parent_id,
                     content=comment.body,
                     upvotes=comment.score,
-                    timestamp=datetime.fromtimestamp(comment.created_utc),
+                    timestamp=datetime.fromtimestamp(comment.created_utc, timezone.utc),
                     subreddit=subreddit,
                     author=str(comment.author) if comment.author else "[deleted]",
                     author_karma=self._get_author_karma(comment.author),
@@ -123,6 +123,13 @@ class RedditDataCollector:
 
         text_lower = text.lower()
         return any(keyword.lower() in text_lower for keyword in keywords)
+
+    def fetch_new_submissions(self, subreddit_name: str, limit: int):
+        """Fetch an unfiltered listing and propagate request failures."""
+        def fetch():
+            return list(self.client.reddit.subreddit(subreddit_name).new(limit=limit))
+
+        return self.client.make_request(fetch)
 
     def collect_subreddit_posts(self, subreddit_name: str, limit: int = 10,
                                 time_filter: str = 'day', sort: str = 'hot',
@@ -208,7 +215,7 @@ class RedditDataCollector:
             return []
 
     def collect_post_comments(self, post_id: str, limit: int = 20,
-                              use_pre_filtering: bool = True) -> List[RedditComment]:
+                              use_pre_filtering: bool = True, *, raise_on_error: bool = False) -> List[RedditComment]:
         """
         Collect comments from a specific post with optional pre-filtering.
 
@@ -273,6 +280,8 @@ class RedditDataCollector:
 
         except Exception as e:
             logger.error(f"Failed to collect comments from post {post_id}: {e}")
+            if raise_on_error:
+                raise
             return []
 
     def collect_all_data(self, posts_per_subreddit: int = 5, comments_per_post: int = 10) -> Dict:

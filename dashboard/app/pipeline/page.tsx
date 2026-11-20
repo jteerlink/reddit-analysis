@@ -6,7 +6,14 @@ import { SectionHeader } from "@/components/layout/SectionHeader";
 import { Badge } from "@/components/ui/badge";
 import type { PipelineStep } from "@/lib/types";
 
-const fetcher = (url: string) => fetch(url).then((r) => r.json());
+async function fetchStatus(url: string) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`Pipeline status returned HTTP ${response.status}`);
+  return {
+    steps: await response.json() as PipelineStep[],
+    localOperator: response.headers.get("X-Pipeline-Local-Operator") === "true",
+  };
+}
 
 const STATE_BADGE: Record<string, { variant: "default" | "secondary" | "outline" | "destructive"; label: string }> = {
   done: { variant: "default", label: "Done" },
@@ -17,9 +24,12 @@ const STATE_BADGE: Record<string, { variant: "default" | "secondary" | "outline"
 };
 
 export default function PipelinePage() {
-  const { data: steps, mutate } = useSWR<PipelineStep[]>("/api/pipeline/status", fetcher, { refreshInterval: 5000 });
+  const { data, error, mutate } = useSWR("/api/pipeline/status", fetchStatus, { refreshInterval: 5000 });
+  const steps = data?.steps;
   const [output, setOutput] = useState<string[]>(["No runs yet. Select a step above to begin."]);
   const [runningStep, setRunningStep] = useState<number | "all" | null>(null);
+  const [operatorToken, setOperatorToken] = useState("");
+  const canRun = data?.localOperator || Boolean(operatorToken);
   const terminalRef = useRef<HTMLPreElement>(null);
 
   useEffect(() => {
@@ -28,29 +38,42 @@ export default function PipelinePage() {
     }
   }, [output]);
 
-  async function runStep(stepNum: number | "all") {
+  async function runStep(stepNum: number | "all", rebuild = false) {
     if (runningStep !== null) return;
     setRunningStep(stepNum);
     setOutput([`=== Starting ${stepNum === "all" ? "all steps" : `step ${stepNum}`} ===`]);
 
-    const url = stepNum === "all" ? "/api/pipeline/run-all" : `/api/pipeline/run/${stepNum}`;
+    const url = stepNum === "all" ? `/api/pipeline/run-all?rebuild=${rebuild}` : `/api/pipeline/run/${stepNum}`;
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, {
+        method: "POST",
+        headers: operatorToken && !data?.localOperator ? { Authorization: `Bearer ${operatorToken}` } : undefined,
+      });
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.detail ?? `HTTP ${res.status}`);
+      }
       if (!res.body) throw new Error("No response body");
       const reader = res.body.getReader();
-      const dec = new TextDecoder("utf-8", { fatal: false });
-      let buf = "";
+      const dec = new TextDecoder();
+      let buffer = "";
+      let terminal = false;
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        buf += dec.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop() ?? "";
-        const events = lines.filter((l) => l.startsWith("data: ")).map((l) => l.slice(6));
-        if (events.length) setOutput((prev) => [...prev, ...events].slice(-300));
+        buffer += dec.decode(value, { stream: true });
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() ?? "";
+        for (const frame of frames) {
+          const lines = frame.split("\n");
+          const event = lines.find((line) => line.startsWith("event: "))?.slice(7);
+          const data = lines.filter((line) => line.startsWith("data: ")).map((line) => line.slice(6));
+          if (event === "result" || event === "busy") terminal = true;
+          const output = event === "result" ? [`Pipeline ${data.join(" ")}.`] : data;
+          if (output.length) setOutput((previous) => [...previous, ...output].slice(-300));
+        }
       }
-      const remaining = dec.decode();
-      if (remaining.startsWith("data: ")) setOutput((prev) => [...prev, remaining.slice(6)].slice(-300));
+      if (!terminal) throw new Error("Run interrupted before a result was received");
     } catch (e) {
       setOutput((prev) => [...prev, `[ERROR] ${e}`]);
     }
@@ -63,6 +86,15 @@ export default function PipelinePage() {
   return (
     <div className="space-y-6">
       <SectionHeader eyebrow="Operations" title="Pipeline runner" subtitle="Run each step in sequence to build the full ML pipeline." />
+
+      {(data || error) && !data?.localOperator && (
+        <label className="block text-sm">
+          Operator token
+          <input type="password" autoComplete="off" value={operatorToken}
+            onChange={(event) => setOperatorToken(event.target.value)}
+            className="ml-3 rounded border border-border bg-card px-2 py-1" />
+        </label>
+      )}
 
       {steps && (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -88,7 +120,7 @@ export default function PipelinePage() {
               </div>
               <Badge variant={badgeInfo.variant}>{badgeInfo.label}</Badge>
               <button
-                disabled={runningStep !== null || !step.prereq_ok}
+                disabled={!canRun || runningStep !== null || !step.prereq_ok}
                 onClick={() => runStep(step.num)}
                 className="px-3 py-1 rounded text-xs bg-muted text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
@@ -100,11 +132,17 @@ export default function PipelinePage() {
       </div>
 
       <button
-        disabled={runningStep !== null}
+        disabled={!canRun || runningStep !== null}
         onClick={() => runStep("all")}
         className="px-4 py-2 rounded-lg bg-amber-500 text-black text-sm font-medium hover:bg-amber-400 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
       >
-        {runningStep !== null ? "Running…" : "Run all steps"}
+        {runningStep !== null ? "Running…" : "Refresh pipeline"}
+      </button>
+
+      <button type="button" disabled={!canRun || runningStep !== null}
+        onClick={() => runStep("all", true)}
+        className="ml-2 rounded border border-border px-4 py-2 text-sm disabled:opacity-40">
+        Rebuild pipeline
       </button>
 
       <div className="rounded-xl border border-border bg-card overflow-hidden">

@@ -26,7 +26,7 @@ def main():
     parser.add_argument("--db", default="reddit_data.db", help="Path to SQLite database")
     parser.add_argument(
         "--model-dir",
-        default="models/sentiment_v1",
+        default=None,
         help="Path to fine-tuned DistilBERT model directory",
     )
     parser.add_argument(
@@ -46,21 +46,32 @@ def main():
         action="store_true",
         help="Explicitly replace predictions from an older model fingerprint",
     )
+    parser.add_argument("--train-candidate", action="store_true")
+    parser.add_argument("--promote-candidate", action="store_true")
     args = parser.parse_args()
+
+    from src.ml.sentiment import pipeline_candidate_dir, pipeline_model_dir, run_batch_inference, train_pipeline_candidate
+
+    if args.train_candidate:
+        result = train_pipeline_candidate(args.db)
+        print(f"Val F1 (macro): {result['val_f1']:.4f}")
+        return
+
+    candidate = pipeline_candidate_dir(args.db) if args.promote_candidate else None
+    args.model_dir = candidate or args.model_dir or pipeline_model_dir(args.db)
 
     model_dir = Path(args.model_dir)
     if not model_dir.exists():
         logger.error("Model directory not found: %s", model_dir)
         sys.exit(1)
 
-    from src.ml.sentiment import run_batch_inference
-
     logger.info("Starting batch inference: db=%s model=%s", args.db, args.model_dir)
     result = run_batch_inference(
         db_path=args.db,
         model_dir=args.model_dir,
         batch_size=args.batch_size,
-        rescore_existing=args.rescore_existing,
+        rescore_existing=args.rescore_existing or bool(candidate),
+        promote_candidate=bool(candidate),
     )
 
     total = result["total_scored"]

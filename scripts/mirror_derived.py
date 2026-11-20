@@ -6,7 +6,7 @@ import pandas as pd
 
 # Raw collection and historical artifact/audit tables are deliberately excluded.
 DERIVED_TABLES = (
-    "sentiment_predictions", "topics", "topic_assignments", "topic_over_time",
+    "sentiment_predictions", "sentiment_model_active", "topics", "topic_assignments", "topic_over_time",
     "sentiment_daily", "sentiment_moving_avg", "change_points",
     "sentiment_forecast", "topic_sentiment_trends", "embedding_2d", "cluster_labels",
 )

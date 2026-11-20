@@ -103,10 +103,11 @@ def _embedding_source_ctes(conn: Any) -> str:
             if _column_exists(conn, table_name, "subreddit_parent_id")
             else "NULL AS subreddit_parent_id"
         )
-        source_queries.append(f"SELECT id, {subreddit_col}, {parent_col} FROM {table_name}")
+        kind = "post" if table_name == "posts" else "comment"
+        source_queries.append(f"SELECT id, {subreddit_col}, {parent_col}, '{kind}' AS content_type FROM {table_name}")
 
     if not source_queries:
-        source_sql = "SELECT id, NULL AS subreddit, NULL AS subreddit_parent_id FROM preprocessed"
+        source_sql = "SELECT id, NULL AS subreddit, NULL AS subreddit_parent_id, NULL AS content_type FROM preprocessed"
     else:
         source_sql = "\nUNION ALL\n".join(source_queries)
 
@@ -167,19 +168,28 @@ def backfill_cluster_labels(conn) -> int:
 
 
 def backfill_embedding_2d(conn, limit: int = 5000) -> int:
+    if not _column_exists(conn, "embedding_2d", "content_type"):
+        from src.ml.record_identity import migrate_record_identity
+
+        migrate_record_identity(conn)
     source_ctes = _embedding_source_ctes(conn)
+    typed_topics = _column_exists(conn, "topic_assignments", "content_type")
+    prepared_type = _column_exists(conn, "preprocessed", "content_type")
+    kind = "ta.content_type" if typed_topics else ("p.content_type" if prepared_type else "'post'")
+    topic_type_match = "AND ta.content_type = p.content_type" if typed_topics else ""
+    source_type_match = f"AND source.content_type = {kind}" if prepared_type else ""
     rows = execute(
         conn,
         f"""
         WITH
         {source_ctes}
         base AS (
-            SELECT ta.id, ta.topic_id, p.embedding_key,
+            SELECT ta.id, ta.topic_id, p.embedding_key, {kind} AS content_type,
                    COALESCE(NULLIF(source.subreddit_parent_id, ''), dc.parent_id, 'OTHER') AS parent_group,
                    COALESCE(source.subreddit, 'unknown') AS subreddit_group
             FROM topic_assignments ta
-            JOIN preprocessed p ON ta.id = p.id
-            LEFT JOIN source ON ta.id = source.id
+            JOIN preprocessed p ON ta.id = p.id {topic_type_match}
+            LEFT JOIN source ON ta.id = source.id {source_type_match}
             LEFT JOIN default_categories dc ON dc.subreddit = source.subreddit
             WHERE p.embedding_key IS NOT NULL
         ),
@@ -187,7 +197,7 @@ def backfill_embedding_2d(conn, limit: int = 5000) -> int:
             SELECT *,
                    ROW_NUMBER() OVER (
                        PARTITION BY parent_group, subreddit_group
-                       ORDER BY topic_id, id
+                       ORDER BY topic_id, id, content_type
                    ) AS subreddit_rank
             FROM base
         ),
@@ -195,18 +205,19 @@ def backfill_embedding_2d(conn, limit: int = 5000) -> int:
             SELECT *,
                    ROW_NUMBER() OVER (
                        PARTITION BY parent_group
-                       ORDER BY subreddit_rank, subreddit_group, topic_id, id
+                       ORDER BY subreddit_rank, subreddit_group, topic_id, id, content_type
                    ) AS parent_rank
             FROM subreddit_ranked
         )
-        SELECT id, topic_id, embedding_key
+        SELECT id, topic_id, embedding_key, content_type
         FROM parent_ranked
-        ORDER BY parent_rank, parent_group, subreddit_rank, subreddit_group, topic_id, id
+        ORDER BY parent_rank, parent_group, subreddit_rank, subreddit_group, topic_id, id, content_type
         LIMIT {limit}
         """,
     ).fetchall()
-    index_path = Path("models/embeddings_index.json")
-    cache_path = Path("models/embeddings_cache.npy")
+    from src.ml.embedding_cache import published_embedding_paths
+
+    index_path, cache_path = published_embedding_paths(Path("models"))
     if not rows or not index_path.exists() or not cache_path.exists():
         artifact = enqueue_artifact(
             conn,
@@ -222,13 +233,13 @@ def backfill_embedding_2d(conn, limit: int = 5000) -> int:
 
     index = json.loads(index_path.read_text())
     cache = np.load(cache_path, mmap_mode="r")
-    selected: list[tuple[str, int, np.ndarray]] = []
+    selected: list[tuple[str, int, np.ndarray, str]] = []
     for row in rows:
         rid = row["id"] if hasattr(row, "keys") else row[0]
         topic_id = int(row["topic_id"] if hasattr(row, "keys") else row[1])
         embedding_key = row["embedding_key"] if hasattr(row, "keys") else row[2]
         position = index.get(embedding_key)
-        if position is None:
+        if position is None and ":" not in str(embedding_key):
             position = index.get(rid)
         if position is None and str(embedding_key).lstrip("-").isdigit():
             numeric_position = int(embedding_key)
@@ -236,7 +247,7 @@ def backfill_embedding_2d(conn, limit: int = 5000) -> int:
                 position = numeric_position
         if position is None:
             continue
-        selected.append((rid, topic_id, np.asarray(cache[int(position)], dtype=np.float64)))
+        selected.append((rid, topic_id, np.asarray(cache[int(position)], dtype=np.float64), row[3]))
 
     if not selected:
         artifact = enqueue_artifact(
@@ -265,25 +276,25 @@ def backfill_embedding_2d(conn, limit: int = 5000) -> int:
     coords = coords / max_abs
     count = 0
     execute(conn, "DELETE FROM embedding_2d")
-    for index, (rid, topic_id, _) in enumerate(selected):
+    for index, (rid, topic_id, _, content_type) in enumerate(selected):
         x = float(coords[index, 0])
         y = float(coords[index, 1])
         if is_postgres_connection(conn):
             execute(
                 conn,
                 """
-                INSERT INTO embedding_2d (post_id, x, y, cluster_id)
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (post_id) DO UPDATE SET
+                INSERT INTO embedding_2d (post_id, x, y, cluster_id, content_type)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (post_id, content_type) DO UPDATE SET
                     x = EXCLUDED.x, y = EXCLUDED.y, cluster_id = EXCLUDED.cluster_id
                 """,
-                (rid, x, y, topic_id),
+                (rid, x, y, topic_id, content_type),
             )
         else:
             execute(
                 conn,
-                "INSERT OR REPLACE INTO embedding_2d (post_id, x, y, cluster_id) VALUES (?, ?, ?, ?)",
-                (rid, x, y, topic_id),
+                "INSERT OR REPLACE INTO embedding_2d (post_id, x, y, cluster_id, content_type) VALUES (?, ?, ?, ?, ?)",
+                (rid, x, y, topic_id, content_type),
             )
         count += 1
     conn.commit()
@@ -349,6 +360,10 @@ def _brief_source_evidence(conn, post_ids: list[str]) -> list[dict]:
 
 
 def _topic_terms_for_event(conn, subreddit: str, date: str, limit: int = 5) -> list[str]:
+    topic_type_match = (
+        "AND ta.content_type = src.content_type"
+        if _column_exists(conn, "topic_assignments", "content_type") else ""
+    )
     try:
         rows = execute(
             conn,
@@ -357,10 +372,10 @@ def _topic_terms_for_event(conn, subreddit: str, date: str, limit: int = 5) -> l
             FROM topic_assignments ta
             JOIN topics t ON ta.topic_id = t.topic_id
             JOIN (
-                SELECT id, subreddit, timestamp FROM posts
+                SELECT id, subreddit, timestamp, 'post' AS content_type FROM posts
                 UNION ALL
-                SELECT id, subreddit, timestamp FROM comments
-            ) src ON ta.id = src.id
+                SELECT id, subreddit, timestamp, 'comment' AS content_type FROM comments
+            ) src ON ta.id = src.id {topic_type_match}
             WHERE src.subreddit = {'%s' if is_postgres_connection(conn) else '?'}
               AND DATE(src.timestamp) = {'%s' if is_postgres_connection(conn) else '?'}
               AND ta.topic_id >= 0

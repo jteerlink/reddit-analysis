@@ -38,7 +38,7 @@ OUTPUT_FIELDS = (
     "annotation_notes",
 )
 REFERENCE_FIELDS = (
-    "id", "clean_text", "vader_compound", "vader_label", "model_label",
+    "id", "content_type", "clean_text", "vader_compound", "vader_label", "model_label",
     "model_confidence",
 )
 
@@ -92,7 +92,7 @@ def _load_rows(db_path: str) -> list[dict]:
     has_predictions = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sentiment_predictions'"
     ).fetchone()
-    prediction_join = "LEFT JOIN sentiment_predictions sp ON sp.id = p.id" if has_predictions else ""
+    prediction_join = "LEFT JOIN sentiment_predictions sp ON sp.id = p.id AND sp.content_type = p.content_type" if has_predictions else ""
     prediction_columns = (
         "sp.label AS model_label, sp.confidence AS model_confidence"
         if has_predictions
@@ -115,7 +115,7 @@ def _load_rows(db_path: str) -> list[dict]:
         LEFT JOIN comments ON p.content_type = 'comment' AND comments.id = p.id
         {prediction_join}
         WHERE p.is_filtered = 0 AND p.clean_text IS NOT NULL AND TRIM(p.clean_text) != ''
-        ORDER BY p.id
+        ORDER BY p.id, p.content_type
     """
     try:
         return [dict(row) for row in conn.execute(query)]
