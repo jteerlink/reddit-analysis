@@ -1,10 +1,38 @@
-# Inflation Forecasting Project
+# Reddit Analyzer
 
-A comprehensive system for forecasting inflation trends through social media sentiment analysis on Reddit data.
+A local research tool for exploring AI and technology discussions on Reddit. It collects public posts and comments, preserves the source records, and computes sentiment, topics, time series, forecasts, and evidence-backed analysis artifacts for a dashboard.
 
 ## 📋 Project Overview
 
-This project collects and analyzes Reddit discussions to extract sentiment patterns related to economic indicators and inflation trends. Originally specified in the Product Requirements Document (PRD), the system has evolved into a production-ready Python package with modern tooling.
+The batch pipeline uses SQLite by default and can mirror a completed run to Neon when configured. Model predictions carry an artifact fingerprint; changing the sentiment model requires an explicit rescore. Weak labels are training aids, while independent human labels are required before reporting sentiment accuracy or promoting a replacement model.
+
+## Pipeline refresh and evaluation
+
+Run the routine refresh from the repository root:
+
+```bash
+./scripts/run_pipeline.sh --refresh
+```
+
+Refreshes process new records and reuse existing model artifacts. A full rebuild, including explicit training and topic refitting, is opt-in:
+
+```bash
+./scripts/run_pipeline.sh --full-rebuild --all
+```
+
+Individual operations remain available with `--step N` (or `step N`). Use `--check` for gate and freshness status and `--no-neon-sync` to keep a run local.
+To deliberately promote a replacement sentiment model, set `PIPELINE_RESCORE_EXISTING=true` for step 5; normal refreshes refuse to mix model fingerprints.
+
+Create an annotation-ready sample and reports without training or collection:
+
+```bash
+python scripts/sample_evaluation_set.py --db historical_reddit_data.db
+python scripts/evaluate_sentiment.py --sample data/sentiment_evaluation_sample.csv --reference data/sentiment_evaluation_sample_reference.csv
+python scripts/report_topic_diagnostics.py --db historical_reddit_data.db --run-version runtime_luna-v1
+python scripts/backtest_forecasts.py --db historical_reddit_data.db
+```
+
+The sample is approximately 250 rows, stratified by community, time, content type, and VADER class. It reserves thread/time holdouts and leaves `human_label` blank. The annotation CSV contains original title/text/source URL and is blinded from model/VADER labels; the separate reference CSV is used only when scoring. Until labels are independently reviewed, the sentiment report remains explicitly unverified; VADER agreement is reported separately from model accuracy. Topic diagnostics include original representative text and require manual review before labels can be promoted.
 
 ## 🚀 Quick Start with UV (Recommended)
 

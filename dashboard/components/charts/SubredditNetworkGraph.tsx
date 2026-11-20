@@ -50,6 +50,7 @@ export function SubredditNetworkGraph({ nodes, edges, selectedParent, selectedTo
   const [graphLinks, setGraphLinks] = useState<GraphLink[]>([]);
   const [hovered, setHovered] = useState<SubredditGraphNode | null>(null);
   const [hoveredEdge, setHoveredEdge] = useState<GraphLink | null>(null);
+  const [focusedNode, setFocusedNode] = useState<string | null>(null);
 
   const maxVolume = useMemo(
     () => Math.max(...nodes.map((node) => node.total_volume), 1),
@@ -115,6 +116,20 @@ export function SubredditNetworkGraph({ nodes, edges, selectedParent, selectedTo
     return topicId == null || node.top_topics.some((topic) => topic.topic_id === topicId);
   }
 
+  const focusedNeighbors = useMemo(() => {
+    if (!focusedNode) return new Set<string>();
+    const neighbors = new Set<string>();
+    for (const edge of edges) {
+      if (edge.source === focusedNode) neighbors.add(edge.target);
+      if (edge.target === focusedNode) neighbors.add(edge.source);
+    }
+    return neighbors;
+  }, [edges, focusedNode]);
+
+  function toggleFocusedNode(subreddit: string) {
+    setFocusedNode((current) => current === subreddit ? null : subreddit);
+  }
+
   return (
     <div className="relative">
       <svg
@@ -136,6 +151,7 @@ export function SubredditNetworkGraph({ nodes, edges, selectedParent, selectedTo
               && targetNode?.parent_id !== selectedParent;
             const topicDim = selectedTopic != null
               && !(sourceNode && targetNode && nodeHasTopic(sourceNode, selectedTopic) && nodeHasTopic(targetNode, selectedTopic));
+            const focusDim = focusedNode != null && sId !== focusedNode && tId !== focusedNode;
             return (
               <line
                 key={`${sId}-${tId}`}
@@ -144,7 +160,7 @@ export function SubredditNetworkGraph({ nodes, edges, selectedParent, selectedTo
                 x2={target.x}
                 y2={target.y}
                 stroke="#9aa3a8"
-                strokeOpacity={dim || topicDim ? 0.08 : 0.25 + edge.score * 0.55}
+                strokeOpacity={dim || topicDim || focusDim ? 0.06 : 0.25 + edge.score * 0.55}
                 strokeWidth={1 + edge.score * 6}
                 onMouseEnter={() => setHoveredEdge(edge)}
                 onMouseLeave={() => setHoveredEdge(null)}
@@ -154,21 +170,31 @@ export function SubredditNetworkGraph({ nodes, edges, selectedParent, selectedTo
           })}
           {graphNodes.map((node) => {
             const color = parentColor(node.parent_id);
-            const muted = isMuted(node.parent_id) || !nodeHasTopic(node, selectedTopic);
+            const selected = focusedNode === node.subreddit;
+            const neighbor = focusedNeighbors.has(node.subreddit);
+            const muted = isMuted(node.parent_id) || !nodeHasTopic(node, selectedTopic) || (focusedNode != null && !selected && !neighbor);
             return (
               <g
                 key={node.subreddit}
                 role="button"
                 tabIndex={0}
                 aria-label={`${node.subreddit} in ${node.display_name}`}
+                aria-pressed={focusedNode === node.subreddit}
                 transform={`translate(${node.x ?? WIDTH / 2} ${node.y ?? HEIGHT / 2})`}
                 onMouseEnter={() => setHovered(node)}
                 onMouseLeave={() => setHovered(null)}
-                onClick={() => onSelectParent(selectedParent === node.parent_id ? null : node.parent_id)}
-                className="cursor-pointer outline-none"
+                onClick={() => toggleFocusedNode(node.subreddit)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    toggleFocusedNode(node.subreddit);
+                  }
+                }}
+                className="cursor-pointer rounded outline-none focus-visible:ring-2 focus-visible:ring-signal-green"
               >
+                {(selected || neighbor) && <circle r={node.radius + (selected ? 9 : 5)} fill={color} opacity={selected ? 0.14 : 0.07} />}
                 <circle r={node.radius} fill={color} opacity={muted ? 0.2 : 0.9} />
-                <circle r={node.radius + 2} fill="none" stroke={color} strokeOpacity={muted ? 0.25 : 0.85} strokeWidth={1.5} />
+                <circle r={node.radius + (selected ? 4 : 2)} fill="none" stroke={color} strokeOpacity={muted ? 0.25 : selected ? 1 : 0.85} strokeWidth={selected ? 2.5 : 1.5} />
                 <text
                   y={node.radius + 14}
                   textAnchor="middle"
@@ -190,7 +216,7 @@ export function SubredditNetworkGraph({ nodes, edges, selectedParent, selectedTo
       )}
 
       <div className="absolute right-3 top-3 flex flex-col gap-1 rounded-md border border-border bg-card/90 px-2 py-2 text-[11px] shadow-2xl">
-        <p className="px-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Parents</p>
+        <p className="px-1 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">Community groups</p>
         {presentParents.map((parent) => {
           const active = selectedParent === parent.id;
           return (

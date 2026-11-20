@@ -33,14 +33,16 @@ const TOOLTIP_STYLE: React.CSSProperties = {
 interface TEntry { name: string; value: unknown; color: string; }
 type TPayload = readonly TEntry[];
 
-function ForecastTooltip({ active, payload, label, showCI, showActuals }: {
+function ForecastTooltip({ active, payload, label, showCI, showActuals, intervalLabel }: {
   active?: boolean;
   payload?: TPayload;
   label?: string;
   showCI?: boolean;
   showActuals?: boolean;
+  intervalLabel?: string;
 }) {
   if (!active || !payload?.length) return null;
+  const configuredIntervalLabel = intervalLabel ?? "configured interval";
 
   type SeriesData = { color: string; forecast?: number; actual?: number; ci?: [number, number] };
   const groups = new Map<string, SeriesData>();
@@ -60,9 +62,9 @@ function ForecastTooltip({ active, payload, label, showCI, showActuals }: {
       const g = groups.get(base) ?? { color: e.color };
       if (typeof e.value === "number") g.actual = e.value;
       groups.set(base, g);
-    } else if (name.endsWith(" 95% CI")) {
+    } else if (name.endsWith(` ${configuredIntervalLabel}`)) {
       if (!showCI || e.value == null || !Array.isArray(e.value)) continue;
-      const base = name.slice(0, -7);
+      const base = name.slice(0, -(configuredIntervalLabel.length + 1));
       const g = groups.get(base) ?? { color: e.color };
       g.ci = e.value as [number, number];
       groups.set(base, g);
@@ -88,7 +90,7 @@ function ForecastTooltip({ active, payload, label, showCI, showActuals }: {
       });
     }
     if (g.ci) {
-      rows.push({ key: `${name}-ci`, label: `${name} 95% CI`, value: `${g.ci[0].toFixed(3)} ~ ${g.ci[1].toFixed(3)}`, color: g.color });
+      rows.push({ key: `${name}-ci`, label: `${name} ${configuredIntervalLabel}`, value: `${g.ci[0].toFixed(3)} ~ ${g.ci[1].toFixed(3)}`, color: g.color });
     }
   }
 
@@ -110,7 +112,10 @@ export function ForecastAreaChart({ data, seriesLabels = {}, actualData }: Props
   const [highlighted, setHighlighted] = useState<string | null>(null);
   const [showCI, setShowCI] = useState(true);
   const [showActuals, setShowActuals] = useState(true);
-  const today = new Date().toISOString().slice(0, 10);
+  const metadata = data.find((row) => row.generated_at || row.training_through || row.interval_width != null);
+  const trainingThrough = metadata?.training_through
+    ?? actualData?.reduce((latest, row) => row.date > latest ? row.date : latest, "")
+    ?? "";
 
   const series = [...new Set(data.map((d) => seriesLabels[d.subreddit] ?? d.subreddit))];
   const seriesSet = new Set(series);
@@ -135,15 +140,15 @@ export function ForecastAreaChart({ data, seriesLabels = {}, actualData }: Props
     if (!byDate[date]) byDate[date] = { date };
     const ci: [number, number] = [bucket.lowerTotal / bucket.count, bucket.upperTotal / bucket.count];
     byDate[date][`${label}_yhat`] = bucket.yhatTotal / bucket.count;
-    byDate[date][`${label}_ci`] = date > today ? ci : null;
-    byDate[date][`${label}_ci_past`] = date <= today ? ci : null;
+    byDate[date][`${label}_ci`] = trainingThrough && date > trainingThrough ? ci : null;
+    byDate[date][`${label}_ci_past`] = !trainingThrough || date <= trainingThrough ? ci : null;
   }
 
   // Overlay actual sentiment for past dates
   if (actualData) {
     const actualBuckets = new Map<string, { total: number; count: number }>();
     for (const row of actualData) {
-      if (!row.date || row.date > today || row.mean_score == null) continue;
+      if (!row.date || (trainingThrough && row.date > trainingThrough) || row.mean_score == null) continue;
       const label = seriesLabels[row.subreddit] ?? row.subreddit;
       if (!seriesSet.has(label)) continue;
       const key = `${row.date}\0${label}`;
@@ -165,9 +170,19 @@ export function ForecastAreaChart({ data, seriesLabels = {}, actualData }: Props
 
   const dim = (s: string) => !!(highlighted && highlighted !== s);
   const hasActualData = !!actualData?.length;
+  const futureDates = chartData.filter((row) => trainingThrough && String(row.date) > trainingThrough);
+  const horizonDays = futureDates.length;
+  const intervalWidth = metadata?.interval_width;
+  const intervalLabel = intervalWidth == null ? "configured interval" : `${Math.round(intervalWidth * 100)}% interval`;
 
   return (
     <div className="signal-chart-frame">
+      <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[10px] text-muted-foreground" aria-label="Forecast run metadata">
+        <span>Generated {metadata?.generated_at ? metadata.generated_at.slice(0, 16).replace("T", " ") : "time unavailable"}</span>
+        <span>Training through {trainingThrough || "date unavailable"}</span>
+        <span>Horizon {horizonDays ? `${horizonDays} days` : "unavailable"}</span>
+        <span>{intervalLabel}</span>
+      </div>
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 4, marginBottom: 8 }}>
         <button
           onClick={() => setShowActuals((v) => !v)}
@@ -180,7 +195,7 @@ export function ForecastAreaChart({ data, seriesLabels = {}, actualData }: Props
           onClick={() => setShowCI((v) => !v)}
           className={`px-2 py-1 rounded text-xs transition-colors ${showCI ? "bg-amber-500 text-black font-medium" : "text-muted-foreground hover:text-foreground"}`}
         >
-          95% CI
+          {intervalLabel}
         </button>
       </div>
       <ResponsiveContainer width="100%" height={400}>
@@ -210,6 +225,7 @@ export function ForecastAreaChart({ data, seriesLabels = {}, actualData }: Props
               label={String(props.label ?? "")}
               showCI={showCI}
               showActuals={showActuals && hasActualData}
+              intervalLabel={intervalLabel}
             />
           )}
           cursor={CHART_TOOLTIP_PROPS.cursor}
@@ -218,7 +234,7 @@ export function ForecastAreaChart({ data, seriesLabels = {}, actualData }: Props
           {...CHART_LEGEND_PROPS}
           onClick={(entry) => {
             const name = entry.value ?? "";
-            const base = name.replace(/ (95% CI|forecast|actual|signal band)$/, "");
+            const base = name.replace(new RegExp(` (${intervalLabel}|forecast|actual|signal band)$`), "");
             setHighlighted((prev) => prev === base ? null : base);
           }}
           wrapperStyle={{ ...CHART_LEGEND_PROPS.wrapperStyle, cursor: "pointer" }}
@@ -246,7 +262,7 @@ export function ForecastAreaChart({ data, seriesLabels = {}, actualData }: Props
             {showCI && (
               <Area
                 dataKey={`${s}_ci_past`}
-                name={`${s} 95% CI`}
+                name={`${s} ${intervalLabel}`}
                 fill={CHART_SERIES_COLORS[i % CHART_SERIES_COLORS.length]}
                 fillOpacity={0.05}
                 stroke="none"
@@ -259,7 +275,7 @@ export function ForecastAreaChart({ data, seriesLabels = {}, actualData }: Props
             {showCI && (
               <Area
                 dataKey={`${s}_ci`}
-                name={`${s} 95% CI`}
+                name={`${s} ${intervalLabel}`}
                 fill={CHART_SERIES_COLORS[i % CHART_SERIES_COLORS.length]}
                 fillOpacity={0.15}
                 stroke="none"

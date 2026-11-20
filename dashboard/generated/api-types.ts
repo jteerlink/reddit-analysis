@@ -217,6 +217,30 @@ export const generatedApiSchemas = {
         "title": "Brief Id",
         "type": "string"
       },
+      "evidence_schema_version": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Evidence Schema Version"
+      },
+      "evidence_status": {
+        "default": "unverified",
+        "enum": [
+          "source_linked",
+          "partial",
+          "unverified",
+          "legacy",
+          "superseded",
+          "verified"
+        ],
+        "title": "Evidence Status",
+        "type": "string"
+      },
       "generated_at": {
         "anyOf": [
           {
@@ -246,6 +270,17 @@ export const generatedApiSchemas = {
       "period": {
         "title": "Period",
         "type": "string"
+      },
+      "prompt_version": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Prompt Version"
       },
       "provenance": {
         "anyOf": [
@@ -1552,6 +1587,17 @@ export const generatedApiSchemas = {
   },
   "SemanticSearchResult": {
     "properties": {
+      "clean_text": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Clean Text"
+      },
       "confidence": {
         "anyOf": [
           {
@@ -1600,6 +1646,17 @@ export const generatedApiSchemas = {
         ],
         "title": "Label"
       },
+      "original_text": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Original Text"
+      },
       "provenance": {
         "anyOf": [
           {
@@ -1613,6 +1670,17 @@ export const generatedApiSchemas = {
       "score": {
         "title": "Score",
         "type": "number"
+      },
+      "source_url": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Source Url"
       },
       "state": {
         "default": "ready",
@@ -1641,6 +1709,28 @@ export const generatedApiSchemas = {
       "text_preview": {
         "title": "Text Preview",
         "type": "string"
+      },
+      "timestamp": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Timestamp"
+      },
+      "title": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Title"
       }
     },
     "required": [

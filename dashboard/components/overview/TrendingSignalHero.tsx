@@ -90,7 +90,7 @@ export function TrendingSignalHero({ topics, state = "ready", message }: Props) 
   return (
     <ChartCard
       title="Trending signal"
-      subtitle="Top topics this week, labelled by the LLM enrichment pipeline."
+      subtitle="Most discussed topics in the selected research window."
       action={
         <Link
           href="/topics"

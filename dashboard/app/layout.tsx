@@ -8,7 +8,7 @@ const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"]
 
 export const metadata: Metadata = {
   title: "Signal Command",
-  description: "Subreddit intelligence, live from the stream.",
+  description: "Batch analysis of Reddit conversations.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Callable, Optional
 
 from src.analysis.db import artifact_checksum, complete_artifact, enqueue_artifact, list_artifacts
 from src.analysis.ollama import OllamaConfig
 from src.analysis.prompts import analyst_brief_prompt
-from src.db.connection import execute
+from src.db.connection import execute, is_postgres_connection
 
 logger = logging.getLogger(__name__)
 
-ANALYST_BRIEF_EVIDENCE_SCHEMA_VERSION = 2
+ANALYST_BRIEF_EVIDENCE_SCHEMA_VERSION = 3
 ANALYST_BRIEF_PROMPT_VERSION = "ab-v4"
 BRIEF_SECTION_EXTRA_KEYS = {
     "claims",
@@ -25,8 +26,24 @@ BRIEF_SECTION_EXTRA_KEYS = {
     "current_window",
     "comparison_window",
     "evidence_gap",
+    "observations",
+    "hypotheses",
+    "unknowns",
 }
 ANCHOR_TYPES = {"event_id", "post_id", "comment_id", "topic_label"}
+_CAUSAL_LANGUAGE = (
+    "cause", "caused", "because", "due to", "driven by", "led to",
+    "resulted in", "churn", "retention",
+    "market share", "engagement collapse", "community collapse",
+)
+_CAUSAL_VERB = re.compile(
+    r"\b(?:driv(?:e|es|en|ing)|boost(?:ed|s|ing)?|trigger(?:ed|s|ing)?|fuel(?:ed|s|ing)?|"
+    r"explain(?:ed|s|ing)?|reflect(?:ed|s|ing)?|follow(?:ed|s|ing)?)\b"
+)
+_HYPOTHESIS_LANGUAGE = (
+    "may ", "might ", "could ", "possible", "possibly", "perhaps", "hypothesis",
+    "unclear", "unknown", "cannot establish", "not enough evidence",
+)
 
 
 def generate_analyst_brief(
@@ -101,7 +118,7 @@ def generate_analyst_brief(
         }
         for p in parent_context
     ]
-    evidence_bundle = _build_analyst_brief_evidence_context(events, topic_labels, parent_context)
+    evidence_bundle = _build_analyst_brief_evidence_context(events, topic_labels, parent_context, conn=conn)
     source_hash = artifact_checksum(
         {
             "prompt_version": ANALYST_BRIEF_PROMPT_VERSION,
@@ -141,8 +158,16 @@ def generate_analyst_brief(
     if content is None:
         return None
 
-    structured = _parse_brief_json(content, anchor_allowlist=evidence_bundle["anchor_allowlist"])
+    structured = _parse_brief_json(
+        content,
+        anchor_allowlist=evidence_bundle["anchor_allowlist"],
+        evidence_records=evidence_bundle["source_records"],
+        allowed_numeric_values=evidence_bundle["allowed_numeric_values"],
+    )
     if structured is not None:
+        # Links make review possible, but parsing cannot certify semantic
+        # support for freeform model prose.
+        evidence_status = "unverified"
         payload = {
             "brief_id": artifact_id[:8],
             "period": "latest",
@@ -152,11 +177,17 @@ def generate_analyst_brief(
             "model_name": model,
             "prompt_version": version,
             "evidence_schema_version": ANALYST_BRIEF_EVIDENCE_SCHEMA_VERSION,
+            "evidence_status": evidence_status,
         }
     else:
-        lines = [l.strip() for l in content.splitlines() if l.strip()]
-        headline = lines[0] if lines else "Reddit Intelligence Brief"
-        body = "\n".join(lines[1:]) if len(lines) > 1 else content
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        headline = _safe_headline(lines[0] if lines else "Reddit Intelligence Brief")
+        body = _neutralize_unsupported_claims(
+            "\n".join(lines[1:]) if len(lines) > 1 else content,
+            evidence_bundle["source_records"],
+            [],
+            evidence_bundle["allowed_numeric_values"],
+        )
         payload = {
             "brief_id": artifact_id[:8],
             "period": "latest",
@@ -166,6 +197,7 @@ def generate_analyst_brief(
             "model_name": model,
             "prompt_version": version,
             "evidence_schema_version": ANALYST_BRIEF_EVIDENCE_SCHEMA_VERSION,
+            "evidence_status": "unverified",
         }
     complete_artifact(conn, artifact_id, payload)
     logger.info("Analyst brief enriched via %s", model)
@@ -196,10 +228,12 @@ def _build_analyst_brief_evidence_context(
     events: list[dict],
     topic_labels: list[str],
     parent_context: Optional[list[dict]] = None,
+    conn: Any = None,
 ) -> dict:
     """Return prompt context and validator allowlist from one source of truth."""
     anchor_allowlist: dict[str, set[str]] = {anchor_type: set() for anchor_type in ANCHOR_TYPES}
     context_events: list[dict] = []
+    source_records: dict[str, dict] = {}
 
     for event in events[:5]:
         event_id = event.get("event_id")
@@ -207,6 +241,8 @@ def _build_analyst_brief_evidence_context(
             anchor_allowlist["event_id"].add(str(event_id))
         top_post_ids = [str(post_id) for post_id in event.get("top_post_ids", [])[:5] if post_id]
         anchor_allowlist["post_id"].update(top_post_ids)
+        if conn is not None:
+            source_records.update(_load_source_records(conn, top_post_ids, "post"))
 
         start_date = event.get("start_date")
         end_date = event.get("end_date")
@@ -239,16 +275,64 @@ def _build_analyst_brief_evidence_context(
         "events": context_events,
         "topic_labels": topic_values,
         "parent_context": (parent_context or [])[:10],
+        "source_records": list(source_records.values()),
     }
     serializable_allowlist = {key: sorted(values) for key, values in anchor_allowlist.items()}
+    allowed_numeric_values = set(re.findall(r"\d+(?:\.\d+)?", json.dumps(context_payload, default=str)))
     return {
         "context_payload": context_payload,
         "anchor_allowlist": serializable_allowlist,
-        "fingerprint": artifact_checksum({"context_payload": context_payload, "anchor_allowlist": serializable_allowlist}),
+        "source_records": source_records,
+        "allowed_numeric_values": allowed_numeric_values,
+        "fingerprint": artifact_checksum({"context_payload": context_payload, "anchor_allowlist": serializable_allowlist, "source_records": source_records}),
     }
 
 
-def _parse_brief_json(content: str, anchor_allowlist: Optional[dict[str, list[str] | set[str]]] = None) -> Optional[dict]:
+def _load_source_records(conn: Any, ids: list[str], content_type: str) -> dict[str, dict]:
+    """Load bounded original records for evidence links and readable excerpts."""
+    table = "posts" if content_type == "post" else "comments"
+    records: dict[str, dict] = {}
+    marker = "%s" if is_postgres_connection(conn) else "?"
+    for record_id in ids[:20]:
+        try:
+            columns = "id, title, content, subreddit, timestamp, url" if table == "posts" else "id, content, subreddit, timestamp"
+            row = execute(conn, f"SELECT {columns} FROM {table} WHERE id = {marker}", (record_id,)).fetchone()
+        except Exception:
+            # Source enrichment is optional and must never break brief creation.
+            continue
+        if not row:
+            continue
+        if table == "posts":
+            original_text = row["content"] if hasattr(row, "keys") else row[2]
+            title = row["title"] if hasattr(row, "keys") else row[1]
+            source_url = row["url"] if hasattr(row, "keys") else row[5]
+            subreddit = row["subreddit"] if hasattr(row, "keys") else row[3]
+            timestamp = row["timestamp"] if hasattr(row, "keys") else row[4]
+        else:
+            original_text = row["content"] if hasattr(row, "keys") else row[1]
+            title = None
+            source_url = None
+            subreddit = row["subreddit"] if hasattr(row, "keys") else row[2]
+            timestamp = row["timestamp"] if hasattr(row, "keys") else row[3]
+        records[f"{content_type}_id:{record_id}"] = {
+            "anchor_type": f"{content_type}_id",
+            "anchor_id": str(record_id),
+            "original_text": str(original_text or ""),
+            "title": str(title or "") or None,
+            "subreddit": str(subreddit or "") or None,
+            "timestamp": str(timestamp or "") or None,
+            "source_url": str(source_url or f"/deep-dive?post_id={record_id}") or None,
+            "content_type": content_type,
+        }
+    return records
+
+
+def _parse_brief_json(
+    content: str,
+    anchor_allowlist: Optional[dict[str, list[str] | set[str]]] = None,
+    evidence_records: Optional[dict[str, dict]] = None,
+    allowed_numeric_values: Optional[set[str]] = None,
+) -> Optional[dict]:
     """Parse an analyst brief JSON response. Returns None when the response isn't valid JSON."""
     text = content.strip()
     if not text:
@@ -282,27 +366,56 @@ def _parse_brief_json(content: str, anchor_allowlist: Optional[dict[str, list[st
         body = str(entry.get("body") or "").strip()
         if title and body:
             section = {"title": title, "body": body}
-            section.update(_clean_brief_section_extras(entry, anchor_allowlist))
+            section.update(_clean_brief_section_extras(entry, anchor_allowlist, evidence_records))
+            unsafe = _unsupported_causal_claims(section, evidence_records)
+            if unsafe:
+                section["evidence_gap"] = _merge_evidence_gap(
+                    section.get("evidence_gap"),
+                    [f"Unsupported causal or churn claim omitted: {claim}" for claim in unsafe],
+                )
+                for key in ("claims", "drivers", "implications", "hypotheses", "observations"):
+                    if key in section:
+                        section[key] = [item for item in section[key] if item not in unsafe]
+                section["body"] = _neutralize_unsupported_claims(
+                    section["body"], evidence_records, section.get("evidence", []), allowed_numeric_values,
+                )
+            else:
+                section["body"] = _neutralize_unsupported_claims(
+                    section["body"], evidence_records, section.get("evidence", []), allowed_numeric_values,
+                )
             cleaned.append(section)
     if not cleaned:
         return None
     return {
-        "headline": str(parsed.get("headline") or "").strip() or None,
+        "headline": _safe_headline(str(parsed.get("headline") or "").strip()) or None,
         "sections": cleaned,
     }
 
 
-def _clean_brief_section_extras(entry: dict, anchor_allowlist: Optional[dict[str, list[str] | set[str]]]) -> dict:
+def _safe_headline(value: str) -> str:
+    """Keep headlines descriptive when the model confuses correlation with cause."""
+    text = _safe_text(value, 240)
+    lowered = text.lower()
+    if any(term in lowered for term in _CAUSAL_LANGUAGE) or _CAUSAL_VERB.search(lowered):
+        return "Latest measured sentiment signal"
+    return text
+
+
+def _clean_brief_section_extras(
+    entry: dict,
+    anchor_allowlist: Optional[dict[str, list[str] | set[str]]],
+    evidence_records: Optional[dict[str, dict]] = None,
+) -> dict:
     cleaned: dict[str, Any] = {}
     for key in BRIEF_SECTION_EXTRA_KEYS:
         if key not in entry:
             continue
         value = entry.get(key)
-        if key in {"claims", "drivers", "implications"}:
+        if key in {"claims", "drivers", "implications", "observations", "hypotheses", "unknowns"}:
             items = [_safe_text(item, 240) for item in (value if isinstance(value, list) else [value])]
             cleaned[key] = [item for item in items if item]
         elif key == "evidence":
-            evidence, gaps = _clean_evidence_items(value, anchor_allowlist)
+            evidence, gaps = _clean_evidence_items(value, anchor_allowlist, evidence_records)
             if evidence:
                 cleaned["evidence"] = evidence
             if gaps:
@@ -322,6 +435,7 @@ def _clean_brief_section_extras(entry: dict, anchor_allowlist: Optional[dict[str
 def _clean_evidence_items(
     value: Any,
     anchor_allowlist: Optional[dict[str, list[str] | set[str]]],
+    evidence_records: Optional[dict[str, dict]] = None,
 ) -> tuple[list[dict], list[str]]:
     values = value if isinstance(value, list) else [value]
     allowed = {
@@ -346,8 +460,15 @@ def _clean_evidence_items(
         }
         for key in ("label", "snippet", "relevance"):
             text = _safe_text(item.get(key), 300)
-            if text:
+            if text and (key != "snippet" or evidence_records is None):
                 cleaned_item[key] = text
+        record = (evidence_records or {}).get(f"{anchor_type}:{anchor_id}")
+        if record:
+            if record.get("original_text"):
+                cleaned_item["snippet"] = str(record["original_text"])[:300]
+            for key in ("original_text", "title", "subreddit", "timestamp", "source_url", "content_type"):
+                if record.get(key):
+                    cleaned_item[key] = record[key]
         cleaned.append(cleaned_item)
     return cleaned, gaps
 
@@ -367,3 +488,38 @@ def _merge_evidence_gap(existing: Any, gaps: list[str]) -> str:
     existing_text = _safe_text(existing)
     all_gaps = ([existing_text] if existing_text else []) + gaps
     return " ".join(dict.fromkeys(gap for gap in all_gaps if gap))
+
+
+def _unsupported_causal_claims(section: dict, evidence_records: Optional[dict[str, dict]]) -> list[str]:
+    """Find causal/churn assertions that a sentiment delta alone cannot support."""
+    candidates: list[str] = []
+    for key in ("claims", "drivers", "implications", "hypotheses", "observations"):
+        for item in section.get(key, []):
+            text = _safe_text(item, 240)
+            lowered = text.lower()
+            if (
+                (any(term in lowered for term in _CAUSAL_LANGUAGE) or _CAUSAL_VERB.search(lowered))
+                and not any(marker in lowered for marker in _HYPOTHESIS_LANGUAGE)
+            ):
+                candidates.append(text)
+    return list(dict.fromkeys(candidates))
+
+
+def _neutralize_unsupported_claims(
+    body: str,
+    evidence_records: Optional[dict[str, dict]],
+    evidence: list[dict],
+    allowed_numeric_values: Optional[set[str]] = None,
+) -> str:
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", body) if part.strip()]
+    retained = []
+    for sentence in sentences:
+        lowered = sentence.lower()
+        causal = any(term in lowered for term in _CAUSAL_LANGUAGE) or _CAUSAL_VERB.search(lowered)
+        unsupported_number = bool(allowed_numeric_values) and any(
+            value not in allowed_numeric_values for value in re.findall(r"\d+(?:\.\d+)?", sentence)
+        )
+        if (causal and not any(marker in lowered for marker in _HYPOTHESIS_LANGUAGE)) or unsupported_number:
+            continue
+        retained.append(sentence)
+    return " ".join(retained) or "Measured sentiment changed; the available evidence does not establish a cause or churn."

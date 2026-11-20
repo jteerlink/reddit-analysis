@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 
 from src.analysis.db import artifact_checksum, complete_artifact, enqueue_artifact, ensure_analysis_tables
+from src.analysis.briefs import ANALYST_BRIEF_EVIDENCE_SCHEMA_VERSION
 from src.analysis.prompts import clean_topic_keywords
 from src.db.connection import execute, is_postgres_connection
 from src.reddit_api.models import DEFAULT_SUBREDDIT_CATEGORIES
@@ -313,6 +314,40 @@ def _top_posts_for_event(conn, subreddit: str, date: str, limit: int = 3) -> lis
     return [row["id"] if hasattr(row, "keys") else row[0] for row in rows]
 
 
+def _brief_source_evidence(conn, post_ids: list[str]) -> list[dict]:
+    """Attach original post text and navigable links to deterministic evidence."""
+    evidence: list[dict] = []
+    for post_id in post_ids[:10]:
+        try:
+            row = execute(
+                conn,
+                "SELECT id, title, content, subreddit, timestamp, url FROM posts WHERE id = ?"
+                if not is_postgres_connection(conn)
+                else "SELECT id, title, content, subreddit, timestamp, url FROM posts WHERE id = %s",
+                (post_id,),
+            ).fetchone()
+        except Exception:
+            continue
+        if not row:
+            continue
+        def get(name: str, index: int):
+            return row[name] if hasattr(row, "keys") else row[index]
+        evidence.append(
+            {
+                "anchor_type": "post_id",
+                "anchor_id": str(get("id", 0)),
+                "title": get("title", 1),
+                "original_text": get("content", 2) or "",
+                "subreddit": get("subreddit", 3),
+                "timestamp": str(get("timestamp", 4) or ""),
+                "source_url": get("url", 5) or f"/deep-dive?post_id={post_id}",
+                "content_type": "post",
+                "relevance": "representative original source",
+            }
+        )
+    return evidence
+
+
 def _topic_terms_for_event(conn, subreddit: str, date: str, limit: int = 5) -> list[str]:
     try:
         rows = execute(
@@ -353,6 +388,7 @@ def backfill_narrative_events(conn, limit: int = 20) -> int:
         f"""
         SELECT subreddit, date, magnitude
         FROM change_points
+        WHERE magnitude IS NOT NULL AND ABS(magnitude) > 0
         ORDER BY ABS(magnitude) DESC
         LIMIT {limit}
         """,
@@ -440,7 +476,7 @@ def backfill_narrative_events(conn, limit: int = 20) -> int:
 
 
 def backfill_brief(conn) -> int:
-    event_count = _scalar_count(conn, "SELECT COUNT(*) FROM narrative_events")
+    event_count = _scalar_count(conn, "SELECT COUNT(*) FROM narrative_events WHERE ABS(COALESCE(sentiment_delta, 0)) > 0")
     topic_count = _scalar_count(conn, "SELECT COUNT(*) FROM cluster_labels")
     model_count = _scalar_count(conn, "SELECT COUNT(*) FROM llm_model_registry WHERE available = 1")
     prediction_count = _scalar_count(conn, "SELECT COUNT(*) FROM sentiment_predictions")
@@ -451,6 +487,7 @@ def backfill_brief(conn) -> int:
             """
             SELECT event_id, peak_date, auto_label, sentiment_delta, top_terms, top_post_ids
             FROM narrative_events
+            WHERE ABS(COALESCE(sentiment_delta, 0)) > 0
             ORDER BY peak_date DESC, event_id DESC
             LIMIT 3
             """,
@@ -473,7 +510,7 @@ def backfill_brief(conn) -> int:
         row["event_id"] if hasattr(row, "keys") else row[0]
         for row in execute(
             conn,
-            "SELECT event_id FROM narrative_events ORDER BY peak_date DESC, event_id DESC LIMIT 5",
+            "SELECT event_id FROM narrative_events WHERE ABS(COALESCE(sentiment_delta, 0)) > 0 ORDER BY peak_date DESC, event_id DESC LIMIT 5",
         ).fetchall()
     ]
     event_claims = []
@@ -483,14 +520,14 @@ def backfill_brief(conn) -> int:
         label = row["auto_label"] if hasattr(row, "keys") else row[2]
         delta = row["sentiment_delta"] if hasattr(row, "keys") else row[3]
         event_claims.append(f"{label or 'Narrative event'} ({delta:+.2f} sentiment delta)" if delta is not None else label or "Narrative event")
-        event_evidence.append(
-            {
+        event_evidence.append({
                 "anchor_type": "event_id",
                 "anchor_id": str(event_id),
                 "label": label or "Narrative event",
                 "relevance": "recent narrative signal",
-            }
-        )
+            })
+        post_ids = _keywords(row["top_post_ids"] if hasattr(row, "keys") else row[5])
+        event_evidence.extend(_brief_source_evidence(conn, post_ids))
     topic_claims = [
         f"{(row['label'] if hasattr(row, 'keys') else row[1])} ({int((row['doc_count'] if hasattr(row, 'keys') else row[2]) or 0)} comments)"
         for row in top_topics
@@ -511,12 +548,18 @@ def backfill_brief(conn) -> int:
                     f"{int(topic_count)} deterministic topic labels",
                     f"{int(prediction_count)} sentiment predictions",
                 ],
+                "observations": [
+                    f"{int(event_count)} persisted narrative events",
+                    f"{int(topic_count)} deterministic topic labels",
+                    f"{int(prediction_count)} sentiment predictions",
+                ],
                 "evidence": event_evidence[:2],
             },
             {
                 "title": "Narrative Events",
                 "body": "; ".join(event_claims) if event_claims else "No narrative events have been generated yet.",
                 "claims": event_claims,
+                "observations": event_claims,
                 "evidence": event_evidence,
                 "delta_source": "narrative_events.sentiment_delta",
                 "evidence_gap": None if event_claims else "Run narrative event backfill to populate event evidence.",
@@ -527,8 +570,8 @@ def backfill_brief(conn) -> int:
                 "claims": topic_claims,
                 "evidence": [
                     {
-                        "anchor_type": "cluster_id",
-                        "anchor_id": str(row["cluster_id"] if hasattr(row, "keys") else row[0]),
+                        "anchor_type": "topic_label",
+                        "anchor_id": str(row["label"] if hasattr(row, "keys") else row[1]),
                         "label": row["label"] if hasattr(row, "keys") else row[1],
                         "relevance": "deterministic topic label",
                     }
@@ -557,6 +600,9 @@ def backfill_brief(conn) -> int:
             },
         ],
         "source_events": source_events,
+        "prompt_version": "ab-deterministic-v2",
+        "evidence_schema_version": ANALYST_BRIEF_EVIDENCE_SCHEMA_VERSION,
+        "evidence_status": "source_linked" if any(item.get("anchor_type") == "post_id" and item.get("original_text") for item in event_evidence) else ("partial" if event_evidence else "unverified"),
     }
     artifact = enqueue_artifact(
         conn,
@@ -565,7 +611,8 @@ def backfill_brief(conn) -> int:
         payload=payload,
         provider="deterministic",
         model_name="brief-template",
-        prompt_version="v1",
+        prompt_version="ab-deterministic-v2",
+        schema_version=ANALYST_BRIEF_EVIDENCE_SCHEMA_VERSION,
     )
     if artifact.get("status") != "succeeded":
         complete_artifact(conn, artifact["artifact_id"], payload)

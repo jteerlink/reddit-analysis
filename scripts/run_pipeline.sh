@@ -9,6 +9,8 @@
 #   ./scripts/run_pipeline.sh step N       # run a specific step (1-9)
 #   ./scripts/run_pipeline.sh N            # run a specific step (1-9)
 #   ./scripts/run_pipeline.sh --all        # run all steps without per-step prompts
+#   ./scripts/run_pipeline.sh --full-rebuild --all  # intentionally rerun training/refits
+#   ./scripts/run_pipeline.sh --refresh    # incremental routine refresh (default all-step mode)
 #   ./scripts/run_pipeline.sh --confirm-steps  # ask before each step during all-step runs
 #   ./scripts/run_pipeline.sh --no-neon-sync  # skip post-run SQLite→Neon mirror
 #   ./scripts/run_pipeline.sh --verbose    # show full command output
@@ -37,6 +39,7 @@ DB_PATH_OVERRIDE=false
 NEON_SYNC=true
 ENVIRONMENT_READY=false
 CONFIRM_STEPS=false
+FULL_REBUILD=false
 
 # ── Colors ─────────────────────────────────────────────────────────────────────
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
@@ -224,20 +227,41 @@ ensure_pipeline_environment() {
   dim "Log: $logfile"
   printf "\n"
 
-  if command -v uv >/dev/null 2>&1; then
-    if [[ ! -d "$PROJECT_ROOT/.venv" ]]; then
-      run_environment_command "$logfile" "Creating uv virtual environment" uv venv || return 1
+  local install_required=false
+  if ! command -v "$PYTHON" >/dev/null 2>&1 && [[ ! -x "$PYTHON" ]]; then
+    install_required=true
+elif ! (cd "$PROJECT_ROOT" && "$PYTHON" - <<'PYEOF' >/dev/null 2>&1
+import pandas
+import vaderSentiment
+import bertopic
+import cmdstanpy
+import regex
+import ruptures
+import transformers
+from prophet import Prophet
+PYEOF
+  ); then
+    install_required=true
+  fi
+
+  if [[ "$install_required" == "true" ]]; then
+    if command -v uv >/dev/null 2>&1; then
+      if [[ ! -d "$PROJECT_ROOT/.venv" ]]; then
+        run_environment_command "$logfile" "Creating uv virtual environment" uv venv || return 1
+      fi
+      refresh_python
+      run_environment_command "$logfile" "Installing ml + production dependencies" \
+        uv pip install --python "$PYTHON" -e ".[ml,production]" || return 1
+      refresh_python
+    else
+      refresh_python
+      "$PYTHON" -m pip --version >/dev/null 2>&1 \
+        || die "uv is not installed and $PYTHON cannot run pip"
+      run_environment_command "$logfile" "Installing ml + production dependencies with pip" \
+        "$PYTHON" -m pip install -e ".[ml,production]" || return 1
     fi
-    refresh_python
-    run_environment_command "$logfile" "Installing ml + production dependencies" \
-      uv pip install --python "$PYTHON" -e ".[ml,production]" || return 1
-    refresh_python
   else
-    refresh_python
-    "$PYTHON" -m pip --version >/dev/null 2>&1 \
-      || die "uv is not installed and $PYTHON cannot run pip"
-    run_environment_command "$logfile" "Installing ml + production dependencies with pip" \
-      "$PYTHON" -m pip install -e ".[ml,production]" || return 1
+    info "Python dependencies already available; skipping installation"
   fi
 
   verify_pipeline_dependencies "$logfile" || return 1
@@ -311,7 +335,9 @@ args = Namespace(
     database_url=database_url,
     schema=str(migrate_to_neon.SCHEMA_PATH),
     seed=str(migrate_to_neon.SEED_PATH),
-    batch_size=int(os.environ.get("NEON_MIRROR_BATCH_SIZE", "1000")),
+    batch_size=int(
+        os.environ.get("NEON_MIRROR_BATCH_SIZE", migrate_to_neon.DEFAULT_BATCH_SIZE)
+    ),
     create_schema=os.environ.get("NEON_MIRROR_CREATE_SCHEMA", "true").lower()
     not in {"0", "false", "no"},
     dry_run=False,
@@ -938,17 +964,22 @@ PYEOF
 
 run_step_5() {
   local logfile="$1"
+  local rescore_args=()
+  if [[ "${PIPELINE_RESCORE_EXISTING:-false}" == "true" ]]; then
+    rescore_args=(--rescore-existing)
+    warn "Explicit rescore requested; replacing the active model generation"
+  fi
   info "Running batch inference across all preprocessed records..."
   if $VERBOSE; then
     (cd "$PROJECT_ROOT" && "$PYTHON" scripts/batch_inference.py \
       --db "$DB" \
       --model-dir models/sentiment_v1 \
-      --batch-size 1000) | tee "$logfile"
+      --batch-size 1000 "${rescore_args[@]}") | tee "$logfile"
   else
     (cd "$PROJECT_ROOT" && "$PYTHON" scripts/batch_inference.py \
       --db "$DB" \
       --model-dir models/sentiment_v1 \
-      --batch-size 1000) > "$logfile" 2>&1 \
+      --batch-size 1000 "${rescore_args[@]}") > "$logfile" 2>&1 \
       && success "Batch inference complete" \
       || { error "Batch inference failed. Log: $logfile"; tail -20 "$logfile"; return 1; }
   fi
@@ -1190,6 +1221,10 @@ mode_all() {
   print_status_table true
 
   for i in 1 2 3 4 5 6 7 8 9; do
+    if [[ "$FULL_REBUILD" != "true" ]] && should_skip_refresh "$i"; then
+      dim "Skipping fresh step $i — $(step_name "$i") (use --full-rebuild to rerun)"
+      continue
+    fi
     if [[ "$CONFIRM_STEPS" == "true" ]]; then
       if prompt_step "$i"; then
         :
@@ -1219,6 +1254,25 @@ mode_all() {
   print_status_table true
 }
 
+should_skip_refresh() {
+  local step="${1:-}"
+  # Routine refreshes keep expensive model artifacts and process new records.
+  # A direct --step invocation still runs the requested operation.
+  case "$step" in
+    1|4)
+      check_gate "$step" 2>/dev/null
+      ;;
+    6)
+      # A prior topic result is reusable even when the experimental coherence
+      # gate is below its aspirational threshold; --full-rebuild is required
+      # to refit it deliberately.
+      [[ "$(table_exists topics)" == "yes" ]] &&
+        [[ "$(python_query 'SELECT COUNT(*) FROM topics' 2>/dev/null || echo 0)" -gt 0 ]]
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 # ── Argument parsing ───────────────────────────────────────────────────────────
 
 while [[ $# -gt 0 ]]; do
@@ -1227,6 +1281,8 @@ while [[ $# -gt 0 ]]; do
     step)     MODE="step"; TARGET_STEP="${2:-}"; shift ;;
     --check)   MODE="check" ;;
     --all)     MODE="all" ;;
+    --refresh) MODE="all"; FULL_REBUILD=false ;;
+    --full-rebuild|--rebuild) FULL_REBUILD=true ;;
     --interactive) MODE="interactive" ;;
     --confirm-steps) CONFIRM_STEPS=true ;;
     --step)    MODE="step"; TARGET_STEP="${2:-}"; shift ;;
@@ -1243,6 +1299,8 @@ while [[ $# -gt 0 ]]; do
       printf "  step N           Run only step N (1–9)\n"
       printf "  N                Run only step N (1–9)\n"
       printf "  --all            Run all steps without per-step prompts\n"
+      printf "  --refresh        Run the incremental routine refresh (default)\n"
+      printf "  --full-rebuild   Rerun training/refit steps during --all\n"
       printf "  --interactive    Show interactive menu instead of default all-step run\n"
       printf "  --confirm-steps  Ask before each step during all-step runs\n"
       printf "  --no-neon-sync   Skip post-step/post-run SQLite→Neon mirror\n"

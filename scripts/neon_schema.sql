@@ -157,6 +157,16 @@ CREATE TABLE IF NOT EXISTS topic_sentiment_trends (
     PRIMARY KEY (topic_id, date)
 );
 
+-- Additive compatibility for versioned current forecasts and calendar windows.
+ALTER TABLE sentiment_moving_avg ADD COLUMN IF NOT EXISTS observed_days_7d INTEGER;
+ALTER TABLE sentiment_moving_avg ADD COLUMN IF NOT EXISTS observed_days_30d INTEGER;
+ALTER TABLE sentiment_forecast ADD COLUMN IF NOT EXISTS generated_at TEXT;
+ALTER TABLE sentiment_forecast ADD COLUMN IF NOT EXISTS training_through TEXT;
+ALTER TABLE sentiment_forecast ADD COLUMN IF NOT EXISTS interval_width DOUBLE PRECISION;
+ALTER TABLE topics ADD COLUMN IF NOT EXISTS model_version TEXT;
+ALTER TABLE topic_assignments ADD COLUMN IF NOT EXISTS model_version TEXT;
+ALTER TABLE topic_over_time ADD COLUMN IF NOT EXISTS model_version TEXT;
+
 CREATE TABLE IF NOT EXISTS analysis_schema_version (
     key TEXT PRIMARY KEY,
     version INTEGER NOT NULL,

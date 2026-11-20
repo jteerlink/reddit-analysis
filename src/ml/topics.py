@@ -10,7 +10,6 @@ import logging
 import math
 from collections import defaultdict
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -24,6 +23,8 @@ from src.ml.db import (
     upsert_topic_over_time,
     upsert_topics,
 )
+from src.ml.embedding_cache import EmbeddingCache
+from src.ml.topic_identity import topic_model_fingerprint
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +32,6 @@ logger = logging.getLogger(__name__)
 OUTLIER_TOPIC_ID = -1
 MIN_TOPIC_COUNT_GATE = 20
 MIN_COHERENCE_GATE = 0.50
-EMBEDDING_DIM = 384
 SENTIMENT_SCORE_MAP = {"positive": 1.0, "neutral": 0.0, "negative": -1.0}
 _SENTIMENT_BATCH = 999  # SQLite max safe parameters per query
 
@@ -66,53 +66,6 @@ def _week_start(ts_str: str) -> Optional[str]:
         return monday.strftime("%Y-%m-%d")
     except (ValueError, TypeError):
         return None
-
-
-class EmbeddingCache:
-    """Read-only wrapper around the numpy embedding cache from preprocessing."""
-
-    def __init__(self, cache_dir: str = "models/") -> None:
-        base = Path(cache_dir)
-        self._cache_path = base / "embeddings_cache.npy"
-        self._index_path = base / "embeddings_index.json"
-        self._embeddings: Optional[np.ndarray] = None
-        self._index: Optional[Dict[str, int]] = None
-
-    def load(self) -> Tuple[np.ndarray, Dict[str, int]]:
-        if self._embeddings is not None and self._index is not None:
-            return self._embeddings, self._index
-        if not self._cache_path.exists():
-            raise FileNotFoundError(
-                f"Embedding cache not found at {self._cache_path}. "
-                "Run preprocessing first."
-            )
-        if not self._index_path.exists():
-            raise FileNotFoundError(
-                f"Embedding index not found at {self._index_path}. "
-                "Run preprocessing first."
-            )
-        embeddings = np.load(str(self._cache_path))
-        with open(self._index_path) as f:
-            index: Dict[str, int] = json.load(f)
-        self._embeddings = embeddings
-        self._index = index
-        return embeddings, index
-
-    def get_subset(self, embedding_keys: List[str]) -> np.ndarray:
-        """Extract rows for the given keys using numpy fancy indexing."""
-        embeddings, index = self.load()
-        row_indices = []
-        n_embeddings = len(embeddings)
-        for key in embedding_keys:
-            if key in index:
-                row_indices.append(index[key])
-            elif key.lstrip("-").isdigit() and 0 <= int(key) < n_embeddings:
-                row_indices.append(int(key))
-            else:
-                logger.warning("Embedding key not in cache, skipping: %s", key)
-        if not row_indices:
-            return np.zeros((0, EMBEDDING_DIM), dtype=np.float32)
-        return embeddings[row_indices]
 
 
 class TopicModeler:
@@ -351,11 +304,25 @@ def run_topic_modeling(
                 "Only %d embeddings for %d docs; trimming.", len(embeddings), total_docs
             )
             _, idx = cache.load()
-            valid = [k in idx for k in all_embedding_keys]
+            resolved = cache.resolve_keys(all_embedding_keys)
+            valid = [position is not None for position in resolved]
             all_ids = [x for x, v in zip(all_ids, valid) if v]
             all_docs = [x for x, v in zip(all_docs, valid) if v]
+            all_embedding_keys = [x for x, v in zip(all_embedding_keys, valid) if v]
             all_source_timestamps = [x for x, v in zip(all_source_timestamps, valid) if v]
             total_docs = len(all_docs)
+
+        model_version = topic_model_fingerprint(
+            document_ids=all_ids,
+            docs=all_docs,
+            embedding_keys=all_embedding_keys,
+            embeddings=embeddings,
+            n_neighbors=n_neighbors,
+            n_components=n_components,
+            min_cluster_size=min_cluster_size,
+            nr_topics=nr_topics,
+            min_topic_size=min_topic_size,
+        )
 
         # --- Step 3: Train BERTopic ---
         modeler = TopicModeler(
@@ -397,67 +364,83 @@ def run_topic_modeling(
                 gate_report["mean_coherence"],
             )
 
-        # --- Step 5: Clear stale results (topic IDs aren't stable across runs) ---
-        _execute(conn, "DELETE FROM topics")
-        _execute(conn, "DELETE FROM topic_assignments")
-        _execute(conn, "DELETE FROM topic_over_time")
-        conn.commit()
+        if len(topic_assignments) != len(all_ids) or len(probs) != len(all_ids):
+            raise ValueError("Topic model returned a result for a different number of documents")
 
-        # --- Step 6: Write topics ---
-        topics_rows = [
-            (
-                info["topic_id"],
-                json.dumps(info["keywords"]),
-                info["doc_count"],
-                coherence_by_id.get(info["topic_id"]),
-            )
-            for info in topic_info
-        ]
-        upsert_topics(conn, topics_rows)
+        # --- Step 5: Replace the current model atomically.  Integer topic IDs
+        # are local to a fit; model_version prevents stale labels from being
+        # interpreted as the same topic after a refit.
+        try:
+            _execute(conn, "DELETE FROM topics")
+            _execute(conn, "DELETE FROM topic_assignments")
+            _execute(conn, "DELETE FROM topic_over_time")
 
-        # --- Step 7: Write topic assignments (batched to avoid binding limits) ---
-        assignment_rows = [
-            (doc_id, int(tid), float(p))
-            for doc_id, tid, p in zip(all_ids, topic_assignments, probs)
-        ]
-        for i in range(0, len(assignment_rows), batch_size):
-            upsert_topic_assignments(conn, assignment_rows[i : i + batch_size])
+            topics_rows = [
+                (
+                    info["topic_id"],
+                    json.dumps(info["keywords"]),
+                    info["doc_count"],
+                    coherence_by_id.get(info["topic_id"]),
+                    model_version,
+                )
+                for info in topic_info
+            ]
+            upsert_topics(conn, topics_rows, commit=False)
 
-        # --- Step 8: Temporal tracking ---
-        # Partition already-assigned docs by ISO week; no retraining needed.
-        doc_week_topic = []
-        for doc_id, tid, ts_str in zip(all_ids, topic_assignments, all_source_timestamps):
-            if int(tid) == OUTLIER_TOPIC_ID or not ts_str:
-                continue
-            week = _week_start(str(ts_str))
-            if week:
-                doc_week_topic.append((doc_id, int(tid), week))
+            assignment_rows = [
+                (doc_id, int(tid), float(p), model_version)
+                for doc_id, tid, p in zip(all_ids, topic_assignments, probs)
+            ]
+            for i in range(0, len(assignment_rows), batch_size):
+                upsert_topic_assignments(
+                    conn, assignment_rows[i : i + batch_size], commit=False
+                )
 
-        if doc_week_topic:
-            sentiment_map: Dict[str, float] = {}
-            chunk_ids = [x[0] for x in doc_week_topic]
-            for i in range(0, len(chunk_ids), _SENTIMENT_BATCH):
-                chunk = chunk_ids[i : i + _SENTIMENT_BATCH]
-                marker = "%s" if is_postgres_connection(conn) else "?"
-                placeholders = ",".join([marker] * len(chunk))
-                rows = _execute(
+            # --- Step 8: Temporal tracking ---
+            # Partition already-assigned docs by ISO week; no retraining needed.
+            doc_week_topic = []
+            for doc_id, tid, ts_str in zip(all_ids, topic_assignments, all_source_timestamps):
+                if int(tid) == OUTLIER_TOPIC_ID or not ts_str:
+                    continue
+                week = _week_start(str(ts_str))
+                if week:
+                    doc_week_topic.append((doc_id, int(tid), week))
+
+            if doc_week_topic:
+                sentiment_map: Dict[str, float] = {}
+                chunk_ids = [x[0] for x in doc_week_topic]
+                for i in range(0, len(chunk_ids), _SENTIMENT_BATCH):
+                    chunk = chunk_ids[i : i + _SENTIMENT_BATCH]
+                    marker = "%s" if is_postgres_connection(conn) else "?"
+                    placeholders = ",".join([marker] * len(chunk))
+                    rows = _execute(
+                        conn,
+                        f"SELECT id, label FROM sentiment_predictions WHERE id IN ({placeholders})",
+                        tuple(chunk),
+                    ).fetchall()
+                    for row in rows:
+                        sentiment_map[row["id"]] = SENTIMENT_SCORE_MAP.get(row["label"], 0.0)
+
+                week_topic_scores: Dict[Tuple[int, str], List[Optional[float]]] = defaultdict(list)
+                for doc_id, tid, week in doc_week_topic:
+                    week_topic_scores[(tid, week)].append(sentiment_map.get(doc_id))
+
+                tot_rows = []
+                for (tid, week), scores in week_topic_scores.items():
+                    valid = [s for s in scores if s is not None]
+                    avg = sum(valid) / len(valid) if valid else None
+                    tot_rows.append((tid, week, len(scores), avg))
+                upsert_topic_over_time(
                     conn,
-                    f"SELECT id, label FROM sentiment_predictions WHERE id IN ({placeholders})",
-                    tuple(chunk),
-                ).fetchall()
-                for row in rows:
-                    sentiment_map[row["id"]] = SENTIMENT_SCORE_MAP.get(row["label"], 0.0)
+                    [(tid, week, count, avg, model_version)
+                     for tid, week, count, avg in tot_rows],
+                    commit=False,
+                )
 
-            week_topic_scores: Dict[Tuple[int, str], List[Optional[float]]] = defaultdict(list)
-            for doc_id, tid, week in doc_week_topic:
-                week_topic_scores[(tid, week)].append(sentiment_map.get(doc_id))
-
-            tot_rows = []
-            for (tid, week), scores in week_topic_scores.items():
-                valid = [s for s in scores if s is not None]
-                avg = sum(valid) / len(valid) if valid else None
-                tot_rows.append((tid, week, len(scores), avg))
-            upsert_topic_over_time(conn, tot_rows)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
         # --- Step 9: MLflow metrics ---
         n_topics = sum(1 for info in topic_info if info["topic_id"] != OUTLIER_TOPIC_ID)
@@ -490,6 +473,7 @@ def run_topic_modeling(
             "gate_passed": gate_passed,
             "device": device,
             "days": days,
+            "model_version": model_version,
         }
 
     finally:

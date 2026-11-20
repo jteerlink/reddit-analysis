@@ -168,8 +168,13 @@ class SemanticSearchResult(BaseModel):
     id: str
     score: float
     date: Optional[str] = None
+    timestamp: Optional[str] = None
     subreddit: Optional[str] = None
     content_type: Optional[str] = None
+    title: Optional[str] = None
+    original_text: Optional[str] = None
+    clean_text: Optional[str] = None
+    source_url: Optional[str] = None
     label: Optional[str] = None
     confidence: Optional[float] = None
     text_preview: str
@@ -251,6 +256,22 @@ class ThreadAnalysis(BaseModel):
     provenance: Optional[AnalysisProvenance] = None
 
 
+class BriefEvidence(BaseModel):
+    """A source-backed brief citation suitable for the Deep Dive view."""
+
+    anchor_type: str
+    anchor_id: str
+    label: Optional[str] = None
+    snippet: Optional[str] = None
+    relevance: Optional[str] = None
+    original_text: Optional[str] = None
+    title: Optional[str] = None
+    subreddit: Optional[str] = None
+    timestamp: Optional[str] = None
+    source_url: Optional[str] = None
+    content_type: Optional[str] = None
+
+
 class AnalystBrief(BaseModel):
     brief_id: str
     period: str
@@ -259,6 +280,9 @@ class AnalystBrief(BaseModel):
     source_events: List[int] = Field(default_factory=list)
     generated_at: Optional[str] = None
     model_name: Optional[str] = None
+    prompt_version: Optional[str] = None
+    evidence_schema_version: Optional[int] = None
+    evidence_status: Literal["source_linked", "partial", "unverified", "legacy", "superseded", "verified"] = "unverified"
     state: AnalysisState = "ready"
     provenance: Optional[AnalysisProvenance] = None
 

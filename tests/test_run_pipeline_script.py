@@ -107,6 +107,24 @@ def test_run_pipeline_verifies_step_6_and_7_imports_during_environment_setup():
     assert 'verify_pipeline_dependencies "$logfile"' in script
 
 
+def test_run_pipeline_has_incremental_refresh_and_explicit_rebuild_modes():
+    script = Path("scripts/run_pipeline.sh").read_text()
+
+    assert "--refresh) MODE=\"all\"; FULL_REBUILD=false ;;" in script
+    assert "--full-rebuild|--rebuild) FULL_REBUILD=true ;;" in script
+    assert "should_skip_refresh()" in script
+    assert "use --full-rebuild to rerun" in script
+    assert "Python dependencies already available; skipping installation" in script
+
+
+def test_run_pipeline_requires_explicit_rescore_for_model_replacement():
+    script = Path("scripts/run_pipeline.sh").read_text()
+
+    assert "PIPELINE_RESCORE_EXISTING" in script
+    assert "--rescore-existing" in script
+    assert "replacing the active model generation" in script
+
+
 def test_ml_extra_pins_regex_floor_required_by_transformers():
     pyproject = Path("pyproject.toml").read_text()
 

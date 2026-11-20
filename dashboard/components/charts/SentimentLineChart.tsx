@@ -64,8 +64,11 @@ export function SentimentLineChart({ data, changePoints, maMode, seriesLabels = 
     const label = seriesLabels[row.subreddit] ?? row.subreddit;
     const key = `${row.date}\0${label}`;
     const b = buckets.get(key) ?? { scoreTotal: 0, count: 0, rolling7dTotal: 0, count7d: 0, rolling30dTotal: 0, count30d: 0 };
-    b.scoreTotal += row.mean_score ?? 0;
-    b.count += 1;
+    // A missing score is a missing observation, not a neutral score.
+    if (row.mean_score != null) {
+      b.scoreTotal += row.mean_score;
+      b.count += 1;
+    }
     if (row.rolling_7d != null) { b.rolling7dTotal += row.rolling_7d; b.count7d += 1; }
     if (row.rolling_30d != null) { b.rolling30dTotal += row.rolling_30d; b.count30d += 1; }
     buckets.set(key, b);
@@ -77,7 +80,7 @@ export function SentimentLineChart({ data, changePoints, maMode, seriesLabels = 
     const date = key.slice(0, sep);
     const label = key.slice(sep + 1);
     if (!byDate[date]) byDate[date] = { date };
-    byDate[date][`${label}_score`] = b.scoreTotal / b.count;
+    byDate[date][`${label}_score`] = b.count ? b.scoreTotal / b.count : null;
     if (b.count7d > 0) byDate[date][`${label}_7d`] = b.rolling7dTotal / b.count7d;
     if (b.count30d > 0) byDate[date][`${label}_30d`] = b.rolling30dTotal / b.count30d;
   }
@@ -168,6 +171,9 @@ export function SentimentLineChart({ data, changePoints, maMode, seriesLabels = 
           ))}
       </LineChart>
       </ResponsiveContainer>
+      <p className="px-2 pb-1 text-[10px] leading-4 text-muted-foreground">
+        Missing dates remain gaps. Moving averages use only observed days in each window.
+      </p>
     </div>
   );
 }

@@ -75,3 +75,33 @@ def test_cli_accepts_no_topic_reduction(monkeypatch, tmp_path):
     train_topic_model.main()
 
     assert captured["nr_topics"] is None
+
+
+def test_cli_records_explicit_topic_model_version(monkeypatch, tmp_path, capsys):
+    db_path = tmp_path / "reddit.db"
+    db_path.write_text("")
+
+    monkeypatch.setattr(
+        train_topic_model,
+        "run_topic_modeling",
+        lambda **kwargs: {
+            "total_docs": 0,
+            "n_topics": 0,
+            "n_outliers": 0,
+            "coherent_topic_count": 0,
+            "mean_coherence": 0.0,
+            "gate_passed": True,
+            "device": "cpu",
+        },
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["train_topic_model.py", "--db", str(db_path), "--cache-dir", str(tmp_path), "--model-version", "runtime_luna-v1"],
+    )
+
+    train_topic_model.main()
+
+    assert "Model version:      runtime_luna-v1" in capsys.readouterr().out
+    metadata = (tmp_path / "topic_model_metadata.json").read_text()
+    assert "runtime_luna-v1" in metadata

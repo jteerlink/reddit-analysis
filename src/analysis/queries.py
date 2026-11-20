@@ -257,6 +257,19 @@ def _optional_table_event(
         if count == 0:
             return None
         timestamp = ""
+        event_detail = detail_template.format(count=count)
+        event_title = title
+        provenance_extra = {}
+        # Forecast dates are predicted horizon points, not event timestamps.
+        # Use the persisted run time when available and mark legacy rows whose
+        # generation time cannot be established.
+        if table_name == "sentiment_forecast" and timestamp_column == "date":
+            if _column_exists(conn, table_name, "generated_at"):
+                timestamp_column = "generated_at"
+            else:
+                provenance_extra["run_state"] = "unknown"
+                event_title = f"{title} (generation time unknown)"
+                event_detail += " Generation time is unavailable for this legacy forecast."
         if timestamp_column:
             latest = execute(
                 conn, f"SELECT MAX({timestamp_column}) AS latest FROM {table_name}"
@@ -270,12 +283,13 @@ def _optional_table_event(
             "timestamp": str(timestamp),
             "type": event_type,
             "severity": "success",
-            "title": title,
-            "detail": detail_template.format(count=count),
+            "title": event_title,
+            "detail": event_detail,
             "source_ids": [table_name],
             "state": "ready",
             "provenance": _provenance(
-                "ready", "real_data", table_name, producer_job="operational_activity"
+                "ready", "real_data", table_name,
+                producer_job="operational_activity", **provenance_extra
             ),
         }
     except Exception as exc:
@@ -542,27 +556,111 @@ def embedding_map(conn, limit: int = 5000) -> list[dict]:
         raise AnalysisQueryError(str(exc)) from exc
 
 
-def semantic_search(conn, query: str, limit: int = 50) -> list[dict]:
+def _semantic_parent_subreddits(conn: Any, parents: tuple[str, ...]) -> tuple[str, ...]:
+    """Resolve parent groups without requiring the optional category table."""
+    if not parents:
+        return ()
+    values = {
+        subreddit
+        for subreddit, parent_id, _display_name, _sort_order in DEFAULT_SUBREDDIT_CATEGORIES
+        if parent_id in parents
+    }
+    try:
+        if _column_exists(conn, "subreddit_categories", "parent_id"):
+            marker = paramstyle()
+            rows = execute(
+                conn,
+                f"SELECT subreddit FROM subreddit_categories WHERE parent_id IN ({','.join([marker] * len(parents))})",
+                list(parents),
+            ).fetchall()
+            values.update(row["subreddit"] if hasattr(row, "keys") else row[0] for row in rows)
+    except Exception:
+        # A missing optional table should not make search unavailable.
+        logger.debug("semantic_parent_resolution_unavailable", exc_info=True)
+    return tuple(sorted(value for value in values if value))
+
+
+def _semantic_source_sql(conn: Any) -> str:
+    """Return a source CTE with stable metadata across legacy schemas."""
+    post_title = "title" if _column_exists(conn, "posts", "title") else "NULL"
+    post_content = "content" if _column_exists(conn, "posts", "content") else "NULL"
+    post_url = "url" if _column_exists(conn, "posts", "url") else "NULL"
+    comment_content = "content" if _column_exists(conn, "comments", "content") else (
+        "body" if _column_exists(conn, "comments", "body") else "NULL"
+    )
+    comment_post_id = "post_id" if _column_exists(conn, "comments", "post_id") else "NULL"
+    comment_url = (
+        "('https://www.reddit.com/comments/' || REPLACE(post_id, 't3_', '') || '/_/' || REPLACE(id, 't1_', '') || '/')"
+        if comment_post_id != "NULL"
+        else "NULL"
+    )
+    post_parent = "subreddit_parent_id" if _column_exists(conn, "posts", "subreddit_parent_id") else "NULL"
+    comment_parent = "subreddit_parent_id" if _column_exists(conn, "comments", "subreddit_parent_id") else "NULL"
+    return f"""
+        SELECT id, subreddit, timestamp, DATE(timestamp) AS date,
+               'post' AS content_type, {post_title} AS title,
+               {post_content} AS original_text, {post_url} AS source_url,
+               {post_parent} AS parent_id
+        FROM posts
+        UNION ALL
+        SELECT id, subreddit, timestamp, DATE(timestamp) AS date,
+               'comment' AS content_type, NULL AS title,
+               {comment_content} AS original_text, {comment_url} AS source_url,
+               {comment_parent} AS parent_id
+        FROM comments
+    """
+
+
+def semantic_search(
+    conn,
+    query: str,
+    limit: int = 50,
+    subreddits: tuple[str, ...] = (),
+    parents: tuple[str, ...] = (),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    content_type: str = "both",
+) -> list[dict]:
     if not query.strip():
         return []
     marker = paramstyle()
     query_tokens = _tokenize(query)
     try:
+        conditions = ["p.clean_text IS NOT NULL"]
+        params: list[Any] = []
+        effective_subreddits = list(subreddits)
+        for subreddit in _semantic_parent_subreddits(conn, parents):
+            if subreddit not in effective_subreddits:
+                effective_subreddits.append(subreddit)
+        if effective_subreddits:
+            conditions.append(f"src.subreddit IN ({','.join([marker] * len(effective_subreddits))})")
+            params.extend(effective_subreddits)
+        if start_date:
+            conditions.append(f"src.timestamp >= {marker}")
+            params.append(start_date)
+        if end_date:
+            # End dates are inclusive in the public filter contract.
+            conditions.append(f"src.timestamp < {marker}")
+            from datetime import datetime, timedelta
+
+            params.append((datetime.strptime(end_date, "%Y-%m-%d").date() + timedelta(days=1)).isoformat())
+        if content_type != "both":
+            conditions.append(f"p.content_type = {marker}")
+            params.append(content_type)
         rows = execute(
             conn,
             f"""
-            SELECT p.id, p.content_type, p.clean_text, p.embedding_key, src.subreddit, src.date,
+            WITH src AS ({_semantic_source_sql(conn)})
+            SELECT p.id, p.content_type, p.clean_text, p.embedding_key,
+                   src.subreddit, src.date, src.timestamp, src.title,
+                   src.original_text, src.source_url, src.parent_id,
                    sp.label, sp.confidence
             FROM preprocessed p
             LEFT JOIN sentiment_predictions sp ON p.id = sp.id
-            LEFT JOIN (
-                SELECT id, subreddit, DATE(timestamp) AS date FROM posts
-                UNION ALL
-                SELECT id, subreddit, DATE(timestamp) AS date FROM comments
-            ) src ON p.id = src.id
-            WHERE p.clean_text IS NOT NULL
-            LIMIT 10000
+            JOIN src ON p.id = src.id AND p.content_type = src.content_type
+            WHERE {' AND '.join(conditions)}
             """,
+            params,
         ).fetchall()
         vector_results, fallback_state, fallback_algorithm = _semantic_vector_results(
             rows, query, limit
@@ -595,14 +693,11 @@ def semantic_search(conn, query: str, limit: int = 50) -> list[dict]:
                 conn,
                 f"""
                 SELECT p.id, p.content_type, p.clean_text, src.subreddit, src.date,
-                       sp.label, sp.confidence
+                       src.timestamp, src.title, src.original_text, src.source_url,
+                       src.parent_id, sp.label, sp.confidence
                 FROM preprocessed p
                 LEFT JOIN sentiment_predictions sp ON p.id = sp.id
-                LEFT JOIN (
-                    SELECT id, subreddit, DATE(timestamp) AS date FROM posts
-                    UNION ALL
-                    SELECT id, subreddit, DATE(timestamp) AS date FROM comments
-                ) src ON p.id = src.id
+                JOIN ({_semantic_source_sql(conn)}) src ON p.id = src.id AND p.content_type = src.content_type
                 WHERE p.clean_text LIKE {marker}
                 LIMIT {marker}
                 """,
@@ -640,20 +735,51 @@ def _semantic_vector_results(
         return None, "error", "model_load_error_lexical_fallback"
 
     try:
-        query_vector = model.encode([query], normalize_embeddings=True)[0]
-        scored = []
+        query_vector = np.asarray(model.encode([query], normalize_embeddings=True)[0], dtype=np.float32)
+        query_norm = float(np.linalg.norm(query_vector))
+        if not query_norm or math.isnan(query_norm):
+            return None, "missing_config", "zero_query_vector_lexical_fallback"
+
+        # Build one eligible position array and score it with matrix operations.
+        # Chunking keeps peak memory bounded for large embedding caches.
+        eligible: list[tuple[int, Any]] = []
         for row in rows:
             key = row["embedding_key"] or row["id"]
+            # Older preprocessing runs stored numeric cache keys while newer
+            # runs use Reddit IDs. Prefer the recorded key, then the source ID.
             position = index.get(key)
             if position is None:
-                continue
-            score = _cosine(
-                np.asarray(query_vector), np.asarray(embeddings[int(position)])
-            )
-            scored.append((score, row))
-        if not scored:
+                position = index.get(row["id"])
+            if position is not None:
+                try:
+                    eligible.append((int(position), row))
+                except (TypeError, ValueError):
+                    continue
+        if not eligible:
             return None, "missing_config", "no_vector_matches_lexical_fallback"
-        scored.sort(key=lambda item: item[0], reverse=True)
+
+        positions = np.asarray([position for position, _row in eligible], dtype=np.intp)
+        scored_values: list[float] = []
+        scored_rows: list[Any] = []
+        chunk_size = 8192
+        for start in range(0, len(positions), chunk_size):
+            matrix = np.asarray(embeddings[positions[start : start + chunk_size]], dtype=np.float32)
+            norms = np.linalg.norm(matrix, axis=1)
+            valid = np.isfinite(norms) & (norms > 0)
+            if not np.any(valid):
+                continue
+            values = (matrix[valid] @ query_vector) / (norms[valid] * query_norm)
+            chunk_rows = [row for _position, row in eligible[start : start + chunk_size]]
+            for row_index, value in zip(np.flatnonzero(valid), values):
+                if np.isfinite(value):
+                    scored_values.append(float(value))
+                    scored_rows.append(chunk_rows[int(row_index)])
+
+        if not scored_values:
+            return None, "missing_config", "zero_vector_matches_lexical_fallback"
+        scored = list(zip(scored_values, scored_rows))
+        # Stable ID tie-breaking makes pagination and repeated searches deterministic.
+        scored.sort(key=lambda item: (-item[0], str(item[1]["id"])))
         return (
             [
                 _semantic_result(row, max(0.0, score), "ready", "minilm_cosine")
@@ -681,15 +807,21 @@ def semantic_vector_backend_ready() -> bool:
 
 def _semantic_result(row: Any, score: float, state: str, algorithm: str) -> dict:
     label = "real_data" if state == "ready" else "missing_config"
+    clean_text = row["clean_text"] or ""
     return {
         "id": row["id"],
         "score": round(float(score), 4),
         "date": row["date"],
+        "timestamp": row["timestamp"] if "timestamp" in row.keys() else None,
         "subreddit": row["subreddit"],
         "content_type": row["content_type"],
+        "title": row["title"] if "title" in row.keys() else None,
+        "original_text": row["original_text"] if "original_text" in row.keys() else None,
+        "clean_text": clean_text,
+        "source_url": row["source_url"] if "source_url" in row.keys() else None,
         "label": row["label"],
         "confidence": row["confidence"],
-        "text_preview": (row["clean_text"] or "")[:240],
+        "text_preview": clean_text[:240],
         "state": state,
         "provenance": _provenance(
             state, label, "preprocessed", [row["id"]], algorithm=algorithm
@@ -839,6 +971,13 @@ def _brief_from_artifact(row: dict, label: str) -> dict:
         "source_events": payload.get("source_events", []),
         "generated_at": payload.get("generated_at") or row.get("freshness_timestamp"),
         "model_name": payload.get("model_name") or row.get("model_name"),
+        "prompt_version": payload.get("prompt_version") or row.get("prompt_version"),
+        "evidence_schema_version": payload.get("evidence_schema_version") or row.get("schema_version"),
+        "evidence_status": payload.get("evidence_status") or (
+            "legacy"
+            if not (payload.get("evidence_schema_version") or row.get("schema_version"))
+            else "unverified"
+        ),
         "state": "ready",
         "provenance": _provenance(
             "ready",

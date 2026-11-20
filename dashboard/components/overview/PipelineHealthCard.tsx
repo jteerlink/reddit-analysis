@@ -84,7 +84,7 @@ export function PipelineHealthCard() {
   const throughput = storage?.throughput_items_per_minute;
   const storageLatency = storage?.p95_latency_seconds ?? storage?.avg_latency_seconds;
   const latency = storageLatency ?? storage?.latest_lag_seconds;
-  const latencyLabel = storageLatency == null && storage?.latest_lag_seconds != null ? "Lag" : "Latency";
+  const latencyLabel = storageLatency == null && storage?.latest_lag_seconds != null ? "Data age" : "Processing time";
   const latencySparkline = storage?.sparkline_latency_seconds?.length
     ? storage.sparkline_latency_seconds
     : storage?.latest_lag_seconds != null
@@ -96,8 +96,8 @@ export function PipelineHealthCard() {
     <section className="command-panel p-4">
       <div className="flex items-center justify-between">
         <div>
-          <p className="command-label">Pipeline</p>
-          <h3 className="mt-1 text-[14px] font-semibold tracking-[-0.012em] text-foreground">Operational health</h3>
+          <p className="command-label">Batch processing</p>
+          <h3 className="mt-1 text-[14px] font-semibold tracking-[-0.012em] text-foreground">Batch health</h3>
         </div>
         <GitBranch className="size-4 text-signal-copper" aria-hidden="true" />
       </div>
@@ -121,13 +121,13 @@ export function PipelineHealthCard() {
 
       <div className="mt-4 grid grid-cols-2 gap-3 border-t border-border pt-3">
         <div>
-          <p className="text-[10px] uppercase text-muted-foreground">Throughput</p>
+            <p className="text-[10px] uppercase text-muted-foreground">Processed rate</p>
           <div className="mt-1 flex items-end justify-between gap-2">
             <div>
               <p className="font-mono text-lg font-semibold text-foreground">{formatThroughput(throughput).replace("/min", "")}</p>
               <p className="font-mono text-[10px] text-muted-foreground">items/min</p>
             </div>
-            <Sparkline label="Throughput" values={storage?.sparkline_throughput_items_per_minute ?? []} />
+            <Sparkline label="Processed rate" values={storage?.sparkline_throughput_items_per_minute ?? []} />
           </div>
         </div>
         <div className="border-l border-border pl-3">

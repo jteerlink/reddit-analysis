@@ -2,7 +2,11 @@
 """Train BERTopic topic model on a rolling window of Reddit data."""
 
 import argparse
+import hashlib
+import json
+import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -63,6 +67,11 @@ def main() -> None:
     parser.add_argument(
         "--no-mlflow", action="store_true", help="Disable MLflow experiment tracking"
     )
+    parser.add_argument(
+        "--model-version",
+        default=os.environ.get("TOPIC_MODEL_VERSION", ""),
+        help="Immutable run identity to record (also read from TOPIC_MODEL_VERSION)",
+    )
     args = parser.parse_args()
 
     if not Path(args.db).exists():
@@ -73,6 +82,19 @@ def main() -> None:
         nr_topics: object = None if args.nr_topics == "none" else args.nr_topics
     else:
         nr_topics = int(args.nr_topics)
+
+    config = {
+        "days": args.days,
+        "batch_size": args.batch_size,
+        "nr_topics": nr_topics,
+        "min_cluster_size": args.min_cluster_size,
+        "min_topic_size": args.min_topic_size,
+        "n_neighbors": args.n_neighbors,
+        "n_components": args.n_components,
+    }
+    model_version = args.model_version or "topic-" + hashlib.sha256(
+        json.dumps(config, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
 
     result = run_topic_modeling(
         db_path=args.db,
@@ -104,7 +126,25 @@ def main() -> None:
     print(f"Gate:               {gate} (>= 20 coherent topics required)")
     print(f"Device:             {result['device']}")
     print(f"Window:             {args.days} days")
+    print(f"Model version:      {model_version}")
     print("=" * 50)
+
+    metadata_path = Path(args.cache_dir) / "topic_model_metadata.json"
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "model_version": model_version,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "config": config,
+                "database": str(Path(args.db).resolve()),
+                "promotion": "manual review required; this command does not promote labels",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     if not result["gate_passed"] and not args.skip_gate:
         sys.exit(1)

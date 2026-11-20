@@ -33,8 +33,8 @@ export function CommandBar({
 }: Props) {
   const rangeLabel = dateRange[0] && dateRange[1] ? `${dateRange[0]} to ${dateRange[1]}` : "Full range";
   const parentLabel = selectedParents.length
-    ? `${selectedParents.length} parent${selectedParents.length === 1 ? "" : "s"}`
-    : "All parents";
+    ? `${selectedParents.length} community group${selectedParents.length === 1 ? "" : "s"}`
+    : "All community groups";
   const subredditExtraLabel = selectedSubreddits.length ? ` / +${selectedSubreddits.length} subs` : "";
 
   const parentMap = new Map(parentCategories.map((p) => [p.id, p]));
@@ -87,7 +87,7 @@ export function CommandBar({
           </summary>
           <div className="absolute right-0 z-20 mt-2 w-72 rounded-lg border border-border bg-card p-3 shadow-2xl">
             <div className="mb-2 flex items-center justify-between">
-              <p className="command-label">Parents</p>
+              <p className="command-label">Community groups</p>
               <button type="button" onClick={onClearParents} className="text-[11px] text-signal-copper hover:text-foreground">
                 Clear
               </button>

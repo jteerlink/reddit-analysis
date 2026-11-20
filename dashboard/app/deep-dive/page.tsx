@@ -20,6 +20,7 @@ const LABEL_COLORS: Record<string, string> = {
 type RouteFilters = {
   subreddits: string[];
   parents: string[];
+  postId: string | null;
   topicId: number | null;
   topicLabel: string | null;
 };
@@ -27,6 +28,7 @@ type RouteFilters = {
 const EMPTY_ROUTE_FILTERS: RouteFilters = {
   subreddits: [],
   parents: [],
+  postId: null,
   topicId: null,
   topicLabel: null,
 };
@@ -51,6 +53,7 @@ function readRouteFilters(): RouteFilters & {
     mode,
     subreddits: params.getAll("subreddits"),
     parents: params.getAll("parents"),
+    postId: params.get("post_id"),
     topicId: Number.isFinite(topicId) ? topicId : null,
     topicLabel: params.get("topic_label"),
   };
@@ -77,17 +80,24 @@ function SegmentButton({
   );
 }
 
-function TextPreview({ text }: { text: string }) {
-  return (
-    <div className="group relative max-w-xs">
-      <span className="block truncate text-muted-foreground" tabIndex={0}>
-        {text}
-      </span>
-      <div className="pointer-events-none absolute bottom-full left-0 z-30 mb-2 hidden max-h-72 w-[min(34rem,80vw)] overflow-y-auto rounded-md border border-signal-copper/35 bg-[#081816]/98 px-3 py-2 text-xs leading-5 text-foreground shadow-2xl group-hover:block group-focus-within:block">
-        {text}
-      </div>
-    </div>
-  );
+function originalText(row: Post | SemanticSearchResult): string {
+  if (row.original_text) return row.original_text;
+  if ("text_preview" in row && row.text_preview) return row.text_preview;
+  return row.clean_text || "No source text available.";
+}
+
+function sourceDate(row: Post | SemanticSearchResult): string {
+  return row.timestamp?.slice(0, 16).replace("T", " ") ?? row.date ?? "n/a";
+}
+
+function safeSourceUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
 }
 
 export default function DeepDivePage() {
@@ -102,7 +112,7 @@ export default function DeepDivePage() {
   const PAGE_SIZE = 50;
   const effectiveSubreddits = routeFilters.subreddits.length ? routeFilters.subreddits : subreddits;
   const effectiveParents = routeFilters.parents.length ? routeFilters.parents : parents;
-  const scopedByRoute = !!routeFilters.topicId || !!routeFilters.subreddits.length || !!routeFilters.parents.length;
+  const scopedByRoute = !!routeFilters.postId || !!routeFilters.topicId || !!routeFilters.subreddits.length || !!routeFilters.parents.length;
 
   useEffect(() => {
     const filters = readRouteFilters();
@@ -113,6 +123,7 @@ export default function DeepDivePage() {
     setRouteFilters({
       subreddits: filters.subreddits,
       parents: filters.parents,
+      postId: filters.postId,
       topicId: filters.topicId,
       topicLabel: filters.topicLabel,
     });
@@ -128,12 +139,19 @@ export default function DeepDivePage() {
   if (label !== "all") params.set("label", label);
   if (contentType !== "both") params.set("content_type", contentType);
   if (routeFilters.topicId != null) params.set("topic_id", String(routeFilters.topicId));
+  if (routeFilters.postId) params.set("post_id", routeFilters.postId);
   params.set("limit", String(PAGE_SIZE));
   params.set("offset", String(page * PAGE_SIZE));
 
   const semanticParams = new URLSearchParams();
+  effectiveSubreddits.forEach((subreddit) => semanticParams.append("subreddits", subreddit));
+  effectiveParents.forEach((parent) => semanticParams.append("parents", parent));
+  if (dateRange[0]) semanticParams.set("start_date", dateRange[0]);
+  if (dateRange[1]) semanticParams.set("end_date", dateRange[1]);
   semanticParams.set("q", keyword);
   semanticParams.set("limit", String(PAGE_SIZE));
+  if (label !== "all") semanticParams.set("label", label);
+  if (contentType !== "both") semanticParams.set("content_type", contentType);
 
   const { data: posts } = useSWR<Post[]>(
     ready && mode === "keyword" ? `/api/posts/search?${params}` : null,
@@ -146,16 +164,17 @@ export default function DeepDivePage() {
   const rows = mode === "semantic" ? semanticResults?.items : posts;
   const filterSummary = useMemo(() => {
     const parts = [];
+    if (routeFilters.postId) parts.push(`record ${routeFilters.postId}`);
     if (routeFilters.topicId != null) parts.push(routeFilters.topicLabel ?? `Topic ${routeFilters.topicId}`);
     if (effectiveParents.length) parts.push(`${effectiveParents.length} parent${effectiveParents.length === 1 ? "" : "s"}`);
     if (effectiveSubreddits.length) parts.push(`${effectiveSubreddits.length} subreddit${effectiveSubreddits.length === 1 ? "" : "s"}`);
     return parts.join(" / ");
-  }, [effectiveParents.length, effectiveSubreddits.length, routeFilters.topicId, routeFilters.topicLabel]);
+  }, [effectiveParents.length, effectiveSubreddits.length, routeFilters.postId, routeFilters.topicId, routeFilters.topicLabel]);
 
   function exportCSV() {
     if (!rows?.length) return;
-    const cols = ["date", "subreddit", "content_type", "label", "confidence", "clean_text"];
-    const csvRows = rows.map((p) => cols.map((c) => JSON.stringify((p as unknown as Record<string, unknown>)[c] ?? (p as SemanticSearchResult).text_preview ?? "")).join(","));
+    const cols = ["date", "timestamp", "subreddit", "content_type", "label", "confidence", "title", "original_text", "clean_text", "source_url"];
+    const csvRows = rows.map((p) => cols.map((c) => JSON.stringify((p as unknown as Record<string, unknown>)[c] ?? (c === "original_text" ? originalText(p) : ""))).join(","));
     const blob = new Blob([cols.join(",") + "\n" + csvRows.join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href = url; a.download = "deep_dive.csv"; a.click();
@@ -217,22 +236,24 @@ export default function DeepDivePage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-muted-foreground border-b border-border">
-                <th className="pb-2 font-medium w-24">Date</th>
+                <th className="pb-2 font-medium w-32">Collected</th>
                 <th className="pb-2 font-medium w-32">Subreddit</th>
                 <th className="pb-2 font-medium w-20">Type</th>
                 <th className="pb-2 font-medium w-24">Label</th>
                 <th className="pb-2 font-medium w-16">Conf.</th>
                 {mode === "semantic" && <th className="pb-2 font-medium w-20">Score</th>}
-                <th className="pb-2 font-medium">Text</th>
+                <th className="pb-2 font-medium min-w-72">Original source</th>
               </tr>
             </thead>
             <tbody>
               {rows?.map((p, i) => {
                 const semantic = p as SemanticSearchResult;
-                const text = "text_preview" in p ? semantic.text_preview : (p as Post).clean_text;
+                const text = originalText(p);
+                const cleanText = p.clean_text;
+                const sourceUrl = safeSourceUrl(p.source_url);
                 return (
-                <tr key={i} className="border-b border-border/50 last:border-0 align-top">
-                  <td className="py-2 text-muted-foreground tabular-nums">{p.date}</td>
+                <tr key={p.id || i} className="border-b border-border/50 last:border-0 align-top">
+                  <td className="py-2 text-muted-foreground tabular-nums">{sourceDate(p)}</td>
                   <td className="py-2 text-muted-foreground">{p.subreddit}</td>
                   <td className="py-2 text-muted-foreground">{p.content_type}</td>
                   <td className="py-2">
@@ -241,7 +262,21 @@ export default function DeepDivePage() {
                   <td className="py-2 tabular-nums">{p.confidence?.toFixed(2) ?? "n/a"}</td>
                   {mode === "semantic" && <td className="py-2 tabular-nums">{semantic.score.toFixed(2)}</td>}
                   <td className="py-2">
-                    <TextPreview text={text} />
+                    <div className="max-w-xl space-y-1.5">
+                      {p.title && <p className="font-medium text-foreground">{p.title}</p>}
+                      <p className="whitespace-pre-wrap text-sm leading-5 text-foreground">{text}</p>
+                      {sourceUrl && (
+                        <a href={sourceUrl} target="_blank" rel="noreferrer" className="inline-flex text-xs text-signal-copper underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal-green">
+                          Open original thread
+                        </a>
+                      )}
+                      {cleanText && cleanText !== text && (
+                        <details className="rounded border border-border/60 bg-muted/20 px-2 py-1 text-xs text-muted-foreground">
+                          <summary className="cursor-pointer font-medium text-foreground">Show cleaned model input</summary>
+                          <p className="mt-1 whitespace-pre-wrap leading-5">{cleanText}</p>
+                        </details>
+                      )}
+                    </div>
                   </td>
                 </tr>
                 );

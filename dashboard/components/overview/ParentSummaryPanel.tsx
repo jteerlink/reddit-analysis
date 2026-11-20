@@ -32,7 +32,7 @@ export function ParentSummaryPanel({ parents }: Props) {
     <section className="command-panel p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="command-label">Parents</p>
+          <p className="command-label">Community groups</p>
           <h3 className="mt-1 text-[14px] font-semibold tracking-[-0.012em] text-foreground">
             Community groups
           </h3>

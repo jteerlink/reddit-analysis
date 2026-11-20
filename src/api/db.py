@@ -391,32 +391,81 @@ def get_collection_summary(
 
 
 @_ttl_cache(seconds=30)
-def get_trending_topics(n: int = 3) -> List[dict]:
+def get_trending_topics(
+    n: int = 3,
+    subreddits: Tuple[str, ...] = (),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    parents: Tuple[str, ...] = (),
+) -> List[dict]:
     try:
         conn = _connect()
         label_expr = _topic_llm_label_expr(conn, "t")
         has_cluster_labels = _table_exists(conn, "cluster_labels")
         cluster_join = "LEFT JOIN cluster_labels cl ON cl.cluster_id = t.topic_id" if has_cluster_labels else ""
         cluster_label_expr = "cl.label" if has_cluster_labels else "NULL"
-        df = pd.read_sql_query(
-            f"""
-            SELECT t.topic_id,
-                   t.keywords,
-                   {label_expr} AS llm_label,
-                   COALESCE(NULLIF({label_expr}, ''), NULLIF({cluster_label_expr}, ''), '') AS label,
-                   tot.doc_count,
-                   tot.week_start
-            FROM topic_over_time tot
-            JOIN topics t ON tot.topic_id = t.topic_id
-            {cluster_join}
-            WHERE tot.week_start = (SELECT MAX(week_start) FROM topic_over_time)
-              AND t.topic_id != -1
-            ORDER BY tot.doc_count DESC
-            LIMIT {paramstyle()}
-            """,
-            conn,
-            params=[n],
-        )
+        effective = _merge_subreddits(subreddits, parents)
+        scoped = bool(effective or start_date or end_date)
+        if not scoped:
+            sql = f"""
+                SELECT t.topic_id, t.keywords, {label_expr} AS llm_label,
+                       COALESCE(NULLIF({label_expr}, ''), NULLIF({cluster_label_expr}, ''), '') AS label,
+                       tot.doc_count, tot.week_start
+                FROM topic_over_time tot
+                JOIN topics t ON tot.topic_id = t.topic_id
+                {cluster_join}
+                WHERE tot.week_start = (SELECT MAX(week_start) FROM topic_over_time)
+                  AND t.topic_id != -1
+                ORDER BY tot.doc_count DESC
+                LIMIT {paramstyle()}
+            """
+            df = pd.read_sql_query(sql, conn, params=[n])
+        else:
+            source_where, source_params = _source_conditions(
+                "src", effective, start_date, end_date
+            )
+            tot_conditions: list[str] = []
+            tot_params: list = []
+            marker = paramstyle()
+            if start_date:
+                tot_conditions.append(f"tot2.week_start >= {marker}")
+                tot_params.append(start_date)
+            if end_date:
+                tot_conditions.append(f"tot2.week_start < {marker}")
+                tot_params.append(_exclusive_end_date(end_date))
+            latest_tot = (
+                "SELECT MAX(tot2.week_start) FROM topic_over_time tot2 WHERE tot2.topic_id = t.topic_id AND " + " AND ".join(tot_conditions)
+                if tot_conditions
+                else "SELECT MAX(tot2.week_start) FROM topic_over_time tot2 WHERE tot2.topic_id = t.topic_id"
+            )
+            sql = f"""
+                WITH src AS (
+                    SELECT id, timestamp, subreddit, 'post' AS content_type FROM posts
+                    UNION ALL
+                    SELECT id, timestamp, subreddit, 'comment' AS content_type FROM comments
+                ), scoped_topics AS (
+                    SELECT ta.topic_id, COUNT(*) AS doc_count
+                    FROM topic_assignments ta
+                    JOIN preprocessed p ON p.id = ta.id
+                    JOIN src ON src.id = ta.id AND src.content_type = p.content_type
+                    {source_where}
+                    AND ta.topic_id != -1
+                    GROUP BY ta.topic_id
+                )
+                SELECT t.topic_id, t.keywords, {label_expr} AS llm_label,
+                       COALESCE(NULLIF({label_expr}, ''), NULLIF({cluster_label_expr}, ''), '') AS label,
+                       st.doc_count, tot.week_start
+                FROM scoped_topics st
+                JOIN topics t ON st.topic_id = t.topic_id
+                LEFT JOIN topic_over_time tot
+                  ON tot.topic_id = t.topic_id AND tot.week_start = ({latest_tot})
+                {cluster_join}
+                WHERE t.topic_id != -1
+                ORDER BY st.doc_count DESC, t.topic_id
+                LIMIT {marker}
+            """
+            # The source scope appears once; date params for latest_tot follow it.
+            df = pd.read_sql_query(sql, conn, params=source_params + tot_params + [n])
         topics = df.to_dict(orient="records") if not df.empty else []
         if topics:
             topic_ids = tuple(int(row["topic_id"]) for row in topics)
@@ -425,10 +474,14 @@ def get_trending_topics(n: int = 3) -> List[dict]:
                 SELECT topic_id, week_start, doc_count
                 FROM topic_over_time
                 WHERE topic_id IN ({placeholders(len(topic_ids))})
+                  {('AND week_start >= ' + paramstyle()) if start_date else ''}
+                  {('AND week_start < ' + paramstyle()) if end_date else ''}
                 ORDER BY topic_id, week_start
                 """,
                 conn,
-                params=list(topic_ids),
+                params=list(topic_ids)
+                + ([start_date] if start_date else [])
+                + ([_exclusive_end_date(end_date)] if end_date else []),
             )
             by_topic: dict[int, list[int]] = {}
             for _, row in weekly.iterrows():
@@ -437,21 +490,25 @@ def get_trending_topics(n: int = 3) -> List[dict]:
                 series = by_topic.get(int(row["topic_id"]), [])
                 row["weekly_counts"] = series[-4:]
 
+            assignment_scope, assignment_scope_params = _source_conditions(
+                "src", effective, start_date, end_date
+            )
             assignments = pd.read_sql_query(
                 f"""
                 SELECT ta.topic_id, src.subreddit, COUNT(*) AS docs
                 FROM topic_assignments ta
                 JOIN preprocessed p ON ta.id = p.id
                 JOIN (
-                    SELECT id, subreddit, 'post' AS content_type FROM posts
+                    SELECT id, timestamp, subreddit, 'post' AS content_type FROM posts
                     UNION ALL
-                    SELECT id, subreddit, 'comment' AS content_type FROM comments
+                    SELECT id, timestamp, subreddit, 'comment' AS content_type FROM comments
                 ) src ON src.id = ta.id AND src.content_type = p.content_type
                 WHERE ta.topic_id IN ({placeholders(len(topic_ids))})
+                  {('AND ' + assignment_scope[6:]) if assignment_scope else ''}
                 GROUP BY ta.topic_id, src.subreddit
                 """,
                 conn,
-                params=list(topic_ids),
+                params=list(topic_ids) + assignment_scope_params,
             )
             categories = _subreddit_category_frame(conn)
             cat_lookup = {row["subreddit"]: (row["parent_id"], row["display_name"]) for _, row in categories.iterrows()}
@@ -656,18 +713,30 @@ def get_sentiment_daily(
 def get_change_points(
     subreddits: Tuple[str, ...] = (),
     parents: Tuple[str, ...] = (),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> List[dict]:
     try:
         conn = _connect()
         effective = _merge_subreddits(subreddits, parents)
+        conditions: list[str] = []
+        params: list = []
+        marker = paramstyle()
         if effective:
-            subreddit_placeholders = placeholders(len(effective))
-            sql = f"SELECT subreddit, date, magnitude FROM change_points WHERE subreddit IN ({subreddit_placeholders}) ORDER BY date"
-            df = pd.read_sql_query(sql, conn, params=list(effective))
-        else:
-            df = pd.read_sql_query(
-                "SELECT subreddit, date, magnitude FROM change_points ORDER BY date", conn
-            )
+            conditions.append(f"subreddit IN ({placeholders(len(effective))})")
+            params.extend(effective)
+        if start_date:
+            conditions.append(f"date >= {marker}")
+            params.append(start_date)
+        if end_date:
+            conditions.append(f"date < {marker}")
+            params.append(_exclusive_end_date(end_date))
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        df = pd.read_sql_query(
+            f"SELECT subreddit, date, magnitude FROM change_points{where} ORDER BY date",
+            conn,
+            params=params,
+        )
         _close(conn)
         return df.to_dict(orient="records")
     except Exception:
@@ -678,19 +747,52 @@ def get_change_points(
 def get_forecast(
     subreddits: Tuple[str, ...] = (),
     parents: Tuple[str, ...] = (),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
 ) -> List[dict]:
     try:
         conn = _connect()
         effective = _merge_subreddits(subreddits, parents)
+        has_run_metadata = _column_exists(conn, "sentiment_forecast", "generated_at")
+        metadata_columns = (
+            "generated_at, training_through, interval_width"
+            if has_run_metadata
+            else "NULL AS generated_at, NULL AS training_through, NULL AS interval_width"
+        )
+        conditions: list[str] = []
+        params: list = []
+        marker = paramstyle()
         if effective:
-            subreddit_placeholders = placeholders(len(effective))
-            sql = f"SELECT subreddit, date, yhat, yhat_lower, yhat_upper FROM sentiment_forecast WHERE subreddit IN ({subreddit_placeholders}) ORDER BY date"
-            df = pd.read_sql_query(sql, conn, params=list(effective))
-        else:
-            df = pd.read_sql_query(
-                "SELECT subreddit, date, yhat, yhat_lower, yhat_upper FROM sentiment_forecast ORDER BY date",
+            conditions.append(f"subreddit IN ({placeholders(len(effective))})")
+            params.extend(effective)
+        if start_date:
+            conditions.append(f"date >= {marker}")
+            params.append(start_date)
+        if end_date:
+            conditions.append(f"date < {marker}")
+            params.append(_exclusive_end_date(end_date))
+        if has_run_metadata:
+            latest_conditions = []
+            latest_params: list = []
+            if effective:
+                latest_conditions.append(f"subreddit IN ({placeholders(len(effective))})")
+                latest_params.extend(effective)
+            latest_where = " WHERE " + " AND ".join(latest_conditions) if latest_conditions else ""
+            latest = execute(
                 conn,
-            )
+                f"SELECT MAX(generated_at) AS generated_at FROM sentiment_forecast{latest_where}",
+                latest_params,
+            ).fetchone()
+            latest_value = latest["generated_at"] if latest and hasattr(latest, "keys") else (latest[0] if latest else None)
+            if latest_value is not None:
+                conditions.append(f"generated_at = {marker}")
+                params.append(latest_value)
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        df = pd.read_sql_query(
+            f"SELECT subreddit, date, yhat, yhat_lower, yhat_upper, {metadata_columns} FROM sentiment_forecast{where} ORDER BY subreddit, date",
+            conn,
+            params=params,
+        )
         _close(conn)
         return df.to_dict(orient="records")
     except Exception:
@@ -912,20 +1014,46 @@ def get_emerging_topics(days: int = 7) -> List[dict]:
         return []
 
 
-def get_topic_over_time(topic_id: int) -> List[dict]:
+def get_topic_over_time(
+    topic_id: int,
+    subreddits: Tuple[str, ...] = (),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    parents: Tuple[str, ...] = (),
+) -> List[dict]:
     try:
         conn = _connect()
         label_expr = _topic_resolved_label_expr(conn, "t")
+        conditions = [f"tot.topic_id = {paramstyle()}"]
+        params: list = [topic_id]
+        if start_date:
+            conditions.append(f"tot.week_start >= {paramstyle()}")
+            params.append(start_date)
+        if end_date:
+            conditions.append(f"tot.week_start < {paramstyle()}")
+            params.append(_exclusive_end_date(end_date))
+        effective = _merge_subreddits(subreddits, parents)
+        if effective:
+            source_where, source_params = _source_conditions("src", effective)
+            conditions.append(
+                f"tot.topic_id IN (SELECT ta.topic_id FROM topic_assignments ta "
+                "JOIN preprocessed p ON p.id = ta.id "
+                "JOIN (SELECT id, timestamp, subreddit, 'post' AS content_type FROM posts "
+                "UNION ALL SELECT id, timestamp, subreddit, 'comment' AS content_type FROM comments) src "
+                f"ON src.id = ta.id AND src.content_type = p.content_type {source_where} "
+                "GROUP BY ta.topic_id)"
+            )
+            params.extend(source_params)
         df = pd.read_sql_query(
             f"""
             SELECT tot.topic_id, {label_expr} AS label, tot.week_start, tot.doc_count, tot.avg_sentiment
             FROM topic_over_time tot
             LEFT JOIN topics t ON t.topic_id = tot.topic_id
-            WHERE tot.topic_id = {paramstyle()}
+            WHERE {' AND '.join(conditions)}
             ORDER BY tot.week_start
             """,
             conn,
-            params=[topic_id],
+            params=params,
         )
         _close(conn)
         return df.to_dict(orient="records")
@@ -934,23 +1062,48 @@ def get_topic_over_time(topic_id: int) -> List[dict]:
         return []
 
 
-def get_topic_heatmap(n: int = 30) -> List[dict]:
+def get_topic_heatmap(
+    n: int = 30,
+    subreddits: Tuple[str, ...] = (),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    parents: Tuple[str, ...] = (),
+) -> List[dict]:
     try:
         conn = _connect()
         label_expr = _topic_resolved_label_expr(conn, "t")
+        conditions = [
+            f"tot.topic_id IN (SELECT topic_id FROM topics WHERE topic_id != -1 ORDER BY doc_count DESC LIMIT {paramstyle()})"
+        ]
+        params: list = [n]
+        if start_date:
+            conditions.append(f"tot.week_start >= {paramstyle()}")
+            params.append(start_date)
+        if end_date:
+            conditions.append(f"tot.week_start < {paramstyle()}")
+            params.append(_exclusive_end_date(end_date))
+        effective = _merge_subreddits(subreddits, parents)
+        if effective:
+            source_where, source_params = _source_conditions("src", effective)
+            conditions.append(
+                "tot.topic_id IN (SELECT ta.topic_id FROM topic_assignments ta "
+                "JOIN preprocessed p ON p.id = ta.id "
+                "JOIN (SELECT id, timestamp, subreddit, 'post' AS content_type FROM posts "
+                "UNION ALL SELECT id, timestamp, subreddit, 'comment' AS content_type FROM comments) src "
+                f"ON src.id = ta.id AND src.content_type = p.content_type {source_where} "
+                "GROUP BY ta.topic_id)"
+            )
+            params.extend(source_params)
         df = pd.read_sql_query(
             f"""
             SELECT tot.topic_id, {label_expr} AS label, tot.week_start, tot.avg_sentiment
             FROM topic_over_time tot
             LEFT JOIN topics t ON t.topic_id = tot.topic_id
-            WHERE tot.topic_id IN (
-                SELECT topic_id FROM topics WHERE topic_id != -1
-                ORDER BY doc_count DESC LIMIT {paramstyle()}
-            )
+            WHERE {' AND '.join(conditions)}
             ORDER BY tot.topic_id, tot.week_start
             """,
             conn,
-            params=[n],
+            params=params,
         )
         _close(conn)
         return df.to_dict(orient="records")
@@ -970,6 +1123,7 @@ def get_deep_dive(
     limit: int = 500,
     offset: int = 0,
     parents: Tuple[str, ...] = (),
+    post_id: Optional[str] = None,
 ) -> List[dict]:
     try:
         conn = _connect()
@@ -981,6 +1135,11 @@ def get_deep_dive(
         if keyword:
             conditions.append(f"p.clean_text LIKE {marker}")
             params.append(f"%{keyword}%")
+        if post_id:
+            # Evidence links use the durable source ID and must not rely on a
+            # cleaned-text keyword that can match a different record.
+            conditions.append(f"p.id = {marker}")
+            params.append(post_id)
         effective = _merge_subreddits(subreddits, parents)
         if effective:
             subreddit_placeholders = placeholders(len(effective))
@@ -1003,16 +1162,37 @@ def get_deep_dive(
             topic_join = "JOIN topic_assignments ta ON ta.id = p.id AND ta.topic_id = {marker}".format(marker=marker)
             join_params.append(topic_id)
 
+        post_title = "title" if _column_exists(conn, "posts", "title") else "NULL"
+        post_content = "content" if _column_exists(conn, "posts", "content") else "NULL"
+        post_url = "url" if _column_exists(conn, "posts", "url") else "NULL"
+        comment_content = "content" if _column_exists(conn, "comments", "content") else (
+            "body" if _column_exists(conn, "comments", "body") else "NULL"
+        )
+        comment_post_id = "post_id" if _column_exists(conn, "comments", "post_id") else "NULL"
+        comment_url = (
+            "('https://www.reddit.com/comments/' || REPLACE(post_id, 't3_', '') || '/_/' || REPLACE(id, 't1_', '') || '/')"
+            if comment_post_id != "NULL"
+            else "NULL"
+        )
+
         where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         sql = f"""
-            SELECT DATE(src.timestamp) AS date, src.subreddit,
-                   p.content_type, p.clean_text, sp.label, sp.confidence
+            SELECT src.id, DATE(src.timestamp) AS date, src.timestamp,
+                   src.subreddit, p.content_type, src.title,
+                   src.original_text, src.source_url, p.clean_text,
+                   sp.label, sp.confidence
             FROM preprocessed p
             JOIN sentiment_predictions sp ON p.id = sp.id
             JOIN (
-                SELECT id, timestamp, subreddit, 'post' AS content_type FROM posts
+                SELECT id, timestamp, subreddit, 'post' AS content_type,
+                       {post_title} AS title, {post_content} AS original_text,
+                       {post_url} AS source_url
+                FROM posts
                 UNION ALL
-                SELECT id, timestamp, subreddit, 'comment' AS content_type FROM comments
+                SELECT id, timestamp, subreddit, 'comment' AS content_type,
+                       NULL AS title, {comment_content} AS original_text,
+                       {comment_url} AS source_url
+                FROM comments
             ) src ON p.id = src.id AND p.content_type = src.content_type
             {topic_join}
             {where_clause}

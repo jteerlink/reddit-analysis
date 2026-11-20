@@ -41,6 +41,11 @@ def main():
         default=None,
         help="Process at most N records (for testing)",
     )
+    parser.add_argument(
+        "--rescore-existing",
+        action="store_true",
+        help="Explicitly replace predictions from an older model fingerprint",
+    )
     args = parser.parse_args()
 
     model_dir = Path(args.model_dir)
@@ -55,6 +60,7 @@ def main():
         db_path=args.db,
         model_dir=args.model_dir,
         batch_size=args.batch_size,
+        rescore_existing=args.rescore_existing,
     )
 
     total = result["total_scored"]
@@ -63,7 +69,7 @@ def main():
     neg = result["negative_count"]
 
     print(f"\n{'='*50}")
-    print(f"Inference complete")
+    print("Inference complete")
     print(f"Total scored:  {total:,}")
     if total:
         print(f"  Positive:    {pos:,} ({pos/total*100:.1f}%)")

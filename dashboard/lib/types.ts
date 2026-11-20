@@ -78,6 +78,8 @@ export interface SentimentDaily {
   mean_score: number | null;
   rolling_7d?: number | null;
   rolling_30d?: number | null;
+  observed_days_7d?: number | null;
+  observed_days_30d?: number | null;
 }
 
 export interface VolumeDaily {
@@ -98,6 +100,9 @@ export interface Forecast {
   yhat: number;
   yhat_lower: number;
   yhat_upper: number;
+  generated_at?: string | null;
+  training_through?: string | null;
+  interval_width?: number | null;
 }
 
 export interface CollectionSummary {
@@ -121,6 +126,10 @@ export interface Post {
   label: string | null;
   confidence: number;
   clean_text: string;
+  original_text?: string | null;
+  title?: string | null;
+  source_url?: string | null;
+  timestamp?: string | null;
 }
 
 export interface ActivityEvent {
@@ -230,6 +239,11 @@ export interface SemanticSearchResult {
   label?: string | null;
   confidence?: number | null;
   text_preview: string;
+  original_text?: string | null;
+  clean_text?: string | null;
+  title?: string | null;
+  source_url?: string | null;
+  timestamp?: string | null;
 }
 
 export interface SemanticSearchResponse {
@@ -259,6 +273,7 @@ export interface BriefEvidence {
   label?: string;
   snippet?: string;
   relevance?: string;
+  source_url?: string;
 }
 
 export interface AnalystBrief {
@@ -270,6 +285,9 @@ export interface AnalystBrief {
   generated_at?: string | null;
   model_name?: string | null;
   state?: string;
+  prompt_version?: string | null;
+  evidence_schema_version?: string | null;
+  evidence_status?: string;
   provenance?: ResponseProvenance & { artifact_id?: string | null };
 }
 

@@ -1,12 +1,13 @@
 "use client";
 
 import useSWR from "swr";
+import Link from "next/link";
 import { AlertTriangle, Compass, FileText, Newspaper, TrendingUp } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { SectionHeader } from "@/components/layout/SectionHeader";
 import { ChartCard } from "@/components/shared/ChartCard";
 import { Badge } from "@/components/ui/badge";
-import type { AnalystBrief, AnalystBriefsResponse, BriefSection, FreshnessResponse, ModelRegistryResponse } from "@/lib/types";
+import type { AnalystBrief, AnalystBriefsResponse, BriefEvidence, BriefSection, FreshnessResponse, ModelRegistryResponse } from "@/lib/types";
 
 const fetcher = (url: string) => fetch(url).then((r) => r.json());
 
@@ -40,6 +41,20 @@ function asStringList(value: unknown): string[] {
   return text ? [text] : [];
 }
 
+function evidenceHref(item: BriefEvidence): string | null {
+  if (item.source_url) {
+    try {
+      const url = new URL(item.source_url);
+      if (url.protocol === "http:" || url.protocol === "https:") return url.toString();
+    } catch {
+      return null;
+    }
+  }
+  if (!item.anchor_id) return null;
+  const params = new URLSearchParams({ post_id: item.anchor_id, content_type: "both" });
+  return `/deep-dive?${params}`;
+}
+
 function EvidenceList({ section }: { section: BriefSection }) {
   const claims = asStringList(section.claims);
   const drivers = asStringList(section.drivers);
@@ -62,8 +77,8 @@ function EvidenceList({ section }: { section: BriefSection }) {
           {section.delta_source ? <Badge variant="outline" className="ml-2">{String(section.delta_source)}</Badge> : null}
         </div>
       )}
-      {claims.length ? <MetadataList label="Claims" items={claims} /> : null}
-      {drivers.length ? <MetadataList label="Drivers" items={drivers} /> : null}
+      {claims.length ? <MetadataList label="Observations" items={claims} /> : null}
+      {drivers.length ? <MetadataList label="Hypotheses" items={drivers} /> : null}
       {implications.length ? <MetadataList label="Implications" items={implications} /> : null}
       {evidence.length ? (
         <div>
@@ -74,6 +89,17 @@ function EvidenceList({ section }: { section: BriefSection }) {
                 <span className="font-mono text-[11px] text-foreground">{item.anchor_type}:{item.anchor_id}</span>
                 {item.label ? <span> — {item.label}</span> : null}
                 {item.snippet ? <span className="block">{item.snippet}</span> : null}
+                {evidenceHref(item) && (
+                  item.source_url && evidenceHref(item)?.startsWith("http") ? (
+                    <a href={evidenceHref(item) ?? "#"} target="_blank" rel="noreferrer" className="mt-1 inline-flex text-[11px] text-signal-copper underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal-green">
+                      Open original source
+                    </a>
+                  ) : (
+                    <Link href={evidenceHref(item) ?? "#"} className="mt-1 inline-flex text-[11px] text-signal-copper underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal-green">
+                      Inspect matching record
+                    </Link>
+                  )
+                )}
               </li>
             ))}
           </ul>
@@ -209,19 +235,73 @@ function BriefSectionRow({ section, index }: { section: BriefSection; index: num
   );
 }
 
+function evidenceStatus(brief: AnalystBrief): { label: string; className: string } {
+  const status = String(brief.evidence_status ?? "").toLowerCase();
+  if (status === "source_linked") {
+    return { label: "Source linked", className: "border-signal-green/30 bg-signal-green/10 text-signal-green" };
+  }
+  if (status === "partial") {
+    return { label: "Partial evidence", className: "border-signal-yellow/30 bg-signal-yellow/10 text-signal-yellow" };
+  }
+  if (status === "unverified") {
+    return { label: "Unverified", className: "border-signal-yellow/30 bg-signal-yellow/10 text-signal-yellow" };
+  }
+  if (status === "legacy" || brief.state === "stale_artifact") {
+    return { label: "Legacy", className: "border-border text-muted-foreground" };
+  }
+  return { label: "Evidence status unavailable", className: "border-border text-muted-foreground" };
+}
+
+function BriefMeta({ brief, latest }: { brief: AnalystBrief; latest: boolean }) {
+  const status = evidenceStatus(brief);
+  return (
+    <div className="mb-4 flex flex-wrap gap-2" aria-label="Brief provenance">
+      <Badge variant="secondary">{brief.provenance?.label === "llm_artifact" ? "LLM" : "Deterministic"}</Badge>
+      <span className={`inline-flex h-5 items-center rounded-full border px-2 text-xs font-medium ${status.className}`}>{status.label}</span>
+      {latest && <Badge variant="outline" className="border-signal-green/30 text-signal-green">Latest</Badge>}
+      {brief.model_name && <Badge variant="outline">{brief.model_name}</Badge>}
+      {brief.prompt_version && <Badge variant="outline">Prompt {brief.prompt_version}</Badge>}
+      {brief.evidence_schema_version && <Badge variant="outline">Evidence schema {brief.evidence_schema_version}</Badge>}
+      {brief.provenance?.provider && <Badge variant="outline">{brief.provenance.provider}</Badge>}
+    </div>
+  );
+}
+
+function BriefCard({ brief, latest }: { brief: AnalystBrief; latest: boolean }) {
+  return (
+    <ChartCard
+      title={stripMarkdown(brief.headline ?? "")}
+      subtitle={`${brief.generated_at ?? "Artifact timestamp unavailable"}${brief.period ? ` · ${brief.period}` : ""}`}
+    >
+      <BriefMeta brief={brief} latest={latest} />
+      <div className="space-y-3">
+        {brief.sections?.length ? brief.sections.map((section, index) => (
+          <BriefSectionRow key={index} section={section} index={index} />
+        )) : (
+          <div className="grid h-32 place-items-center text-sm text-muted-foreground">Brief artifact has no sections.</div>
+        )}
+      </div>
+    </ChartCard>
+  );
+}
+
 export default function BriefsPage() {
   const { data: briefs } = useSWR<AnalystBriefsResponse>("/api/analysis/briefs?limit=10", fetcher);
   const { data: latest } = useSWR<AnalystBrief>("/api/analysis/briefs/latest", fetcher);
   const { data: freshness } = useSWR<FreshnessResponse>("/api/analysis/freshness", fetcher);
   const { data: models } = useSWR<ModelRegistryResponse>("/api/analysis/model-registry", fetcher);
-  const items = briefs?.items?.length ? briefs.items : latest ? [latest] : [];
+  const usableLatest = latest && latest.brief_id !== "none" && latest.state !== "unpopulated" ? latest : undefined;
+  const allItems = briefs?.items?.length ? briefs.items : usableLatest ? [usableLatest] : [];
+  const sortedItems = [...allItems].sort((a, b) => String(b.generated_at ?? "").localeCompare(String(a.generated_at ?? "")));
+  const latestBrief = usableLatest ?? sortedItems[0];
+  const archived = sortedItems.filter((brief) => brief.brief_id !== latestBrief?.brief_id);
 
   return (
     <div className="space-y-6">
       <SectionHeader
         eyebrow="Briefs"
         title="Analyst brief"
-        subtitle="Structured intelligence brief covering the latest period. Pre-ab-v2 briefs render in single-section fallback styling."
+        subtitle="Structured observations and hypotheses for the latest analyzed period."
       />
 
       <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
@@ -232,33 +312,22 @@ export default function BriefsPage() {
             </div>
           )}
 
-          {items.length ? items.map((brief) => (
-            <ChartCard
-              key={`${brief.provenance?.artifact_id ?? brief.brief_id}-${brief.provenance?.label ?? "brief"}`}
-              title={stripMarkdown(brief.headline ?? "")}
-              subtitle={brief.generated_at ?? "artifact timestamp unavailable"}
-            >
-              <div className="mb-4 flex flex-wrap gap-2">
-                <Badge variant="secondary">{brief.provenance?.label === "llm_artifact" ? "LLM" : "Deterministic"}</Badge>
-                {brief.model_name && <Badge variant="outline">{brief.model_name}</Badge>}
-                {brief.provenance?.provider && <Badge variant="outline">{brief.provenance.provider}</Badge>}
-              </div>
-              <div className="space-y-3">
-                {brief.sections?.length ? brief.sections.map((section, index) => (
-                  <BriefSectionRow key={index} section={section} index={index} />
-                )) : (
-                  <div className="grid h-32 place-items-center text-sm text-muted-foreground">
-                    Brief artifact has no sections.
-                  </div>
-                )}
-              </div>
-            </ChartCard>
-          )) : (
+          {latestBrief ? <BriefCard brief={latestBrief} latest /> : (
             <ChartCard title="No analyst briefs" subtitle="waiting for artifact">
               <div className="grid h-40 place-items-center text-sm text-muted-foreground">
                 No brief artifact has been generated yet.
               </div>
             </ChartCard>
+          )}
+          {archived.length > 0 && (
+            <details className="command-panel group">
+              <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold text-foreground marker:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal-green">
+                Older brief runs <span className="ml-1 font-mono text-xs text-muted-foreground">({archived.length})</span>
+              </summary>
+              <div className="space-y-4 border-t border-border p-4">
+                {archived.map((brief) => <BriefCard key={`${brief.provenance?.artifact_id ?? brief.brief_id}`} brief={brief} latest={false} />)}
+              </div>
+            </details>
           )}
         </div>
 
@@ -274,14 +343,15 @@ export default function BriefsPage() {
               <p>llm: {freshness?.llm_enrichment_available ? "configured" : freshness?.llm_reason ?? "unknown"}</p>
             </div>
           </ChartCard>
-          <ChartCard title="Ollama provider">
-            <div className="space-y-2 font-mono text-xs text-muted-foreground">
-              <p>host: {models?.default_host ?? "unknown"}</p>
+          <details className="command-panel">
+            <summary className="cursor-pointer list-none px-4 py-3 text-sm font-semibold text-foreground marker:hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-signal-green">Diagnostics</summary>
+            <div className="space-y-2 border-t border-border p-4 font-mono text-xs text-muted-foreground">
+              <p>provider host: {models?.default_host ?? "unknown"}</p>
               <p>cloud configured: {models?.cloud_configured ? "yes" : "no"}</p>
               <p>local override: {models?.local_override ? "yes" : "no"}</p>
-              <p>models: {models?.models.length ?? 0}</p>
+              <p>available models: {models?.models.length ?? 0}</p>
             </div>
-          </ChartCard>
+          </details>
         </div>
       </div>
     </div>

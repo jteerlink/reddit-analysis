@@ -20,8 +20,8 @@ from .db import (
     upsert_topic_assignments,
     upsert_topic_over_time,
 )
-from .sentiment import LABEL2ID, ID2LABEL, predict_batch, run_batch_inference, train
-from .topics import EmbeddingCache, TopicModeler, run_topic_modeling
+from .sentiment import LABEL2ID, ID2LABEL, SENTIMENT_PREPROCESSING_VERSION, model_fingerprint, predict_batch, run_batch_inference, train
+from .topics import EmbeddingCache, TopicModeler, run_topic_modeling, topic_model_fingerprint
 
 __all__ = [
     # preprocessing
@@ -49,8 +49,11 @@ __all__ = [
     "train",
     "predict_batch",
     "run_batch_inference",
+    "model_fingerprint",
+    "SENTIMENT_PREPROCESSING_VERSION",
     # topics
     "EmbeddingCache",
     "TopicModeler",
     "run_topic_modeling",
+    "topic_model_fingerprint",
 ]

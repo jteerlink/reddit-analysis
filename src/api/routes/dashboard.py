@@ -23,7 +23,17 @@ def summary(
         if subreddits or parents or start or end
         else db.get_collection_summary()
     )
-    data["trending_topics"] = db.get_trending_topics(n=5)
+    data["trending_topics"] = (
+        db.get_trending_topics(
+            n=5,
+            subreddits=tuple(subreddits),
+            start_date=start,
+            end_date=end,
+            parents=tuple(parents),
+        )
+        if subreddits or parents or start or end
+        else db.get_trending_topics(n=5)
+    )
     return data
 
 
@@ -59,7 +69,11 @@ def sentiment_daily(
 def change_points(
     subreddits: List[str] = Query(default=[]),
     parents: List[str] = Query(default=[]),
+    start: Optional[str] = Query(default=None),
+    end: Optional[str] = Query(default=None),
 ):
+    if start or end:
+        return db.get_change_points(tuple(subreddits), tuple(parents), start, end)
     return db.get_change_points(tuple(subreddits), tuple(parents))
 
 
@@ -67,8 +81,12 @@ def change_points(
 def forecast(
     subreddits: List[str] = Query(default=[]),
     parents: List[str] = Query(default=[]),
+    start: Optional[str] = Query(default=None),
+    end: Optional[str] = Query(default=None),
 ):
-    return db.get_forecast(tuple(subreddits), tuple(parents))
+    if subreddits or parents or start or end:
+        return db.get_forecast(tuple(subreddits), tuple(parents), start, end)
+    return db.get_forecast()
 
 
 @router.get("/volume/daily")
@@ -114,9 +132,31 @@ def _response(items: list[dict], source_table: str, algorithm: str, readiness: d
 
 
 @router.get("/topics/heatmap", response_model=models.TopicHeatmapResponse)
-def topic_heatmap(n: int = Query(default=30, ge=1, le=100)):
+def topic_heatmap(
+    n: int = Query(default=30, ge=1, le=100),
+    subreddits: List[str] = Query(default=[]),
+    parents: List[str] = Query(default=[]),
+    start: Optional[str] = Query(default=None),
+    end: Optional[str] = Query(default=None),
+):
     readiness = db.get_table_state(("topic_over_time", "topics"))
-    return _response([] if readiness["state"] != "ready" else db.get_topic_heatmap(n), "topic_over_time", "topic_week_sentiment", readiness)
+    items = (
+        []
+        if readiness["state"] != "ready"
+        else (
+            db.get_topic_heatmap(
+                n, tuple(subreddits), start, end, tuple(parents)
+            )
+            if subreddits or parents or start or end
+            else db.get_topic_heatmap(n)
+        )
+    )
+    return _response(
+        items,
+        "topic_over_time",
+        "topic_week_sentiment",
+        readiness,
+    )
 
 
 @router.get("/topics/graph")
@@ -135,13 +175,24 @@ def topic_graph(
 
 
 @router.get("/topics/{topic_id}/over-time")
-def topic_over_time(topic_id: int):
+def topic_over_time(
+    topic_id: int,
+    subreddits: List[str] = Query(default=[]),
+    parents: List[str] = Query(default=[]),
+    start: Optional[str] = Query(default=None),
+    end: Optional[str] = Query(default=None),
+):
+    if subreddits or parents or start or end:
+        return db.get_topic_over_time(
+            topic_id, tuple(subreddits), start, end, tuple(parents)
+        )
     return db.get_topic_over_time(topic_id)
 
 
 @router.get("/posts/search")
 def posts_search(
     keyword: str = Query(default=""),
+    post_id: Optional[str] = Query(default=None),
     subreddits: List[str] = Query(default=[]),
     parents: List[str] = Query(default=[]),
     start: Optional[str] = Query(default=None),
@@ -163,6 +214,7 @@ def posts_search(
         limit=limit,
         offset=offset,
         parents=tuple(parents),
+        post_id=post_id,
     )
 
 

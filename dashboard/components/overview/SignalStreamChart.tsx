@@ -59,8 +59,9 @@ function aggregateSentiment(data: SentimentDaily[] | undefined) {
   if (!data?.length) return FALLBACK_SENTIMENT;
   const byDate = new Map<string, { total: number; count: number }>();
   for (const row of data) {
+    if (row.mean_score == null) continue;
     const current = byDate.get(row.date) ?? { total: 0, count: 0 };
-    current.total += row.mean_score ?? 0;
+    current.total += row.mean_score;
     current.count += 1;
     byDate.set(row.date, current);
   }
@@ -163,10 +164,10 @@ export function SignalStreamChart({ volumeData, sentimentData, sentimentDaily, c
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_22%,rgba(49,211,143,0.11),transparent_28%),linear-gradient(135deg,rgba(190,112,58,0.08),transparent_38%)]" />
       <div className="relative flex items-start justify-between gap-4">
         <div>
-          <p className="command-label">Sentiment Stream</p>
+          <p className="command-label">Sentiment over time</p>
           <h2 className="mt-1.5 text-[1.55rem] font-semibold leading-[1.1] tracking-[-0.015em] text-foreground">Signal Command</h2>
           <p className="mt-1.5 max-w-lg text-[13px] leading-[1.55] text-muted-foreground">
-            Subreddit intelligence, live from the stream.
+            Daily observations from the selected research window.
           </p>
         </div>
         <div className="grid grid-cols-3 gap-2 text-right font-mono text-[11px]">

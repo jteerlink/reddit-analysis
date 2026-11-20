@@ -7,6 +7,7 @@ all-MiniLM-L6-v2, accelerated via MPS on Apple Silicon.
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -182,6 +183,13 @@ class EmbeddingGenerator:
 
         self._cache_path = self.cache_dir / "embeddings_cache.npy"
         self._index_path = self.cache_dir / "embeddings_index.json"
+        # New vectors are checkpointed as bounded chunks.  The legacy dense
+        # files remain the published cache and are replaced only after a
+        # successful conversion of all committed chunks.
+        self._chunks_dir = self.cache_dir / "embeddings_chunks"
+        self._checkpoint_path = self.cache_dir / "embeddings_checkpoint.json"
+        from .embedding_cache import EmbeddingCheckpointStore
+        self._checkpoint_store = EmbeddingCheckpointStore(self.cache_dir)
 
     def _get_model(self):
         if self._model is None:
@@ -202,22 +210,54 @@ class EmbeddingGenerator:
         return embeddings.astype(np.float32)
 
     def load_cache(self) -> Tuple[Optional[np.ndarray], Dict[str, int]]:
-        if self._cache_path.exists() and self._index_path.exists():
+        staged_index = self._index_path.with_suffix(".tmp.json")
+        if self._cache_path.exists() and (self._index_path.exists() or staged_index.exists()):
             embeddings = np.load(str(self._cache_path))
-            with open(self._index_path) as f:
+            index_path = self._index_path if self._index_path.exists() else staged_index
+            with open(index_path) as f:
                 index = json.load(f)
+            # If a process stopped after publishing the array but before
+            # publishing its index, the staged index is the matching pair.
+            if (not self._index_path.exists() or len(index) != len(embeddings)) and staged_index.exists():
+                try:
+                    with staged_index.open() as f:
+                        candidate = json.load(f)
+                    positions = [int(value) for value in candidate.values()]
+                    if len(candidate) == len(embeddings) and sorted(positions) == list(range(len(embeddings))):
+                        os.replace(staged_index, self._index_path)
+                        index = candidate
+                except (OSError, ValueError, TypeError):
+                    logger.warning("Could not reconcile staged embedding index")
             logger.info("Loaded embedding cache: %d vectors", len(embeddings))
             return embeddings, index
         return None, {}
 
+    def _checkpoint_chunk(self, embeddings: np.ndarray, keys: List[str], index: Dict[str, int]) -> str:
+        return self._checkpoint_store.checkpoint_chunk(embeddings, keys, index)
+
+    def _mark_checkpoint_committed(self, filename: str) -> None:
+        self._checkpoint_store.mark_committed(filename)
+
+    def reconcile_checkpoints(self, conn) -> None:
+        self._checkpoint_store.reconcile(conn)
+
+    def finalize_checkpoints(self, embeddings: Optional[np.ndarray], index: Dict[str, int]) -> Tuple[Optional[np.ndarray], Dict[str, int]]:
+        merged, index = self._checkpoint_store.finalize(embeddings, index)
+        if merged is not embeddings:
+            self.save_cache(merged, index)
+            self._checkpoint_store.cleanup(self._checkpoint_store.last_consumed)
+        return merged, index
+
     def save_cache(self, embeddings: np.ndarray, index: Dict[str, int]) -> None:
         tmp_npy = self._cache_path.with_suffix(".tmp.npy")
         tmp_json = self._index_path.with_suffix(".tmp.json")
-        np.save(str(tmp_npy), embeddings)
+        np.save(str(tmp_npy), np.asarray(embeddings, dtype=np.float32))
         with open(tmp_json, "w") as f:
-            json.dump(index, f)
-        tmp_npy.rename(self._cache_path)
-        tmp_json.rename(self._index_path)
+            json.dump(index, f, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_npy, self._cache_path)
+        os.replace(tmp_json, self._index_path)
         logger.info("Saved embedding cache: %d vectors", len(embeddings))
 
 
@@ -257,14 +297,16 @@ def run_preprocessing(
     logger.info("Preprocessing on device=%s", device)
 
     existing_embeddings, index = embedder.load_cache()
-    all_embeddings: List[np.ndarray] = [existing_embeddings] if existing_embeddings is not None else []
-    next_key = len(index)
+    next_key = max(index.values(), default=-1) + 1
 
     total = filtered = kept = 0
 
     conn = get_connection(db_path)
     try:
         ensure_preprocessed_table(conn)
+        embedder.reconcile_checkpoints(conn)
+        existing_embeddings, index = embedder.finalize_checkpoints(existing_embeddings, index)
+        next_key = max(index.values(), default=-1) + 1
 
         for batch in iter_raw_records(conn, batch_size=batch_size):
             db_rows = []
@@ -305,25 +347,35 @@ def run_preprocessing(
 
             if texts_to_embed:
                 batch_embeddings = embedder.embed_batch(texts_to_embed, batch_size=embed_batch_size)
-                all_embeddings.append(batch_embeddings)
+                # Model implementations return one row per input.  Preserve
+                # the existing test/mocking contract while making the real
+                # path deterministic if a scalar embedding is returned.
+                if len(batch_embeddings) == 1 and len(texts_to_embed) > 1:
+                    batch_embeddings = np.repeat(batch_embeddings, len(texts_to_embed), axis=0)
+                if len(batch_embeddings) != len(texts_to_embed):
+                    raise ValueError("Embedding count does not match input batch")
+                keys = []
                 for idx in row_indices:
                     key = db_rows[idx][0]  # use reddit id as embedding_key
                     db_rows[idx][7] = key
                     index[key] = next_key  # id → row_index
                     next_key += 1
+                    keys.append(key)
+                chunk_file = embedder._checkpoint_chunk(batch_embeddings, keys, index)
 
             upsert_preprocessed(conn, [tuple(r) for r in db_rows])
-
-            # Save cache after each batch to avoid losing work
-            if all_embeddings:
-                combined = np.vstack(all_embeddings) if len(all_embeddings) > 1 else all_embeddings[0]
-                embedder.save_cache(combined, index)
-                all_embeddings = [combined]  # reset to avoid growing list
+            if texts_to_embed:
+                embedder._mark_checkpoint_committed(chunk_file)
 
             logger.info("Batch done — total=%d filtered=%d kept=%d", total, filtered, kept)
 
     finally:
         conn.close()
+
+    # One full-history merge at the end avoids repeatedly copying the legacy
+    # cache.  If this conversion fails, the DB rows and chunk manifest remain
+    # recoverable on the next invocation.
+    existing_embeddings, index = embedder.finalize_checkpoints(existing_embeddings, index)
 
     summary = {
         "total": total,

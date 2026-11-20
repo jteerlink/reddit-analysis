@@ -9,6 +9,7 @@ back to SQLite so the dashboard can read them directly.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 import pandas as pd
@@ -17,17 +18,24 @@ from src.db.connection import is_postgres_connection
 from src.ml.db import (
     ensure_timeseries_tables,
     get_connection,
-    upsert_change_points,
-    upsert_sentiment_daily,
-    upsert_sentiment_forecast,
-    upsert_sentiment_moving_avg,
-    upsert_topic_sentiment_trends,
+    replace_timeseries_results,
 )
 
 logger = logging.getLogger(__name__)
 
 # Sentiment label → numeric score used for aggregation
 _LABEL_SCORE: Dict[str, float] = {"positive": 1.0, "neutral": 0.0, "negative": -1.0}
+_FORECAST_COLUMNS = [
+    "subreddit",
+    "date",
+    "yhat",
+    "yhat_lower",
+    "yhat_upper",
+    "generated_at",
+    "training_through",
+    "interval_width",
+]
+_FORECAST_INTERVAL_WIDTH = 0.95
 
 
 # ---------------------------------------------------------------------------
@@ -84,11 +92,37 @@ def _compute_moving_averages(daily: pd.DataFrame) -> pd.DataFrame:
     frames = []
     for _, grp in daily.groupby("subreddit"):
         grp = grp.sort_values("date").copy()
-        grp["rolling_7d"] = grp["mean_score"].rolling(7, min_periods=1).mean()
-        grp["rolling_30d"] = grp["mean_score"].rolling(30, min_periods=1).mean()
-        frames.append(grp[["subreddit", "date", "rolling_7d", "rolling_30d"]])
+        observed = pd.Series(
+            grp["mean_score"].to_numpy(),
+            index=pd.DatetimeIndex(pd.to_datetime(grp["date"])),
+        )
+        for days, suffix in ((7, "7d"), (30, "30d")):
+            rolling = observed.rolling(f"{days}D", min_periods=1, closed="right")
+            grp[f"rolling_{suffix}"] = rolling.mean().to_numpy()
+            grp[f"observed_days_{suffix}"] = rolling.count().to_numpy()
+        frames.append(
+            grp[
+                [
+                    "subreddit",
+                    "date",
+                    "rolling_7d",
+                    "rolling_30d",
+                    "observed_days_7d",
+                    "observed_days_30d",
+                ]
+            ]
+        )
     if not frames:
-        return pd.DataFrame(columns=["subreddit", "date", "rolling_7d", "rolling_30d"])
+        return pd.DataFrame(
+            columns=[
+                "subreddit",
+                "date",
+                "rolling_7d",
+                "rolling_30d",
+                "observed_days_7d",
+                "observed_days_30d",
+            ]
+        )
     return pd.concat(frames, ignore_index=True)
 
 
@@ -124,16 +158,21 @@ def _detect_change_points(daily: pd.DataFrame) -> pd.DataFrame:
 
         dates = grp["date"].tolist()
         for bp in breakpoints:
-            idx = bp - 1  # ruptures returns 1-based end indices
+            # ruptures reports exclusive, one-based segment ends. The final
+            # value is the terminal boundary and has no following segment.
+            idx = int(bp)
             if idx <= 0 or idx >= len(signal):
                 continue
             before = signal[max(0, idx - 3) : idx].mean()
             after = signal[idx : min(len(signal), idx + 3)].mean()
+            magnitude = float(after - before)
+            if not pd.notna(magnitude) or abs(magnitude) < 1e-12:
+                continue
             records.append(
                 {
                     "subreddit": sub,
                     "date": dates[idx],
-                    "magnitude": float(after - before),
+                    "magnitude": magnitude,
                 }
             )
 
@@ -157,9 +196,10 @@ def _run_prophet_forecast(daily: pd.DataFrame, forecast_days: int) -> pd.DataFra
         from prophet import Prophet
     except ImportError:
         logger.warning("prophet not installed — skipping forecasting")
-        return pd.DataFrame(columns=["subreddit", "date", "yhat", "yhat_lower", "yhat_upper"])
+        return pd.DataFrame(columns=_FORECAST_COLUMNS)
 
     frames = []
+    generated_at = datetime.now(timezone.utc).isoformat()
     for sub, grp in daily.groupby("subreddit"):
         grp = grp.sort_values("date")[["date", "mean_score"]].rename(
             columns={"date": "ds", "mean_score": "y"}
@@ -168,9 +208,16 @@ def _run_prophet_forecast(daily: pd.DataFrame, forecast_days: int) -> pd.DataFra
             logger.info("Skipping %s — fewer than 7 data points", sub)
             continue
 
-        m = Prophet(daily_seasonality=False, weekly_seasonality=True, yearly_seasonality=False)
+        grp["ds"] = pd.to_datetime(grp["ds"])
+        m = Prophet(
+            daily_seasonality=False,
+            weekly_seasonality=True,
+            yearly_seasonality=False,
+            interval_width=_FORECAST_INTERVAL_WIDTH,
+        )
         # Silence Prophet's verbose logging
         import logging as _logging
+
         _logging.getLogger("prophet").setLevel(_logging.WARNING)
         _logging.getLogger("cmdstanpy").setLevel(_logging.WARNING)
 
@@ -178,17 +225,21 @@ def _run_prophet_forecast(daily: pd.DataFrame, forecast_days: int) -> pd.DataFra
         future = m.make_future_dataframe(periods=forecast_days)
         forecast = m.predict(future)
 
-        future_only = forecast[forecast["ds"] > grp["ds"].max()][
-            ["ds", "yhat", "yhat_lower", "yhat_upper"]
-        ].copy()
+        forecast["ds"] = pd.to_datetime(forecast["ds"])
+        cutoff = grp["ds"].max()
+        horizon_end = cutoff + pd.Timedelta(days=forecast_days)
+        future_only = forecast[
+            (forecast["ds"] > cutoff) & (forecast["ds"] <= horizon_end)
+        ][["ds", "yhat", "yhat_lower", "yhat_upper"]].copy()
         future_only["subreddit"] = sub
         future_only["date"] = future_only["ds"].dt.strftime("%Y-%m-%d")
-        frames.append(
-            future_only[["subreddit", "date", "yhat", "yhat_lower", "yhat_upper"]]
-        )
+        future_only["generated_at"] = generated_at
+        future_only["training_through"] = grp["ds"].max().strftime("%Y-%m-%d")
+        future_only["interval_width"] = _FORECAST_INTERVAL_WIDTH
+        frames.append(future_only[_FORECAST_COLUMNS])
 
     if not frames:
-        return pd.DataFrame(columns=["subreddit", "date", "yhat", "yhat_lower", "yhat_upper"])
+        return pd.DataFrame(columns=_FORECAST_COLUMNS)
     return pd.concat(frames, ignore_index=True)
 
 
@@ -239,7 +290,13 @@ def _compute_topic_sentiment_trends(conn: Any, days: int) -> pd.DataFrame:
     frames = []
     for _, grp in daily.groupby("topic_id"):
         grp = grp.sort_values("date").copy()
-        grp["rolling_7d"] = grp["mean_sentiment"].rolling(7, min_periods=1).mean()
+        observed = pd.Series(
+            grp["mean_sentiment"].to_numpy(),
+            index=pd.DatetimeIndex(pd.to_datetime(grp["date"])),
+        )
+        grp["rolling_7d"] = (
+            observed.rolling("7D", min_periods=1, closed="right").mean().to_numpy()
+        )
         frames.append(grp)
 
     if not frames:
@@ -270,79 +327,35 @@ def run_timeseries_analysis(
     conn = get_connection(db_path)
     ensure_timeseries_tables(conn)
 
-    # ---- daily aggregation ----
-    logger.info("Aggregating daily sentiment (last %d days)…", days)
-    daily = _aggregate_daily_sentiment(conn, days)
-    if daily.empty:
-        logger.warning("No sentiment data found — aborting timeseries analysis")
+    if days < 1 or forecast_days < 1:
         conn.close()
-        return {
-            "daily_rows": 0,
-            "moving_avg_rows": 0,
-            "change_point_rows": 0,
-            "forecast_rows": 0,
-            "topic_trend_rows": 0,
-            "gate_passed": False,
-        }
-
-    upsert_sentiment_daily(
+        raise ValueError("days and forecast_days must be positive")
+    # Include warm-up history so the first displayed average has a full window.
+    scope_start = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    daily_history = _aggregate_daily_sentiment(conn, days + 30)
+    if daily_history.empty:
+        daily = moving_avg = change_pts = forecast = topic_trends = pd.DataFrame()
+    else:
+        daily = daily_history[daily_history["date"].astype(str) >= scope_start]
+        moving_avg = _compute_moving_averages(daily_history)
+        moving_avg = moving_avg[moving_avg["date"].astype(str) >= scope_start]
+        change_pts = _detect_change_points(daily_history)
+        change_pts = change_pts[change_pts["date"].astype(str) >= scope_start]
+        forecast = _run_prophet_forecast(daily, forecast_days)
+        topic_trends = _compute_topic_sentiment_trends(conn, days + 30)
+        topic_trends = topic_trends[topic_trends["date"].astype(str) >= scope_start]
+    # Compute everything before atomically replacing this run's derived scope.
+    replace_timeseries_results(
         conn,
-        list(
-            daily[["subreddit", "date", "mean_score", "pos_count", "neu_count", "neg_count"]]
-            .itertuples(index=False, name=None)
-        ),
+        scope_start,
+        {
+            "sentiment_daily": daily,
+            "sentiment_moving_avg": moving_avg,
+            "change_points": change_pts,
+            "sentiment_forecast": forecast,
+            "topic_sentiment_trends": topic_trends,
+        },
     )
-
-    # ---- moving averages ----
-    logger.info("Computing moving averages…")
-    moving_avg = _compute_moving_averages(daily)
-    upsert_sentiment_moving_avg(
-        conn,
-        list(
-            moving_avg[["subreddit", "date", "rolling_7d", "rolling_30d"]].itertuples(
-                index=False, name=None
-            )
-        ),
-    )
-
-    # ---- change points ----
-    logger.info("Detecting change points with PELT…")
-    change_pts = _detect_change_points(daily)
-    if not change_pts.empty:
-        upsert_change_points(
-            conn,
-            list(
-                change_pts[["subreddit", "date", "magnitude"]].itertuples(
-                    index=False, name=None
-                )
-            ),
-        )
-
-    # ---- Prophet forecast ----
-    logger.info("Fitting Prophet models (forecast_days=%d)…", forecast_days)
-    forecast = _run_prophet_forecast(daily, forecast_days)
-    if not forecast.empty:
-        upsert_sentiment_forecast(
-            conn,
-            list(
-                forecast[["subreddit", "date", "yhat", "yhat_lower", "yhat_upper"]].itertuples(
-                    index=False, name=None
-                )
-            ),
-        )
-
-    # ---- topic sentiment trends ----
-    logger.info("Computing topic-specific sentiment trends…")
-    topic_trends = _compute_topic_sentiment_trends(conn, days)
-    if not topic_trends.empty:
-        upsert_topic_sentiment_trends(
-            conn,
-            list(
-                topic_trends[["topic_id", "date", "mean_sentiment", "rolling_7d"]].itertuples(
-                    index=False, name=None
-                )
-            ),
-        )
 
     # ---- MLflow ----
     summary = {

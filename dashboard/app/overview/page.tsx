@@ -2,7 +2,7 @@
 
 import useSWR from "swr";
 import { useSWRConfig } from "swr";
-import { useFilterStore } from "@/lib/store";
+import { buildFilterQuery, useFilterStore } from "@/lib/store";
 import { MetricCard } from "@/components/shared/MetricCard";
 import { ActivityFeedStrip } from "@/components/overview/ActivityFeedStrip";
 import { CommandBar } from "@/components/overview/CommandBar";
@@ -29,16 +29,6 @@ const fetcher = async (url: string) => {
   return response.json();
 };
 
-function buildQuery(subreddits: string[], parents: string[], dateRange: [string, string]) {
-  const params = new URLSearchParams();
-  subreddits.forEach((s) => params.append("subreddits", s));
-  parents.forEach((p) => params.append("parents", p));
-  if (dateRange[0]) params.set("start", dateRange[0]);
-  if (dateRange[1]) params.set("end", dateRange[1]);
-  const query = params.toString();
-  return query ? `?${query}` : "";
-}
-
 function stateMessage(state: PanelState, messages: Partial<Record<PanelState, string>>) {
   return state === "ready" ? undefined : messages[state];
 }
@@ -46,10 +36,10 @@ function stateMessage(state: PanelState, messages: Partial<Record<PanelState, st
 export default function OverviewPage() {
   const { mutate } = useSWRConfig();
   const { subreddits, setSubreddits, parents, setParents, dateRange, setDateRange } = useFilterStore();
-  const q = buildQuery(subreddits, parents, dateRange);
+  const q = buildFilterQuery(subreddits, parents, dateRange);
 
   const { data: summary, error: summaryError } = useSWR<CollectionSummary>(`/api/summary${q}`, fetcher);
-  const { data: sentimentData, error: sentimentError } = useSWR<SentimentSummary[]>(`/api/sentiment/summary${q}`, fetcher);
+  const { data: sentimentData } = useSWR<SentimentSummary[]>(`/api/sentiment/summary${q}`, fetcher);
   const { data: sentimentDaily } = useSWR<SentimentDaily[]>(`/api/sentiment/daily${q}`, fetcher);
   const { data: volumeData } = useSWR<VolumeDaily[]>(`/api/volume/daily${q}`, fetcher);
   const { data: chartSummary } = useSWR<ChartSummaryResponse>(`/api/analysis/overview-chart-summary${q}`, fetcher);
@@ -76,7 +66,14 @@ export default function OverviewPage() {
       : (summary?.total_comments ?? 0) === 0
         ? "empty"
         : "ready";
-  const lastMLState: PanelState = summaryError || summaryInvalid
+  const lastCollectedState: PanelState = summaryError || summaryInvalid
+    ? "error"
+    : summaryLoading
+      ? "loading"
+      : summary?.last_timestamp
+        ? "ready"
+        : "empty";
+  const lastAnalyzedState: PanelState = summaryError || summaryInvalid
     ? "error"
     : summaryLoading
       ? "loading"
@@ -86,20 +83,9 @@ export default function OverviewPage() {
 
   const totalPosts = hasSummary ? summary.total_posts.toLocaleString() : undefined;
   const totalComments = hasSummary ? summary.total_comments.toLocaleString() : undefined;
-  const lastML = summary?.last_ml_timestamp?.slice(0, 10);
+  const lastCollected = summary?.last_timestamp?.slice(0, 10);
+  const lastAnalyzed = summary?.last_ml_timestamp?.slice(0, 10);
 
-  const posCount = sentimentData?.find((d) => d.label === "positive")?.count ?? 0;
-  const negCount = sentimentData?.find((d) => d.label === "negative")?.count ?? 0;
-  const neuCount = sentimentData?.find((d) => d.label === "neutral")?.count ?? 0;
-  const total = posCount + negCount + neuCount;
-  const sentimentState: PanelState = sentimentError
-    ? "error"
-    : !sentimentData
-      ? "loading"
-      : total === 0
-        ? "empty"
-        : "ready";
-  const sentimentMix = total ? `${Math.round((posCount / total) * 100)}% pos` : undefined;
   const topicState: PanelState = summaryError || summaryInvalid
     ? "error"
     : summaryLoading
@@ -157,9 +143,9 @@ export default function OverviewPage() {
 
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
-          label="Total posts"
+          label="Posts"
           value={totalPosts}
-          sub="indexed signals"
+          sub="collected"
           state={totalPostsState}
           message={stateMessage(totalPostsState, {
             loading: "Checking indexed posts.",
@@ -168,9 +154,9 @@ export default function OverviewPage() {
           })}
         />
         <MetricCard
-          label="Total comments"
+          label="Comments"
           value={totalComments}
-          sub="conversation mass"
+          sub="collected"
           state={totalCommentsState}
           message={stateMessage(totalCommentsState, {
             loading: "Checking comment volume.",
@@ -179,27 +165,26 @@ export default function OverviewPage() {
           })}
         />
         <MetricCard
-          label="Last ML run"
-          value={lastML}
-          sub="model refresh"
-          state={lastMLState}
-          message={stateMessage(lastMLState, {
-            loading: "Checking model freshness.",
-            empty: "No model run is available for this view.",
-            error: "Could not load model freshness.",
+          label="Last collected"
+          value={lastCollected}
+          sub="latest source record"
+          state={lastCollectedState}
+          message={stateMessage(lastCollectedState, {
+            loading: "Checking collection freshness.",
+            empty: "No collected record is available for this view.",
+            error: "Could not load collection freshness.",
           })}
         />
         <MetricCard
-          label="Sentiment mix"
-          value={sentimentMix}
-          sub="active window"
-          state={sentimentState}
-          message={stateMessage(sentimentState, {
-            loading: "Checking sentiment labels.",
-            empty: "No sentiment labels match this view.",
-            error: "Could not load sentiment mix.",
+          label="Last analyzed"
+          value={lastAnalyzed}
+          sub="latest model result"
+          state={lastAnalyzedState}
+          message={stateMessage(lastAnalyzedState, {
+            loading: "Checking analysis freshness.",
+            empty: "No analyzed record is available for this view.",
+            error: "Could not load analysis freshness.",
           })}
-          accent
         />
       </div>
 

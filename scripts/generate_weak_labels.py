@@ -76,16 +76,24 @@ def main():
 
     query = f"""
         SELECT p.id, p.content_type, p.clean_text,
+               COALESCE(posts.timestamp, comments.timestamp) AS timestamp,
+               CASE WHEN p.content_type = 'post' THEN p.id
+                    ELSE COALESCE(comments.post_id, comments.parent_id, comments.id) END AS thread_id,
                COALESCE(
                    (SELECT subreddit FROM posts WHERE posts.id = p.id),
                    (SELECT subreddit FROM comments WHERE comments.id = p.id)
                ) AS subreddit
         FROM preprocessed p
+        LEFT JOIN posts ON p.content_type = 'post' AND posts.id = p.id
+        LEFT JOIN comments ON p.content_type = 'comment' AND comments.id = p.id
         WHERE p.is_filtered = {'FALSE' if is_postgres_connection(conn) else '0'}
           AND p.clean_text IS NOT NULL
           AND p.clean_text != ''
+        ORDER BY p.id
     """
-    if args.limit:
+    if args.limit is not None:
+        if args.limit < 1:
+            parser.error("--limit must be positive")
         query += f" LIMIT {args.limit}"
 
     if is_postgres_connection(conn):
@@ -104,7 +112,11 @@ def main():
         total_scored += 1
         scores = analyzer.polarity_scores(row["clean_text"])
         compound = scores["compound"]
-        rec = (row["id"], row["content_type"], row["subreddit"] or "", row["clean_text"], round(compound, 4))
+        rec = (
+            row["id"], row["content_type"], row["subreddit"] or "",
+            row["clean_text"], round(compound, 4), row["timestamp"] or "",
+            row["thread_id"] or row["id"],
+        )
 
         if compound > args.threshold:
             positive_rows.append(rec)
@@ -130,7 +142,10 @@ def main():
 
     with open(output_path, "w", newline="", encoding="utf-8") as csvfile:
         writer = csv.writer(csvfile)
-        writer.writerow(["id", "content_type", "subreddit", "clean_text", "vader_compound", "label"])
+        writer.writerow([
+            "id", "content_type", "subreddit", "clean_text", "vader_compound",
+            "timestamp", "thread_id", "label",
+        ])
         for rec in positive_rows:
             writer.writerow([*rec, "positive"])
         for rec in negative_rows:

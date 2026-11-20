@@ -64,7 +64,7 @@ export function Sidebar() {
             <h1 className="mt-0.5 truncate text-[15px] font-semibold leading-tight tracking-[-0.015em] text-sidebar-foreground">Signal Command</h1>
           </div>
         </div>
-        <p className="mt-3 text-[13px] leading-[1.55] text-muted-foreground">Subreddit intelligence, live from the stream.</p>
+        <p className="mt-3 text-[13px] leading-[1.55] text-muted-foreground">Batch analysis of Reddit conversations.</p>
       </div>
 
       <nav className="flex flex-col gap-0.5 px-2 py-3">
@@ -89,7 +89,7 @@ export function Sidebar() {
       </nav>
 
       <div className="flex-1 border-t border-sidebar-border px-4 py-4">
-        <p className="command-label mb-2">Parents</p>
+        <p className="command-label mb-2">Community groups</p>
         <div className="flex flex-col gap-1 max-h-80 overflow-y-auto pr-1">
           {parentGroups.length === 0 && (
             <p className="text-xs text-muted-foreground">No parent groups loaded.</p>
@@ -148,7 +148,7 @@ export function Sidebar() {
 
         {range && (
           <div className="mt-4">
-            <p className="command-label mb-2">Date range</p>
+            <p className="command-label mb-2">Research window</p>
             <div className="flex flex-col gap-1">
               <input
                 type="date"

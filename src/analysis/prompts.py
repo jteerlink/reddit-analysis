@@ -178,6 +178,9 @@ def analyst_brief_prompt(
         '{"headline": "...",'
         ' "sections": ['
         '{"title": "Executive Summary", "body": "...",'
+        ' "observations": ["measured statement with a date, count, or delta"],'
+        ' "hypotheses": ["clearly labeled possible explanation, if any"],'
+        ' "unknowns": ["evidence limitation or unanswered question"],'
         ' "claims": ["..."],'
         ' "evidence": [{"anchor_type": "event_id|post_id|comment_id|topic_label", "anchor_id": "...", "label": "...", "snippet": "..."}],'
         ' "drivers": ["..."],'
@@ -199,12 +202,14 @@ def analyst_brief_prompt(
                 f"The object MUST match this schema: {schema}. "
                 "The headline is one punchy, specific sentence that names the dominant trend. "
                 "Include five sections: Executive Summary, Key Findings, Notable Trends, Risks & Anomalies, Outlook. "
-                "Each section body MUST be 4-6 sentences, rich with named subreddits, topics, dates, and magnitudes "
-                "drawn from the provided context. Do not pad with generic statements — every sentence must assert "
-                "something specific. "
-                "Every major claim must cite only evidence anchors supplied in the evidence context; "
-                "populate claims[], drivers[], and implications[] with at least 2 concrete items each. "
-                "If evidence is thin or conflicting, say so in evidence_gap instead of inventing support."
+                "Separate measured observations from possible explanations and unknowns. "
+                "Observations may state only values, counts, dates, labels, and excerpts present in the context. "
+                "A sentiment delta measures tone; by itself it does not establish churn, retention, engagement collapse, "
+                "market share, a product release, or any cause. Put possible explanations in hypotheses[] and label them "
+                "as hypotheses; omit them when no direct source excerpt supports the explanation. "
+                "Every factual claim must cite an allowed evidence anchor, and an anchor ID alone does not prove support. "
+                "Use unknowns[] and evidence_gap when collection coverage or source excerpts are missing. "
+                "Keep claims[], drivers[], and implications[] conservative and grounded in the same evidence."
             ),
         },
         {
@@ -215,8 +220,8 @@ def analyst_brief_prompt(
                 f"Parent community context (last 30 days):\n{parents_block}\n\n"
                 f"Evidence context and allowed anchors:\n{evidence_block}\n\n"
                 f"Configured LLM models: {model_count}\n\n"
-                "Generate the analyst brief JSON. Populate all fields: drivers/causes, implications, "
-                "evidence anchors with snippets, delta values with delta_source/current_window/comparison_window."
+                "Generate the analyst brief JSON. Populate observations, hypotheses, unknowns, and evidence anchors "
+                "with snippets where available. Include delta values only with delta_source/current_window/comparison_window."
             ),
         },
     ]

@@ -12,9 +12,8 @@ from pydantic import BaseModel
 
 from src.api import db as dashboard_db
 from src.analysis import models, queries
-from src.analysis.db import ANALYSIS_SCHEMA_VERSION, artifact_checksum, complete_artifact, enqueue_artifact, list_artifacts, missing_analysis_tables
-from src.analysis.enrichment import _select_model
-from src.analysis.ollama import OllamaConfig, chat
+from src.analysis.db import ANALYSIS_SCHEMA_VERSION, artifact_checksum, list_artifacts, missing_analysis_tables
+from src.analysis.ollama import OllamaConfig
 from src.db.connection import connection
 
 logger = logging.getLogger(__name__)
@@ -193,7 +192,9 @@ def overview_chart_summary(
             "volume": volume_rows[-36:],
         }
     )
-    with connection(readonly=False) as conn:
+    # GET requests are intentionally read-only. A dashboard refresh must never
+    # enqueue work, mutate artifact state, or make a provider call.
+    with connection(readonly=True) as conn:
         cached = next(
             (
                 artifact
@@ -221,73 +222,21 @@ def overview_chart_summary(
                 ),
             }
 
-        config = OllamaConfig.from_env()
-        model = _select_model(conn, config)
-        if not model:
-            summary = _fallback_chart_summary(sentiment_rows, volume_rows)
-            return {
-                "summary": summary,
-                "state": "missing_config",
-                "generated_at": _now_iso(),
-                "model_name": None,
-                "source_input_hash": source_hash,
-                "provenance": _provenance(
-                    "missing_config",
-                    "deterministic_fallback",
-                    "sentiment_daily",
-                    [],
-                    source_input_hash=source_hash,
-                    detail="Ollama model unavailable; returned deterministic summary.",
-                ),
-            }
-
-        artifact = enqueue_artifact(
-            conn,
-            kind="overview_chart_summary",
-            source_input_hash=source_hash,
-            payload={"filters": {"subreddits": subreddits, "parents": parents, "start": start, "end": end}},
-            provider="ollama",
-            model_name=model,
-            prompt_version="overview-chart-summary-v1",
-        )
-        try:
-            content = chat(config, model, _summary_prompt(sentiment_rows, volume_rows), temperature=0.2, timeout=12)
-            summary = _plain_chart_summary(content) or _fallback_chart_summary(sentiment_rows, volume_rows)
-        except Exception as exc:
-            logger.warning("overview_chart_summary_llm_failed: %s", exc)
-            summary = _fallback_chart_summary(sentiment_rows, volume_rows)
-            return {
-                "summary": summary,
-                "state": "error",
-                "generated_at": _now_iso(),
-                "model_name": model,
-                "source_input_hash": source_hash,
-                "provenance": _provenance(
-                    "error",
-                    "deterministic_fallback",
-                    "sentiment_daily",
-                    [],
-                    source_input_hash=source_hash,
-                    provider="ollama",
-                    detail=f"LLM summary failed: {exc.__class__.__name__}",
-                ),
-            }
-        generated_at = _now_iso()
-        complete_artifact(conn, artifact["artifact_id"], {"summary": summary, "generated_at": generated_at})
+        summary = _fallback_chart_summary(sentiment_rows, volume_rows)
         return {
             "summary": summary,
-            "state": "ready",
-            "generated_at": generated_at,
-            "model_name": model,
+            "state": "unpopulated" if not sentiment_rows else "ready",
+            "generated_at": None,
+            "model_name": None,
             "source_input_hash": source_hash,
             "provenance": _provenance(
-                "ready",
-                "llm_artifact",
-                "analysis_artifacts",
-                [artifact["artifact_id"]],
-                artifact_id=artifact["artifact_id"],
+                "unpopulated" if not sentiment_rows else "ready",
+                "deterministic_fallback",
+                "sentiment_daily",
+                [],
                 source_input_hash=source_hash,
-                provider="ollama",
+                algorithm="deterministic_chart_summary",
+                detail="Computed from the selected daily rows; no LLM generation is performed by GET.",
             ),
         }
 
@@ -354,10 +303,37 @@ def embedding_map(limit: int = Query(default=5000, ge=1, le=5000)):
 
 
 @router.get("/semantic-search", response_model=models.SemanticSearchResponse)
-def semantic_search(q: str = Query(default="", max_length=200), limit: int = Query(default=50, ge=1, le=200)):
+def semantic_search(
+    q: str = Query(default="", max_length=200),
+    limit: int = Query(default=50, ge=1, le=200),
+    subreddits: List[str] = Query(default=[]),
+    parents: List[str] = Query(default=[]),
+    start: Optional[str] = Query(default=None),
+    end: Optional[str] = Query(default=None),
+    content_type: str = Query(default="both"),
+):
     with connection(readonly=True) as conn:
         missing = missing_analysis_tables(conn, ["preprocessed", "sentiment_predictions", "posts", "comments"])
-        rows = [] if missing else queries.semantic_search(conn, q, limit)
+        if missing:
+            rows = []
+        else:
+            try:
+                rows = queries.semantic_search(
+                    conn,
+                    q,
+                    limit,
+                    tuple(subreddits),
+                    tuple(parents),
+                    start,
+                    end,
+                    content_type,
+                )
+            except TypeError as exc:
+                # Keep compatibility with downstream adapters that still
+                # expose the pre-filter query signature.
+                if "positional argument" not in str(exc):
+                    raise
+                rows = queries.semantic_search(conn, q, limit)
     vector_ready = queries.semantic_vector_backend_ready()
     row_states = {str(row.get("state") or "ready") for row in rows}
     if missing:

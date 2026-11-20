@@ -8,6 +8,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -18,6 +19,9 @@ from dateutil import parser as date_parser
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = PROJECT_ROOT / "scripts" / "neon_schema.sql"
 SEED_PATH = PROJECT_ROOT / "scripts" / "seed_subreddit_categories.sql"
+DEFAULT_BATCH_SIZE = 250
+INSERT_PAGE_SIZE = 100
+MAX_SINGLE_ROW_RETRIES = 3
 
 MIGRATION_ORDER = [
     "posts",
@@ -176,7 +180,9 @@ def _load_psycopg2():
 def _row_values(table: str, batch: pd.DataFrame, json_adapter) -> list[tuple]:
     rows = []
     for values in batch.itertuples(index=False, name=None):
-        json_columns = [column for column in JSON_COLUMNS.get(table, []) if column in batch.columns]
+        json_columns = [
+            column for column in JSON_COLUMNS.get(table, []) if column in batch.columns
+        ]
         if json_columns:
             values = list(values)
             columns = list(batch.columns)
@@ -189,13 +195,83 @@ def _row_values(table: str, batch: pd.DataFrame, json_adapter) -> list[tuple]:
     return rows
 
 
-def _insert_batch(pg_conn, table: str, batch: pd.DataFrame, execute_values, json_adapter) -> None:
+def _insert_batch(
+    pg_conn, table: str, batch: pd.DataFrame, execute_values, json_adapter
+) -> None:
     columns = list(batch.columns)
     quoted_columns = ", ".join(f'"{col}"' for col in columns)
-    sql = f'INSERT INTO "{table}" ({quoted_columns}) VALUES %s ON CONFLICT DO NOTHING'
+    conflict = "ON CONFLICT DO NOTHING"
+    if table == "preprocessed" and "id" in columns and len(columns) > 1:
+        updates = ", ".join(
+            f'"{column}" = EXCLUDED."{column}"' for column in columns if column != "id"
+        )
+        conflict = f'ON CONFLICT (id) DO UPDATE SET {updates}'
+    sql = f'INSERT INTO "{table}" ({quoted_columns}) VALUES %s {conflict}'
     rows = _row_values(table, batch, json_adapter)
     with pg_conn.cursor() as cursor:
-        execute_values(cursor, sql, rows, page_size=len(rows))
+        execute_values(cursor, sql, rows, page_size=min(len(rows), INSERT_PAGE_SIZE))
+
+
+def _insert_batch_resilient(
+    pg_conn,
+    table: str,
+    batch: pd.DataFrame,
+    execute_values,
+    json_adapter,
+    reconnect,
+    operational_error,
+    *,
+    single_row_attempt: int = 0,
+) -> Any:
+    """Insert a batch, reconnecting and reducing it if Neon closes the connection."""
+    try:
+        _insert_batch(pg_conn, table, batch, execute_values, json_adapter)
+        return pg_conn
+    except operational_error as exc:
+        try:
+            pg_conn.close()
+        except Exception:
+            pass
+
+        if len(batch) > 1:
+            reduced_size = max(1, len(batch) // 2)
+            print(
+                f"{table}: Neon closed the connection while inserting {len(batch)} rows; "
+                f"retrying in batches of {reduced_size}"
+            )
+            current_conn = reconnect()
+            for smaller_batch in _iter_batches(batch, reduced_size):
+                current_conn = _insert_batch_resilient(
+                    current_conn,
+                    table,
+                    smaller_batch,
+                    execute_values,
+                    json_adapter,
+                    reconnect,
+                    operational_error,
+                )
+                # Each recovered sub-batch must be durable before the next one;
+                # another dropped connection rolls back its active transaction.
+                current_conn.commit()
+            return current_conn
+
+        if single_row_attempt + 1 >= MAX_SINGLE_ROW_RETRIES:
+            raise RuntimeError(
+                f"Neon closed the connection repeatedly while inserting one row into "
+                f"{table}. The row may be too large or the database may be unavailable."
+            ) from exc
+
+        time.sleep(2**single_row_attempt)
+        return _insert_batch_resilient(
+            reconnect(),
+            table,
+            batch,
+            execute_values,
+            json_adapter,
+            reconnect,
+            operational_error,
+            single_row_attempt=single_row_attempt + 1,
+        )
 
 
 def _target_count(pg_conn, table: str) -> int:
@@ -205,9 +281,17 @@ def _target_count(pg_conn, table: str) -> int:
 
 
 def run(args: argparse.Namespace) -> int:
+    # Support both direct script execution and import by the pipeline/tests.
+    try:
+        from scripts.mirror_derived import DERIVED_TABLES, publish_snapshot
+    except ModuleNotFoundError:
+        from mirror_derived import DERIVED_TABLES, publish_snapshot
     source = Path(args.source)
     if not source.exists():
         print(f"Source SQLite database not found: {source}", file=sys.stderr)
+        return 1
+    if args.batch_size < 1:
+        print("--batch-size must be at least 1.", file=sys.stderr)
         return 1
 
     with sqlite3.connect(source) as sqlite_conn:
@@ -229,7 +313,10 @@ def run(args: argparse.Namespace) -> int:
 
         database_url = args.database_url or os.environ.get("DATABASE_URL")
         if not database_url:
-            print("DATABASE_URL or --database-url is required for live migration.", file=sys.stderr)
+            print(
+                "DATABASE_URL or --database-url is required for live migration.",
+                file=sys.stderr,
+            )
             return 1
 
         psycopg2, Json, execute_values = _load_psycopg2()
@@ -245,19 +332,45 @@ def run(args: argparse.Namespace) -> int:
                 print(f"Schema applied from {args.schema}")
                 print(f"Subreddit categories seeded from {args.seed}")
 
+            derived_frames = {}
+            # Hold a consistent source read snapshot across related tables.
+            sqlite_conn.execute("BEGIN")
             for table in MIGRATION_ORDER:
                 if not _table_exists(sqlite_conn, table):
                     print(f"{table}: missing in source, skipped")
                     continue
                 df = pd.read_sql_query(f'SELECT * FROM "{table}"', sqlite_conn)
                 df = _transform(table, df)
+                if table in DERIVED_TABLES:
+                    derived_frames[table] = df
+                    continue
                 for batch in _iter_batches(df, args.batch_size):
                     if not batch.empty:
-                        _insert_batch(pg_conn, table, batch, execute_values, Json)
-                pg_conn.commit()
+                        pg_conn = _insert_batch_resilient(
+                            pg_conn,
+                            table,
+                            batch,
+                            execute_values,
+                            Json,
+                            reconnect=lambda: psycopg2.connect(database_url),
+                            operational_error=psycopg2.OperationalError,
+                        )
+                        # Commit each source batch so a later reconnect cannot lose
+                        # successful work from earlier batches in the same table.
+                        pg_conn.commit()
                 print(
                     f"{table}: source={len(df)} target={_target_count(pg_conn, table)}"
                 )
+            if derived_frames:
+                pg_conn = publish_snapshot(
+                    pg_conn, derived_frames,
+                    lambda conn, table, batch: _insert_batch(
+                        conn, table, batch, execute_values, Json
+                    ),
+                    lambda: psycopg2.connect(database_url),
+                    psycopg2.OperationalError, args.batch_size,
+                )
+                print("Derived data snapshot published atomically")
         finally:
             pg_conn.close()
     return 0
@@ -269,7 +382,7 @@ def main() -> None:
     parser.add_argument("--database-url", default=None)
     parser.add_argument("--schema", default=str(SCHEMA_PATH))
     parser.add_argument("--seed", default=str(SEED_PATH))
-    parser.add_argument("--batch-size", type=int, default=1000)
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--create-schema", action="store_true", default=False)
     parser.add_argument("--dry-run", action="store_true", default=False)
     raise SystemExit(run(parser.parse_args()))

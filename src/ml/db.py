@@ -74,7 +74,7 @@ def _executemany(conn, sql: str, rows: List[Tuple]) -> None:
         conn.executemany(sql, rows)
 
 
-def _upsert(conn, table: str, columns: list[str], conflict: list[str], update: list[str], rows: List[Tuple]) -> None:
+def _upsert(conn, table: str, columns: list[str], conflict: list[str], update: list[str], rows: List[Tuple], commit: bool = True) -> None:
     if not rows:
         return
     if is_postgres_connection(conn):
@@ -88,7 +88,8 @@ def _upsert(conn, table: str, columns: list[str], conflict: list[str], update: l
         marker = ", ".join(["?"] * len(columns))
         sql = f"INSERT OR REPLACE INTO {table} ({', '.join(columns)}) VALUES ({marker})"
     _executemany(conn, sql, rows)
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def ensure_preprocessed_table(conn) -> None:
@@ -125,14 +126,16 @@ def ensure_preprocessed_table(conn) -> None:
 
 
 def iter_raw_records(conn, batch_size: int = 1000) -> Generator[List, None, None]:
-    query = """
+    query = f"""
         SELECT id, title, content, 'post' AS content_type, author, subreddit
         FROM posts
         WHERE id NOT IN (SELECT id FROM preprocessed)
+           OR id IN (SELECT id FROM preprocessed WHERE is_filtered = {_false(conn)} AND embedding_key IS NULL)
         UNION ALL
         SELECT id, NULL AS title, content, 'comment' AS content_type, author, subreddit
         FROM comments
         WHERE id NOT IN (SELECT id FROM preprocessed)
+           OR id IN (SELECT id FROM preprocessed WHERE is_filtered = {_false(conn)} AND embedding_key IS NULL)
     """
     cursor = _execute(conn, query)
     while True:
@@ -220,6 +223,7 @@ def ensure_topics_tables(conn) -> None:
                 keywords TEXT NOT NULL,
                 doc_count INTEGER NOT NULL DEFAULT 0,
                 coherence_score DOUBLE PRECISION,
+                model_version TEXT,
                 created_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
@@ -228,6 +232,7 @@ def ensure_topics_tables(conn) -> None:
                 id TEXT PRIMARY KEY REFERENCES preprocessed(id),
                 topic_id INTEGER NOT NULL,
                 probability DOUBLE PRECISION,
+                model_version TEXT,
                 assigned_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
@@ -237,6 +242,7 @@ def ensure_topics_tables(conn) -> None:
                 week_start DATE NOT NULL,
                 doc_count INTEGER NOT NULL DEFAULT 0,
                 avg_sentiment DOUBLE PRECISION,
+                model_version TEXT,
                 PRIMARY KEY (topic_id, week_start)
             )
         """)
@@ -247,6 +253,7 @@ def ensure_topics_tables(conn) -> None:
                 keywords TEXT NOT NULL,
                 doc_count INTEGER NOT NULL DEFAULT 0,
                 coherence_score REAL,
+                model_version TEXT,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -255,6 +262,7 @@ def ensure_topics_tables(conn) -> None:
                 id TEXT PRIMARY KEY,
                 topic_id INTEGER NOT NULL,
                 probability REAL,
+                model_version TEXT,
                 assigned_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (id) REFERENCES preprocessed(id)
             )
@@ -265,15 +273,26 @@ def ensure_topics_tables(conn) -> None:
                 week_start TEXT NOT NULL,
                 doc_count INTEGER NOT NULL DEFAULT 0,
                 avg_sentiment REAL,
+                model_version TEXT,
                 PRIMARY KEY (topic_id, week_start)
             )
         """)
     _execute(conn, "CREATE INDEX IF NOT EXISTS idx_topics_coherence ON topics(coherence_score)")
     _execute(conn, "CREATE INDEX IF NOT EXISTS idx_topic_assignments_topic ON topic_assignments(topic_id)")
     _execute(conn, "CREATE INDEX IF NOT EXISTS idx_tot_week ON topic_over_time(week_start)")
-    for col, col_type in [("llm_label", "TEXT"), ("llm_prompt_version", "TEXT")]:
+    for table in ("topics", "topic_assignments", "topic_over_time"):
         try:
-            _execute(conn, f"ALTER TABLE topics ADD COLUMN {col} {col_type}")
+            alter = "ADD COLUMN IF NOT EXISTS" if is_postgres_connection(conn) else "ADD COLUMN"
+            _execute(conn, f"ALTER TABLE {table} {alter} model_version TEXT")
+        except Exception:
+            pass
+    for col, col_type in [
+        ("llm_label", "TEXT"),
+        ("llm_prompt_version", "TEXT"),
+    ]:
+        try:
+            alter = "ADD COLUMN IF NOT EXISTS" if is_postgres_connection(conn) else "ADD COLUMN"
+            _execute(conn, f"ALTER TABLE topics {alter} {col} {col_type}")
         except Exception:
             pass
     conn.commit()
@@ -300,19 +319,25 @@ def iter_preprocessed_for_topics(conn, days: int = 90, batch_size: int = 1000) -
         yield rows
 
 
-def upsert_topics(conn, rows: List[Tuple]) -> None:
+def upsert_topics(conn, rows: List[Tuple], commit: bool = True) -> None:
     columns = ["topic_id", "keywords", "doc_count", "coherence_score"]
-    _upsert(conn, "topics", columns, ["topic_id"], columns[1:], rows)
+    if rows and len(rows[0]) >= 5:
+        columns.append("model_version")
+    _upsert(conn, "topics", columns, ["topic_id"], columns[1:], rows, commit=commit)
 
 
-def upsert_topic_assignments(conn, rows: List[Tuple]) -> None:
+def upsert_topic_assignments(conn, rows: List[Tuple], commit: bool = True) -> None:
     columns = ["id", "topic_id", "probability"]
-    _upsert(conn, "topic_assignments", columns, ["id"], columns[1:], rows)
+    if rows and len(rows[0]) >= 4:
+        columns.append("model_version")
+    _upsert(conn, "topic_assignments", columns, ["id"], columns[1:], rows, commit=commit)
 
 
-def upsert_topic_over_time(conn, rows: List[Tuple]) -> None:
+def upsert_topic_over_time(conn, rows: List[Tuple], commit: bool = True) -> None:
     columns = ["topic_id", "week_start", "doc_count", "avg_sentiment"]
-    _upsert(conn, "topic_over_time", columns, ["topic_id", "week_start"], columns[2:], rows)
+    if rows and len(rows[0]) >= 5:
+        columns.append("model_version")
+    _upsert(conn, "topic_over_time", columns, ["topic_id", "week_start"], columns[2:], rows, commit=commit)
 
 
 def ensure_timeseries_tables(conn) -> None:
@@ -371,32 +396,129 @@ def ensure_timeseries_tables(conn) -> None:
         )
     """)
     _execute(conn, "CREATE INDEX IF NOT EXISTS idx_tst_date ON topic_sentiment_trends(date)")
+    additions = {
+        "sentiment_moving_avg": {"observed_days_7d": "INTEGER", "observed_days_30d": "INTEGER"},
+        "sentiment_forecast": {"generated_at": "TEXT", "training_through": "TEXT", "interval_width": real_type},
+    }
+    for table, columns in additions.items():
+        if is_postgres_connection(conn):
+            for column, kind in columns.items():
+                _execute(conn, f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {kind}")
+        else:
+            existing = {row[1] for row in _execute(conn, f"PRAGMA table_info({table})")}
+            for column, kind in columns.items():
+                if column not in existing:
+                    _execute(conn, f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+
     conn.commit()
 
 
-def upsert_sentiment_daily(conn, rows: List[Tuple]) -> None:
+def replace_timeseries_results(conn, scope_start: str, results: dict) -> None:
+    """Atomically replace the recomputed calendar scope and current forecast run.
+
+    Older measured history stays intact. Forecast rows are a current-run view;
+    legacy rows with unknown provenance are removed on successful recomputation.
+    """
+    tables = {
+        "sentiment_daily", "sentiment_moving_avg", "change_points",
+        "sentiment_forecast", "topic_sentiment_trends",
+    }
+    if set(results) != tables:
+        raise ValueError("A complete timeseries result set is required")
+    try:
+        for table, frame in results.items():
+            if table == "sentiment_forecast":
+                _execute(conn, f"DELETE FROM {table}")
+            else:
+                _execute(conn, f"DELETE FROM {table} WHERE date >= {_marker(conn)}", (scope_start,))
+            if not frame.empty:
+                columns = list(frame.columns)
+                markers = ", ".join([_marker(conn)] * len(columns))
+                _executemany(conn, f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({markers})",
+                             list(frame.itertuples(index=False, name=None)))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+def upsert_sentiment_daily(conn, rows: List[Tuple], commit: bool = True) -> None:
     columns = ["subreddit", "date", "mean_score", "pos_count", "neu_count", "neg_count"]
-    _upsert(conn, "sentiment_daily", columns, ["subreddit", "date"], columns[2:], rows)
+    _upsert(
+        conn,
+        "sentiment_daily",
+        columns,
+        ["subreddit", "date"],
+        columns[2:],
+        rows,
+        commit=commit,
+    )
 
 
-def upsert_sentiment_moving_avg(conn, rows: List[Tuple]) -> None:
+def upsert_sentiment_moving_avg(
+    conn, rows: List[Tuple], commit: bool = True
+) -> None:
     columns = ["subreddit", "date", "rolling_7d", "rolling_30d"]
-    _upsert(conn, "sentiment_moving_avg", columns, ["subreddit", "date"], columns[2:], rows)
+    if rows and len(rows[0]) == 6:
+        columns.extend(["observed_days_7d", "observed_days_30d"])
+    elif rows and len(rows[0]) != len(columns):
+        raise ValueError("Moving-average rows have an unexpected number of values")
+    _upsert(
+        conn,
+        "sentiment_moving_avg",
+        columns,
+        ["subreddit", "date"],
+        columns[2:],
+        rows,
+        commit=commit,
+    )
 
 
-def upsert_change_points(conn, rows: List[Tuple]) -> None:
+def upsert_change_points(conn, rows: List[Tuple], commit: bool = True) -> None:
     columns = ["subreddit", "date", "magnitude"]
-    _upsert(conn, "change_points", columns, ["subreddit", "date"], columns[2:], rows)
+    _upsert(
+        conn,
+        "change_points",
+        columns,
+        ["subreddit", "date"],
+        columns[2:],
+        rows,
+        commit=commit,
+    )
 
 
-def upsert_sentiment_forecast(conn, rows: List[Tuple]) -> None:
+def upsert_sentiment_forecast(
+    conn, rows: List[Tuple], commit: bool = True
+) -> None:
     columns = ["subreddit", "date", "yhat", "yhat_lower", "yhat_upper"]
-    _upsert(conn, "sentiment_forecast", columns, ["subreddit", "date"], columns[2:], rows)
+    if rows and len(rows[0]) == 8:
+        columns.extend(["generated_at", "training_through", "interval_width"])
+    elif rows and len(rows[0]) != len(columns):
+        raise ValueError("Forecast rows have an unexpected number of values")
+    _upsert(
+        conn,
+        "sentiment_forecast",
+        columns,
+        ["subreddit", "date"],
+        columns[2:],
+        rows,
+        commit=commit,
+    )
 
 
-def upsert_topic_sentiment_trends(conn, rows: List[Tuple]) -> None:
+def upsert_topic_sentiment_trends(
+    conn, rows: List[Tuple], commit: bool = True
+) -> None:
     columns = ["topic_id", "date", "mean_sentiment", "rolling_7d"]
-    _upsert(conn, "topic_sentiment_trends", columns, ["topic_id", "date"], columns[2:], rows)
+    _upsert(
+        conn,
+        "topic_sentiment_trends",
+        columns,
+        ["topic_id", "date"],
+        columns[2:],
+        rows,
+        commit=commit,
+    )
 
 
 def ensure_analysis_tables(conn) -> None:

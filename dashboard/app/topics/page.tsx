@@ -10,7 +10,7 @@ import { TopicHeatmap } from "@/components/charts/TopicHeatmap";
 import { SubredditNetworkGraph } from "@/components/charts/SubredditNetworkGraph";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useFilterStore } from "@/lib/store";
+import { buildFilterQuery, useFilterStore } from "@/lib/store";
 import type {
   SubredditGraphResponse,
   Topic,
@@ -24,6 +24,7 @@ const fetcher = (url: string) => fetch(url).then((r) => r.json());
 function buildGraphQuery(
   subreddits: string[],
   parents: string[],
+  dateRange: [string, string],
   n: number,
   minSimilarity: number,
 ) {
@@ -33,13 +34,17 @@ function buildGraphQuery(
   });
   subreddits.forEach((subreddit) => params.append("subreddits", subreddit));
   parents.forEach((parent) => params.append("parents", parent));
+  if (dateRange[0]) params.set("start", dateRange[0]);
+  if (dateRange[1]) params.set("end", dateRange[1]);
   return `/api/topics/graph?${params}`;
 }
 
-function buildSubredditGraphQuery(subreddits: string[], parents: string[]) {
+function buildSubredditGraphQuery(subreddits: string[], parents: string[], dateRange: [string, string]) {
   const params = new URLSearchParams({ days: "30", min_edge_score: "0.05" });
   subreddits.forEach((subreddit) => params.append("subreddits", subreddit));
   parents.forEach((parent) => params.append("parents", parent));
+  if (dateRange[0]) params.set("start", dateRange[0]);
+  if (dateRange[1]) params.set("end", dateRange[1]);
   return `/api/subreddits/graph?${params}`;
 }
 
@@ -112,7 +117,7 @@ function TopicLens({
 }
 
 export default function TopicsPage() {
-  const { subreddits, parents } = useFilterStore();
+  const { subreddits, parents, dateRange } = useFilterStore();
   const [graphMode, setGraphMode] = useState<GraphMode>("subreddits");
   const [isolatedParent, setIsolatedParent] = useState<string | null>(null);
   const [topicFocus, setTopicFocus] = useState<number | null>(null);
@@ -120,14 +125,15 @@ export default function TopicsPage() {
   const { data: topics } = useSWR<Topic[]>("/api/topics", fetcher);
   const { data: emerging } = useSWR<Topic[]>("/api/topics/emerging", fetcher);
   const { data: subredditGraph } = useSWR<SubredditGraphResponse>(
-    buildSubredditGraphQuery(subreddits, parents),
+    buildSubredditGraphQuery(subreddits, parents, dateRange),
     fetcher,
   );
   const { data: graph } = useSWR<TopicGraphResponse>(
-    graphMode === "topics" ? buildGraphQuery(subreddits, parents, 60, 0.12) : null,
+    graphMode === "topics" ? buildGraphQuery(subreddits, parents, dateRange, 60, 0.12) : null,
     fetcher,
   );
-  const { data: heatmap } = useSWR<TopicHeatmapResponse>("/api/topics/heatmap?n=30", fetcher);
+  const heatmapQuery = buildFilterQuery(subreddits, parents, dateRange);
+  const { data: heatmap } = useSWR<TopicHeatmapResponse>(`/api/topics/heatmap?n=30${heatmapQuery ? `&${heatmapQuery.slice(1)}` : ""}`, fetcher);
   const [selected, setSelected] = useState<number | null>(null);
 
   const emergingIds = new Set((emerging ?? []).map((t) => t.topic_id));
@@ -183,7 +189,7 @@ export default function TopicsPage() {
 
   const selectedTopic = topicRows.find((t) => t.topic_id === selected);
   const { data: overTime } = useSWR<TopicOverTime[]>(
-    selected !== null ? `/api/topics/${selected}/over-time` : null,
+    selected !== null ? `/api/topics/${selected}/over-time${heatmapQuery}` : null,
     fetcher,
   );
 

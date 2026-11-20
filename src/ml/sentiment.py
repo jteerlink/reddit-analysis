@@ -6,6 +6,7 @@ Fine-tunes distilbert-base-uncased on VADER-generated weak labels for
 Uses MPS on Apple Silicon for hardware-accelerated training and inference.
 """
 
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 LABEL2ID = {"negative": 0, "neutral": 1, "positive": 2}
 ID2LABEL = {v: k for k, v in LABEL2ID.items()}
+SENTIMENT_PREPROCESSING_VERSION = "sentiment-text-v1:max_length=256"
 
 
 def _detect_device() -> str:
@@ -222,11 +224,27 @@ def train(
     return summary
 
 
+def model_fingerprint(model_dir: str) -> str:
+    """Identify inference artifacts by bytes, independently of their directory."""
+    model_path = Path(model_dir)
+    if not model_path.is_dir():
+        raise FileNotFoundError(f"Sentiment model directory not found: {model_dir}")
+    digest = hashlib.sha256(SENTIMENT_PREPROCESSING_VERSION.encode("utf-8"))
+    for artifact in sorted(model_path.iterdir()):
+        if artifact.is_file() and artifact.suffix in {".json", ".txt", ".bin", ".safetensors", ".model"}:
+            digest.update(artifact.name.encode())
+            with artifact.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
 def predict_batch(
     texts: List[str],
     model_dir: str,
     batch_size: int = 64,
     device: Optional[str] = None,
+    runtime: Optional[Dict] = None,
 ) -> List[Dict]:
     """
     Run inference on a list of texts using a saved fine-tuned model.
@@ -239,10 +257,15 @@ def predict_batch(
     if device is None:
         device = _detect_device()
 
-    tokenizer = DistilBertTokenizerFast.from_pretrained(model_dir)
-    model = DistilBertForSequenceClassification.from_pretrained(model_dir)
-    model.to(device)
-    model.eval()
+    if runtime is None:
+        runtime = {}
+    if not runtime:
+        tokenizer = DistilBertTokenizerFast.from_pretrained(model_dir)
+        model = DistilBertForSequenceClassification.from_pretrained(model_dir)
+        model.to(device)
+        model.eval()
+        runtime.update(tokenizer=tokenizer, model=model)
+    tokenizer, model = runtime["tokenizer"], runtime["model"]
 
     results = []
     for start in range(0, len(texts), batch_size):
@@ -283,6 +306,7 @@ def run_batch_inference(
     model_dir: str,
     batch_size: int = 1000,
     mlflow_tracking: bool = True,
+    rescore_existing: bool = False,
 ) -> Dict:
     """
     Batch-inference orchestrator: score all unscored preprocessed records.
@@ -290,45 +314,58 @@ def run_batch_inference(
     Reads from `preprocessed` (is_filtered=0) where no prediction exists,
     writes results to `sentiment_predictions`.
     """
-    from .db import get_connection, ensure_sentiment_table, iter_unscored_records, upsert_sentiment
+    from .db import (get_connection, ensure_sentiment_table, _execute,
+                     _executemany, _marker, _false, _json_value)
+    from src.db.connection import is_postgres_connection
 
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
     device = _detect_device()
-    model_version = str(Path(model_dir).resolve())
-
+    model_version = model_fingerprint(model_dir)
     conn = get_connection(db_path)
-    ensure_sentiment_table(conn)
-
     total = positive = neutral = negative = 0
-
-    for batch in iter_unscored_records(conn, batch_size=batch_size):
-        ids = [r["id"] for r in batch]
-        content_types = [r["content_type"] for r in batch]
-        texts = [r["clean_text"] for r in batch]
-
-        preds = predict_batch(texts, model_dir, batch_size=min(64, batch_size), device=device)
-
-        rows = []
-        for rid, ct, pred in zip(ids, content_types, preds):
-            rows.append((
-                rid,
-                ct,
-                pred["label"],
-                pred["confidence"],
-                json.dumps(pred["logits"]),
-                model_version,
-            ))
-            if pred["label"] == "positive":
-                positive += 1
-            elif pred["label"] == "negative":
-                negative += 1
-            else:
-                neutral += 1
-
-        upsert_sentiment(conn, rows)
-        total += len(rows)
-        logger.info("Inference batch done — total scored=%d", total)
-
-    conn.close()
+    runtime: Dict = {}
+    try:
+        ensure_sentiment_table(conn)
+        versions = {r[0] for r in _execute(conn,
+                    "SELECT DISTINCT model_version FROM sentiment_predictions").fetchall()}
+        if versions - {model_version} and not rescore_existing:
+            raise ValueError("Model version changed; explicitly rescore_existing to promote it")
+        # A private staging table keeps the published generation intact on failure.
+        _execute(conn, "CREATE TEMP TABLE sentiment_stage AS SELECT * FROM sentiment_predictions WHERE 1=0")
+        eligibility = "" if rescore_existing else "AND id NOT IN (SELECT id FROM sentiment_predictions)"
+        cursor = _execute(conn, f"""SELECT id, content_type, clean_text FROM preprocessed
+            WHERE is_filtered = {_false(conn)} AND clean_text IS NOT NULL
+              AND clean_text != '' {eligibility}""")
+        marker = _marker(conn)
+        columns = "id, content_type, label, confidence, logits, model_version"
+        while batch := cursor.fetchmany(batch_size):
+            preds = predict_batch([r["clean_text"] for r in batch], model_dir,
+                                  batch_size=min(64, batch_size), device=device, runtime=runtime)
+            if len(preds) != len(batch):
+                raise ValueError("Prediction count does not match input batch")
+            rows = []
+            for record, pred in zip(batch, preds):
+                logits = json.dumps(pred["logits"])
+                rows.append((record["id"], record["content_type"], pred["label"],
+                             pred["confidence"], _json_value(logits) if is_postgres_connection(conn) else logits,
+                             model_version))
+                positive += pred["label"] == "positive"
+                negative += pred["label"] == "negative"
+                neutral += pred["label"] == "neutral"
+            _executemany(conn, f"INSERT INTO sentiment_stage ({columns}) VALUES ({', '.join([marker] * 6)})", rows)
+            total += len(rows)
+        if model_fingerprint(model_dir) != model_version:
+            raise ValueError("Model artifacts changed during inference; refusing promotion")
+        if rescore_existing:
+            _execute(conn, "DELETE FROM sentiment_predictions")
+        _execute(conn, f"INSERT INTO sentiment_predictions ({columns}) SELECT {columns} FROM sentiment_stage")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
     summary = {
         "total_scored": total,
