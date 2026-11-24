@@ -6,6 +6,7 @@ import fcntl
 import os
 import sys
 from asyncio import Queue
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncGenerator, List, Optional, TypedDict
 
@@ -14,6 +15,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.responses import StreamingResponse
 
 from src.db.connection import connection, database_reachable, execute, get_backend
+from src.reddit_api.retention import retention_cutoff
 
 router = APIRouter()
 
@@ -283,7 +285,10 @@ async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
 async def _stream_step(step_num: int, queue: Queue, promote_candidate: bool = False) -> bool:
     step = STEPS[step_num - 1]
     await queue.put(f"data: === Step {step_num}: {step['name']} ===\n\n")
-    cmd = _step_command(step_num, promote_candidate)
+    return await _stream_command(_step_command(step_num, promote_candidate), queue, f"Step {step_num}")
+
+
+async def _stream_command(cmd: list[str], queue: Queue, label: str) -> bool:
     proc: Optional[asyncio.subprocess.Process] = None
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -298,7 +303,7 @@ async def _stream_step(step_num: int, queue: Queue, promote_candidate: bool = Fa
             await queue.put(f"data: {line}\n\n")
         await proc.wait()
         rc = proc.returncode
-        status = f"[Step {step_num} {'OK' if rc == 0 else f'FAILED (exit {rc})'}]"
+        status = f"[{label} {'OK' if rc == 0 else f'FAILED (exit {rc})'}]"
         await queue.put(f"data: {status}\n\n")
         return rc == 0
     except FileNotFoundError as exc:
@@ -309,7 +314,9 @@ async def _stream_step(step_num: int, queue: Queue, promote_candidate: bool = Fa
             await _terminate_process(proc)
 
 
-async def _run_generator(steps: List[int], promote_candidate: bool = False, refresh: bool = False) -> AsyncGenerator[str, None]:
+async def _run_generator(
+    steps: List[int], promote_candidate: bool = False, refresh: bool = False, *, full_run: bool = False,
+) -> AsyncGenerator[str, None]:
     if _PIPELINE_RUN_LOCK.locked():
         yield BUSY_EVENT
         return
@@ -330,6 +337,7 @@ async def _run_generator(steps: List[int], promote_candidate: bool = False, refr
     async def _worker() -> None:
         cancelled = False
         try:
+            cutoff = retention_cutoff(datetime.now(timezone.utc)).isoformat() if full_run else None
             for step_num in steps:
                 if refresh and step_num == 6:
                     current = await asyncio.to_thread(_db_count, "SELECT COUNT(*) FROM topics")
@@ -344,7 +352,14 @@ async def _run_generator(steps: List[int], promote_candidate: bool = False, refr
                     await queue.put("event: result\ndata: failed\n\n")
                     break
             else:
-                await queue.put("event: result\ndata: succeeded\n\n")
+                command = [sys.executable, "-u", "scripts/pipeline_data.py"]
+                options = ["--db", str(_pipeline_db_path())]
+                if cutoff:
+                    options += ["--cutoff", cutoff]
+                ok = not cutoff or await _stream_command(command + ["prune", *options], queue, "Retention")
+                if ok and os.environ.get("NEON_DATABASE_URL") and get_backend() == "sqlite":
+                    ok = await _stream_command(command + ["sync", *options], queue, "Neon mirror")
+                await queue.put(f"event: result\ndata: {'succeeded' if ok else 'failed'}\n\n")
         except asyncio.CancelledError:
             cancelled = True
             raise
@@ -416,7 +431,7 @@ async def run_all(rebuild: bool = False) -> StreamingResponse:
         if await asyncio.to_thread(_sentiment_model_ready):
             steps.remove(4)
     return StreamingResponse(
-        _run_generator(steps, promote_candidate=4 in steps, refresh=not rebuild),
+        _run_generator(steps, promote_candidate=4 in steps, refresh=not rebuild, full_run=True),
         media_type="text/event-stream",
         headers=SSE_HEADERS,
     )

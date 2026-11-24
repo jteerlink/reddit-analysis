@@ -1,6 +1,7 @@
 import sqlite3
 import subprocess
 import sys
+from hashlib import md5
 from pathlib import Path
 
 import pandas as pd
@@ -15,6 +16,7 @@ from scripts.migrate_to_neon import (
     _insert_batch_resilient,
     _transform,
 )
+from scripts.pipeline_data import _changed_rows
 
 
 class FakeOperationalError(Exception):
@@ -48,6 +50,33 @@ class FakeConnection:
 
     def commit(self):
         self.commit_count += 1
+
+
+def test_pipeline_mirror_detects_content_changes_with_equal_counts():
+    class TargetCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        def execute(self, query):
+            assert 'md5("content")' in query
+
+        def __iter__(self):
+            yield "a", md5(b"before").hexdigest()
+            yield "b", None
+
+    class TargetConnection:
+        def cursor(self):
+            return TargetCursor()
+
+    schema = {"id": "text", "content": "text"}
+    target = TargetConnection()
+    frame = pd.DataFrame({"id": ["a", "b"], "content": ["after", None]})
+    assert _changed_rows(target, "posts", frame, schema) == ([0], False)
+    frame.loc[0, "content"] = "before"
+    assert _changed_rows(target, "posts", frame, schema) == ([], False)
 
 
 def fake_execute_values(cursor, _sql, rows, page_size):

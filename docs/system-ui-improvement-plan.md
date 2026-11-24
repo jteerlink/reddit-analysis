@@ -77,7 +77,9 @@ Work:
 - Choose an active analysis version; do not aggregate predictions from different versions without identifying that fact. Rescore deliberately when promoting a replacement.
 - Give topic models run-specific identities, so a reused numeric topic ID cannot inherit an unrelated old label or historical trend. Audit the apparent difference between three current topics and the much larger stored label inventory before migrating.
 - Track completion and freshness using input/version watermarks. Avoid dependency installation on every routine run; use the existing lockfile and an explicit setup/check path.
-- Keep SQLite and the optional Neon mirror consistent with changed contracts; mirror once after a successful refresh.
+- Capture a UTC cutoff 18 calendar months before the start of each full pipeline run. After the local analysis steps succeed, remove older posts, older comments, replies attached to expired posts, and their per-record analysis rows. Keep records at the cutoff. Apply the same rule to the local auxiliary Reddit tables and keep historical analysis artifacts and audit history.
+- Reconcile the optional Neon mirror once after a successful full run or individual step, from both the dashboard and terminal. Compare primary keys and values in a consistent SQLite snapshot, copy changes, and publish changed derived tables together. Apply the full run's retention cutoff to Neon in the same transaction as reconciliation.
+- Verify the mirrored rows before committing and report the verification time in the run output. Report a failed mirror separately from local processing. When Neon is the active database, apply retention there directly.
 
 Acceptance:
 - An unchanged-data refresh performs no model training, no new embedding work, and no duplicate inference.
@@ -85,6 +87,8 @@ Acceptance:
 - Restarting an interrupted run resumes incomplete work; partial runs are not reported as fully current.
 - Old topic labels cannot attach to a new cluster solely because its integer ID matches.
 - Existing single-step and full-run commands retain documented behavior and pass regression checks.
+- Retention handles month ends, time zones, and post/comment ID collisions. A failed local run does not apply retention or mirror changes.
+- An unchanged mirror requires no row writes. An equal-count content change is copied and verified. An interrupted mirror rolls back its data changes and can be retried.
 
 ## Phase 4 — Reduce repeated work and repair search completeness
 

@@ -13,10 +13,10 @@ TABLE_KEYS = {
 }
 
 
-def migrate_record_identity(conn: Any) -> None:
+def migrate_record_identity(conn: Any, *, commit: bool = True) -> None:
     """Upgrade legacy derived keys in one transaction on either backend."""
     if is_postgres_connection(conn):
-        _migrate_postgres(conn)
+        _migrate_postgres(conn, commit=commit)
     else:
         _migrate_sqlite(conn)
 
@@ -89,7 +89,7 @@ def _legacy_kind(table: str, key: str, columns: list[str], alias: str) -> str:
     return prepared
 
 
-def _migrate_postgres(conn: Any) -> None:
+def _migrate_postgres(conn: Any, *, commit: bool) -> None:
     from .db import _execute
 
     tables = {}
@@ -124,9 +124,11 @@ def _migrate_postgres(conn: Any) -> None:
             _execute(conn, """ALTER TABLE topic_assignments ADD FOREIGN KEY (id, content_type)
                 REFERENCES preprocessed (id, content_type)""")
         _invalidate_collisions(conn, tables, postgres=True)
-        conn.commit()
+        if commit:
+            conn.commit()
     except Exception:
-        conn.rollback()
+        if commit:
+            conn.rollback()
         raise
 
 

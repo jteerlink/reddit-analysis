@@ -12,6 +12,26 @@ DERIVED_TABLES = (
 )
 
 
+def replace_snapshot(
+    connection: Any,
+    frames: Mapping[str, pd.DataFrame],
+    insert_batch: Callable,
+    batch_size: int,
+) -> None:
+    """Replace the requested tables inside the caller's transaction."""
+    if batch_size < 1 or not set(frames).issubset(DERIVED_TABLES):
+        raise ValueError("Invalid derived snapshot or batch size")
+    with connection.cursor() as cursor:
+        for table in reversed(DERIVED_TABLES):
+            if table in frames:
+                cursor.execute(f'DELETE FROM "{table}"')
+    for table in DERIVED_TABLES:
+        if table in frames:
+            frame = frames[table]
+            for start in range(0, len(frame), batch_size):
+                insert_batch(connection, table, frame.iloc[start:start + batch_size])
+
+
 def publish_snapshot(
     connection: Any,
     frames: Mapping[str, pd.DataFrame],
@@ -26,20 +46,9 @@ def publish_snapshot(
     Empty source tables intentionally clear their corresponding derived mirror.
     Missing source tables, raw records, and audit history remain untouched.
     """
-    if batch_size < 1 or not set(frames).issubset(DERIVED_TABLES):
-        raise ValueError("Invalid derived snapshot or batch size")
     for attempt in range(3):
         try:
-            with connection.cursor() as cursor:
-                for table in reversed(DERIVED_TABLES):
-                    if table in frames:
-                        cursor.execute(f'DELETE FROM "{table}"')
-            for table in DERIVED_TABLES:
-                if table not in frames:
-                    continue
-                frame = frames[table]
-                for start in range(0, len(frame), batch_size):
-                    insert_batch(connection, table, frame.iloc[start:start + batch_size])
+            replace_snapshot(connection, frames, insert_batch, batch_size)
             connection.commit()
             return connection
         except operational_error:

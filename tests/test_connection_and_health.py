@@ -87,8 +87,11 @@ def test_pipeline_status_uses_shared_db_boundary(monkeypatch, tmp_path):
     assert pipeline._db_count("SELECT COUNT(*) FROM sentiment_predictions") == 1
 
 
-def test_pipeline_run_generator_rejects_overlapping_runs(monkeypatch):
+def test_pipeline_run_generator_rejects_overlapping_runs(monkeypatch, tmp_path):
     import src.api.routes.pipeline as pipeline
+
+    monkeypatch.setattr(pipeline, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("NEON_DATABASE_URL", raising=False)
 
     async def scenario():
         lock = asyncio.Lock()
@@ -122,8 +125,10 @@ def test_pipeline_run_generator_rejects_overlapping_runs(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_pipeline_run_generator_releases_lock_after_failed_step(monkeypatch):
+def test_pipeline_run_generator_releases_lock_after_failed_step(monkeypatch, tmp_path):
     import src.api.routes.pipeline as pipeline
+
+    monkeypatch.setattr(pipeline, "PROJECT_ROOT", tmp_path)
 
     async def scenario():
         lock = asyncio.Lock()
@@ -143,6 +148,34 @@ def test_pipeline_run_generator_releases_lock_after_failed_step(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_dashboard_full_run_prunes_and_syncs_before_success(monkeypatch, tmp_path):
+    from src.api.routes import pipeline
+
+    monkeypatch.setattr(pipeline, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(pipeline, "_PIPELINE_RUN_LOCK", asyncio.Lock())
+    monkeypatch.setattr(pipeline, "get_backend", lambda: "sqlite")
+    monkeypatch.setenv("NEON_DATABASE_URL", "fixture")
+    operations = []
+
+    async def step(step_num, queue):
+        operations.append(("step", step_num))
+        return True
+
+    async def command(args, queue, label):
+        operations.append((args[3], args[-1]))
+        return label != "Neon mirror"
+
+    monkeypatch.setattr(pipeline, "_stream_step", step)
+    monkeypatch.setattr(pipeline, "_stream_command", command)
+
+    async def run():
+        return [event async for event in pipeline._run_generator([2], full_run=True)]
+
+    assert asyncio.run(run()) == ["event: result\ndata: failed\n\n"]
+    assert [action for action, _ in operations] == ["step", "prune", "sync"]
+    assert operations[1][1] == operations[2][1]
+
+
 def test_env_example_does_not_contain_real_neon_secret():
     env_example = Path(".env.example").read_text()
 
@@ -156,6 +189,7 @@ def test_pipeline_execution_requires_post_and_operator_token(monkeypatch, tmp_pa
     from src.api.routes import pipeline
 
     monkeypatch.setattr(pipeline, "PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("NEON_DATABASE_URL", raising=False)
 
     async def stub_step(step, queue):
         await queue.put(f"data: ran {step}\n\n")

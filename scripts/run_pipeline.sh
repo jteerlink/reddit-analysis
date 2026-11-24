@@ -293,64 +293,18 @@ extract_val_f1() {
 
 sync_neon() {
   local context="${1:-pipeline}"
+  local cutoff="${2:-}"
 
   if [[ "$NEON_SYNC" != "true" ]]; then
     dim "Neon mirror skipped for $context (--no-neon-sync)"
     return 0
   fi
 
-  if [[ -n "${DATABASE_URL:-}" ]]; then
-    dim "Neon mirror skipped for $context (pipeline is already using DATABASE_URL)"
-    return 0
+  shift "$#"
+  if [[ -n "$cutoff" ]]; then
+    set -- --cutoff "$cutoff"
   fi
-
-  if [[ "$DB" == postgres://* || "$DB" == postgresql://* ]]; then
-    dim "Neon mirror skipped for $context (DB path is already PostgreSQL)"
-    return 0
-  fi
-
-  if [[ ! -f "$DB" ]]; then
-    warn "Neon mirror skipped for $context — SQLite source not found: $DB"
-    return 0
-  fi
-
-  info "Mirroring SQLite to Neon after $context..."
-  if "$PYTHON" - <<PYEOF
-import os
-from argparse import Namespace
-from pathlib import Path
-
-from dotenv import load_dotenv
-from scripts import migrate_to_neon
-
-load_dotenv(dotenv_path=Path("$PROJECT_ROOT") / ".env")
-database_url = os.environ.get("NEON_DATABASE_URL") or os.environ.get("DATABASE_URL")
-if not database_url:
-    print("SKIP missing NEON_DATABASE_URL or DATABASE_URL in .env")
-    raise SystemExit(0)
-
-source = Path("$DB")
-args = Namespace(
-    source=str(source),
-    database_url=database_url,
-    schema=str(migrate_to_neon.SCHEMA_PATH),
-    seed=str(migrate_to_neon.SEED_PATH),
-    batch_size=int(
-        os.environ.get("NEON_MIRROR_BATCH_SIZE", migrate_to_neon.DEFAULT_BATCH_SIZE)
-    ),
-    create_schema=os.environ.get("NEON_MIRROR_CREATE_SCHEMA", "true").lower()
-    not in {"0", "false", "no"},
-    dry_run=False,
-)
-raise SystemExit(migrate_to_neon.run(args))
-PYEOF
-  then
-    success "Neon mirror complete for $context"
-  else
-    local rc=$?
-    error "Neon mirror failed for $context"
-    return "$rc"
-  fi
+  "$PYTHON" -u scripts/pipeline_data.py sync --db "$DB" "$@"
 }
 
 python_query() {
@@ -746,7 +700,7 @@ run_step() {
   mkdir -p "$LOG_DIR"
   local logfile="$LOG_DIR/step_${step}_$(date +%Y%m%d_%H%M%S).log"
 
-  ensure_pipeline_environment "$step"
+  ensure_pipeline_environment "$step" || return $?
 
   case "$step" in
     1) run_step_1 "$logfile" ;;
@@ -758,7 +712,7 @@ run_step() {
     7) run_step_7 "$logfile" ;;
     8) run_step_8 "$logfile" ;;
     9) run_step_9 "$logfile" ;;
-  esac
+  esac || return $?
 
   if [[ "$sync_after" == "true" ]]; then
     sync_neon "step $step"
@@ -817,7 +771,7 @@ print(f"Filtered:        {result['filtered']:,}")
 print(f"Kept:            {result['kept']:,}")
 print(f"Device:          {result['device']}")
 PYEOF
-) | tee "$logfile"
+) | tee "$logfile" || return 1
   else
     (cd "$PROJECT_ROOT" && REDDIT_PIPELINE_DB="$DB" "$PYTHON" - <<'PYEOF'
 import os
@@ -860,7 +814,7 @@ run_step_3() {
       --output data/weak_labels.csv \
       --threshold 0.5 \
       --include-neutral \
-      --neutral-threshold 0.1) | tee "$logfile"
+      --neutral-threshold 0.1) | tee "$logfile" || return 1
   else
     (cd "$PROJECT_ROOT" && "$PYTHON" scripts/generate_weak_labels.py \
       --db "$DB" \
@@ -919,23 +873,20 @@ run_step_4() {
 
 run_step_5() {
   local logfile="$1"
-  local rescore_args=()
+  local inference_args=(--db "$DB" --batch-size 1000)
   if [[ "$MODE" != "all" || "$FULL_REBUILD" == "true" || "${TRAINED_CANDIDATE:-false}" == "true" ]]; then
-    rescore_args=(--promote-candidate)
+    inference_args+=(--promote-candidate)
   fi
   if [[ "${PIPELINE_RESCORE_EXISTING:-false}" == "true" ]]; then
-    rescore_args+=(--rescore-existing)
+    inference_args+=(--rescore-existing)
     warn "Explicit rescore requested; replacing the active model generation"
   fi
   info "Running batch inference across all preprocessed records..."
   if $VERBOSE; then
-    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/batch_inference.py \
-      --db "$DB" \
-      --batch-size 1000 "${rescore_args[@]}") | tee "$logfile"
+    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/batch_inference.py "${inference_args[@]}") \
+      | tee "$logfile" || return 1
   else
-    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/batch_inference.py \
-      --db "$DB" \
-      --batch-size 1000 "${rescore_args[@]}") > "$logfile" 2>&1 \
+    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/batch_inference.py "${inference_args[@]}") > "$logfile" 2>&1 \
       && success "Batch inference complete" \
       || { error "Batch inference failed. Log: $logfile"; tail -20 "$logfile"; return 1; }
   fi
@@ -975,7 +926,7 @@ run_step_6() {
       --n-neighbors "$topic_n_neighbors" \
       --n-components "$topic_n_components" \
       --nr-topics "$topic_nr_topics" \
-      --skip-gate) | tee "$logfile"
+      --skip-gate) | tee "$logfile" || return 1
   else
     (cd "$PROJECT_ROOT" && "$PYTHON" scripts/train_topic_model.py \
       --db "$DB" \
@@ -1014,7 +965,7 @@ run_step_7() {
     (cd "$PROJECT_ROOT" && "$PYTHON" scripts/run_timeseries.py \
       --db "$DB" \
       --days 90 \
-      --forecast-days 14) | tee "$logfile"
+      --forecast-days 14) | tee "$logfile" || return 1
   else
     (cd "$PROJECT_ROOT" && "$PYTHON" scripts/run_timeseries.py \
       --db "$DB" \
@@ -1043,7 +994,7 @@ run_step_8() {
   local logfile="$1"
   info "Running analysis artifact backfill..."
   if $VERBOSE; then
-    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/run_analysis_jobs.py --db "$DB") | tee "$logfile"
+    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/run_analysis_jobs.py --db "$DB") | tee "$logfile" || return 1
   else
     (cd "$PROJECT_ROOT" && "$PYTHON" scripts/run_analysis_jobs.py --db "$DB") > "$logfile" 2>&1 \
       && success "Analysis artifacts generated" \
@@ -1069,7 +1020,7 @@ run_step_9() {
   info "Running LLM enrichment via Ollama..."
   dim "Requires OLLAMA_API_KEY and OLLAMA_BASE_URL in .env or environment"
   if $VERBOSE; then
-    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/run_enrichment.py --db "$DB" --all) | tee "$logfile"
+    (cd "$PROJECT_ROOT" && "$PYTHON" scripts/run_enrichment.py --db "$DB" --all) | tee "$logfile" || return 1
   else
     (cd "$PROJECT_ROOT" && "$PYTHON" scripts/run_enrichment.py --db "$DB" --all) > "$logfile" 2>&1 \
       && success "LLM enrichment complete" \
@@ -1173,6 +1124,9 @@ mode_step() {
 }
 
 mode_all() {
+  local cutoff
+  local step_failed=false
+  cutoff=$("$PYTHON" scripts/pipeline_data.py cutoff) || return $?
   header "Running full pipeline"
   print_status_table true
 
@@ -1192,6 +1146,7 @@ mode_all() {
     fi
 
     run_step "$i" false || {
+      step_failed=true
       error "Step $i failed."
       if [[ "$CONFIRM_STEPS" == "true" ]]; then
         printf "\n  Continue to next step anyway? [y/N]  > "
@@ -1203,8 +1158,12 @@ mode_all() {
     }
   done
 
+  if [[ "$step_failed" == "true" ]]; then
+    return 1
+  fi
   printf "\n"
-  sync_neon "full pipeline"
+  "$PYTHON" -u scripts/pipeline_data.py prune --db "$DB" --cutoff "$cutoff" || return $?
+  sync_neon "full pipeline" "$cutoff" || return $?
   printf "\n"
   header "Pipeline complete"
   print_status_table true

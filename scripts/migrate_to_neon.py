@@ -159,6 +159,8 @@ def _transform(table: str, df: pd.DataFrame) -> pd.DataFrame:
             df[column] = df[column].map(_parse_date)
     if table == "preprocessed" and "is_filtered" in df.columns:
         df["is_filtered"] = df["is_filtered"].map(bool)
+    if table == "llm_model_registry" and "available" in df.columns:
+        df["available"] = df["available"].map(lambda value: None if pd.isna(value) else bool(value))
     for column in JSON_COLUMNS.get(table, []):
         if column in df.columns:
             df[column] = df[column].map(_parse_json)
@@ -198,20 +200,30 @@ def _row_values(table: str, batch: pd.DataFrame, json_adapter) -> list[tuple]:
 
 
 def _insert_batch(
-    pg_conn, table: str, batch: pd.DataFrame, execute_values, json_adapter
+    pg_conn, table: str, batch: pd.DataFrame, execute_values, json_adapter,
+    *, update_on: tuple[str, ...] = (),
 ) -> None:
     columns = list(batch.columns)
-    quoted_columns = ", ".join(f'"{col}"' for col in columns)
+    quoted_columns = ", ".join(_quote_identifier(col) for col in columns)
     conflict = "ON CONFLICT DO NOTHING"
-    if table == "preprocessed" and {"id", "content_type"}.issubset(columns):
+    if not update_on and table == "preprocessed" and {"id", "content_type"}.issubset(columns):
+        update_on = ("id", "content_type")
+    if update_on:
         updates = ", ".join(
-            f'"{column}" = EXCLUDED."{column}"' for column in columns if column not in {"id", "content_type"}
+            f'{_quote_identifier(column)} = EXCLUDED.{_quote_identifier(column)}'
+            for column in columns if column not in update_on
         )
-        conflict = f'ON CONFLICT (id, content_type) DO UPDATE SET {updates}' if updates else conflict
-    sql = f'INSERT INTO "{table}" ({quoted_columns}) VALUES %s {conflict}'
+        keys = ", ".join(_quote_identifier(key) for key in update_on)
+        if updates:
+            conflict = f'ON CONFLICT ({keys}) DO UPDATE SET {updates}'
+    sql = f'INSERT INTO {_quote_identifier(table)} ({quoted_columns}) VALUES %s {conflict}'
     rows = _row_values(table, batch, json_adapter)
     with pg_conn.cursor() as cursor:
         execute_values(cursor, sql, rows, page_size=min(len(rows), INSERT_PAGE_SIZE))
+
+
+def _quote_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
 
 
 def _insert_batch_resilient(

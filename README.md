@@ -23,6 +23,10 @@ Refreshes process new records and reuse existing model artifacts. A full rebuild
 Individual operations remain available with `--step N` (or `step N`). Use `--check` for gate and freshness status and `--no-neon-sync` to keep a run local.
 Step 4 stages a candidate sentiment model. Step 5 rescores and promotes that candidate together with its predictions. A full rebuild runs both steps, and a routine refresh reuses the active model.
 
+After a successful full refresh or rebuild, the pipeline deletes Reddit records older than 18 calendar months from the run's start time. It also deletes comments attached to expired posts and the corresponding per-record analysis rows. Both the dashboard and terminal runs apply retention. Individual steps skip age-based retention.
+
+With `NEON_DATABASE_URL` configured, successful runs compare Neon with SQLite, reconcile differences, and report the verified sync time. Full runs apply the same cutoff to Neon. The terminal's `--no-neon-sync` option still applies retention to the active database.
+
 Create an annotation-ready sample and reports without training or collection:
 
 ```bash
